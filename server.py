@@ -60,6 +60,9 @@ def init():
                 db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
         if 'service_key' not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
             db.execute("ALTER TABLE orders ADD COLUMN service_key TEXT DEFAULT ''")
+        for column in ('latitude','longitude'):
+            if column not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
+                db.execute(f'ALTER TABLE orders ADD COLUMN {column} REAL')
         db.execute('CREATE UNIQUE INDEX IF NOT EXISTS orders_request_once ON orders(user_id,client_request_id) WHERE client_request_id IS NOT NULL')
         db.executemany('INSERT OR IGNORE INTO area_fees(area,fee) VALUES (?,?)', [(area,20) for area in AREAS])
         if not db.execute("SELECT 1 FROM products").fetchone():
@@ -185,9 +188,9 @@ class Handler(BaseHTTPRequestHandler):
             data=(ROOT/'icon.svg').read_bytes()
             self.send_response(200);self.send_header('Content-Type','image/svg+xml');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
             return
-        if path in ('/icon-192.png','/icon-512.png','/sw.js'):
+        if path in ('/icon-192.png','/icon-512.png','/sw.js','/maps.js'):
             data=(ROOT/path[1:]).read_bytes()
-            mime='application/javascript' if path=='/sw.js' else 'image/png'
+            mime='application/javascript' if path in ('/sw.js','/maps.js') else 'image/png'
             self.send_response(200);self.send_header('Content-Type',mime);self.send_header('Cache-Control','public, max-age=3600');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
             return
         if path != "/api/state":
@@ -196,11 +199,13 @@ class Handler(BaseHTTPRequestHandler):
             user = self.user(db)
             if not user: return self.respond({'error':'سجل الدخول أولًا'}, 401)
             clause, args = ('', ()) if user['role']=='admin' else ((' WHERE o.user_id=?', (user['id'],)) if user['role']=='customer' else (' WHERE d.user_id=?', (user['id'],)))
-            orders = rows(db, "SELECT o.*,d.name AS driver_name FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id"+clause+" ORDER BY o.id DESC", args)
+            orders = rows(db, "SELECT o.*,d.name AS driver_name,d.lat AS driver_lat,d.lon AS driver_lon,d.location_at AS driver_location_at FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id"+clause+" ORDER BY o.id DESC", args)
             for o in orders:
                 o["items"] = rows(db, "SELECT product_id,name,quantity,unit_price FROM order_items WHERE order_id=?", (o["id"],))
                 o["events"] = rows(db, "SELECT action,at FROM events WHERE order_id=? ORDER BY id", (o["id"],))
                 if user['role']!='admin':
+                    if user['role']=='customer' and o['status'] not in ('assigned','ready','picked_up','on_way'):
+                        o['driver_lat']=o['driver_lon']=o['driver_location_at']=None
                     o['has_proof']=bool(o['proof'])
                     o['has_prescription']=bool(o['prescription'])
                     o.pop('proof', None)
@@ -337,6 +342,10 @@ class Handler(BaseHTTPRequestHandler):
                     customer,phone=user['name'],user['phone']
                     address=str(data.get('address','')).strip()
                     if not address: raise ValueError("العنوان مطلوب")
+                    lat,lon=data.get('latitude'),data.get('longitude')
+                    if lat is None or lon is None: raise ValueError('حدد موقع العنوان على الخريطة')
+                    lat,lon=float(lat),float(lon)
+                    if not (-90<=lat<=90 and -180<=lon<=180): raise ValueError('إحداثيات العنوان غير صحيحة')
                     fee = float(db.execute('SELECT fee FROM area_fees WHERE area=?',(data['area'],)).fetchone()[0])
                     subtotal = 0
                     items = []
@@ -366,7 +375,7 @@ class Handler(BaseHTTPRequestHandler):
                     status = "awaiting_quote" if kind != "products" else ("medicine_review" if medicine_review else ("new" if payment == "cash" else "payment_review"))
                     cur = db.execute("INSERT INTO orders(user_id,client_request_id,kind,customer,phone,area,address,details,vehicle,pickup,destination,payment,proof,reference,prescription,medicine_review,payment_status,status,total,delivery_fee,quote_accepted,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (user['id'],request_id,kind, customer, phone, data["area"], address, str(data.get("details", "")), str(data.get("vehicle", "")), str(data.get("pickup", "")), str(data.get("destination", "")), payment, proof, str(data.get("reference", "")), prescription,1 if medicine_review else 0, ps, status, subtotal+fee, fee,1 if kind=='products' else 0, now()))
                     oid = cur.lastrowid
-                    db.execute('UPDATE orders SET service_key=? WHERE id=?',(service_key,oid))
+                    db.execute('UPDATE orders SET service_key=?,latitude=?,longitude=? WHERE id=?',(service_key,lat,lon,oid))
                     for p, qty in items:
                         db.execute("UPDATE products SET stock=stock-? WHERE id=?", (qty, p["id"]))
                         db.execute("INSERT INTO order_items VALUES (?,?,?,?,?)", (oid, p["id"], p["name"], qty, p["price"]))
