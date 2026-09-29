@@ -1,0 +1,437 @@
+#!/usr/bin/env python3
+"""Local, dependency-free prototype for Wallaha. Not a production service."""
+import json
+import base64
+import hashlib
+import hmac
+import os
+import re
+import secrets
+import sqlite3
+import time
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse
+
+ROOT = Path(__file__).parent
+DB = Path(os.environ.get('WALLAHA_DB_PATH', str(ROOT / 'wallaha.sqlite3')))
+AREAS = ["أبو رجوان البحري", "أبو رجوان القبلي", "أبو صير", "ميت رهينة", "سقارة", "دهشور", "زاوية دهشور", "الشوبك الغربي", "الطرفاية", "المرازيق", "الشنباب", "العزيزية"]
+
+
+def connect():
+    db = sqlite3.connect(DB)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys=ON")
+    return db
+
+
+def init():
+    with connect() as db:
+        db.executescript("""
+        CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS area_fees (area TEXT PRIMARY KEY, fee REAL NOT NULL CHECK(fee>=0));
+        CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, phone TEXT UNIQUE NOT NULL, role TEXT NOT NULL, salt TEXT NOT NULL, password_hash TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), expires INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS login_attempts (phone TEXT NOT NULL, remote TEXT NOT NULL, attempts INTEGER NOT NULL, blocked_until INTEGER NOT NULL, PRIMARY KEY(phone,remote));
+        CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, price REAL NOT NULL CHECK(price >= 0), stock INTEGER NOT NULL CHECK(stock >= 0), image TEXT DEFAULT '', active INTEGER DEFAULT 1, requires_prescription INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS services (key TEXT PRIMARY KEY, name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE IF NOT EXISTS drivers (id INTEGER PRIMARY KEY, user_id INTEGER UNIQUE REFERENCES users(id), name TEXT NOT NULL, phone TEXT DEFAULT '', area TEXT NOT NULL, available INTEGER DEFAULT 1, lat REAL, lon REAL, location_at TEXT);
+        CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), client_request_id TEXT, kind TEXT NOT NULL, customer TEXT NOT NULL, phone TEXT NOT NULL, area TEXT NOT NULL, address TEXT NOT NULL, details TEXT DEFAULT '', vehicle TEXT DEFAULT '', pickup TEXT DEFAULT '', destination TEXT DEFAULT '', payment TEXT NOT NULL, proof TEXT DEFAULT '', reference TEXT DEFAULT '', prescription TEXT DEFAULT '', medicine_review INTEGER DEFAULT 0, cash_collected INTEGER DEFAULT 0, cash_settled INTEGER DEFAULT 0, payment_status TEXT NOT NULL, status TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, delivery_fee REAL NOT NULL DEFAULT 0, quote_accepted INTEGER DEFAULT 0, driver_id INTEGER REFERENCES drivers(id), created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS order_items (order_id INTEGER REFERENCES orders(id), product_id INTEGER REFERENCES products(id), name TEXT NOT NULL, quantity INTEGER NOT NULL, unit_price REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, order_id INTEGER REFERENCES orders(id), action TEXT NOT NULL, at TEXT NOT NULL);
+        """)
+        if not db.execute("SELECT 1 FROM settings WHERE key='wallet'").fetchone():
+            db.executemany("INSERT INTO settings VALUES (?,?)", [("wallet", "01113887292"), ("whatsapp", "01113887292"), ("delivery_fee", "20")])
+        if 'username' not in {x['name'] for x in db.execute('PRAGMA table_info(users)')}:
+            db.execute('ALTER TABLE users ADD COLUMN username TEXT')
+        db.execute('CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users(username) WHERE username IS NOT NULL')
+        if not db.execute("SELECT 1 FROM users WHERE username='owner'").fetchone():
+            db.execute("UPDATE users SET username='owner' WHERE role='admin' AND username IS NULL")
+        db.execute("INSERT OR IGNORE INTO services(key,name) VALUES ('products','المنتجات'),('delivery','توصيل أوردر'),('ride_tuktuk','مشوار توك توك'),('ride_car','مشوار سيارة')")
+        if 'quote_accepted' not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
+            db.execute('ALTER TABLE orders ADD COLUMN quote_accepted INTEGER DEFAULT 0')
+            db.execute("UPDATE orders SET quote_accepted=1 WHERE kind='products' OR status NOT IN ('awaiting_quote','payment_review')")
+        for table,column,definition in [('products','requires_prescription','INTEGER DEFAULT 0'),('orders','client_request_id','TEXT'),('orders','prescription',"TEXT DEFAULT ''"),('orders','medicine_review','INTEGER DEFAULT 0'),('orders','cash_collected','INTEGER DEFAULT 0'),('orders','cash_settled','INTEGER DEFAULT 0')]:
+            if column not in {x['name'] for x in db.execute(f'PRAGMA table_info({table})')}:
+                db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
+        if 'service_key' not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
+            db.execute("ALTER TABLE orders ADD COLUMN service_key TEXT DEFAULT ''")
+        db.execute('CREATE UNIQUE INDEX IF NOT EXISTS orders_request_once ON orders(user_id,client_request_id) WHERE client_request_id IS NOT NULL')
+        db.executemany('INSERT OR IGNORE INTO area_fees(area,fee) VALUES (?,?)', [(area,20) for area in AREAS])
+        if not db.execute("SELECT 1 FROM products").fetchone():
+            db.executemany("INSERT INTO products(name,category,price,stock) VALUES (?,?,?,?)", [("منتج تجريبي: أرز 1 كجم", "سوبر ماركت", 40, 20), ("منتج تجريبي: خضار مشكل", "خضار", 35, 15), ("منتج تجريبي: وجبة", "مطاعم", 85, 10)])
+        if not db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
+            password = os.environ.get('WALLAHA_ADMIN_PASSWORD', '')
+            if not password or len(password) < 10:
+                raise RuntimeError('Set WALLAHA_ADMIN_PASSWORD to at least 10 characters before first run')
+            create_user(db, 'المسؤول', os.environ.get('WALLAHA_ADMIN_PHONE', '01113887292'), 'admin', password, os.environ.get('WALLAHA_ADMIN_USERNAME','owner'))
+
+
+def create_user(db, name, phone, role, password, username=None):
+    if not name.strip() or not phone.strip() or len(password) < 10:
+        raise ValueError('الاسم والهاتف وكلمة مرور من 10 أحرف على الأقل مطلوبة')
+    if username is not None:
+        username=str(username).strip().lower()
+        if not re.fullmatch(r'[a-z][a-z0-9_]{2,29}', username):
+            raise ValueError('اسم المستخدم يبدأ بحرف إنجليزي ويحتوي 3 إلى 30 حرفًا أو رقمًا أو _')
+    salt = secrets.token_hex(16)
+    digest = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=2**14, r=8, p=1).hex()
+    return db.execute('INSERT INTO users(name,phone,role,salt,password_hash,username) VALUES (?,?,?,?,?,?)', (name.strip(), phone.strip(), role, salt, digest, username)).lastrowid
+
+
+def authenticate(db, phone, password):
+    u = db.execute('SELECT * FROM users WHERE phone=? OR username=?', (str(phone).strip(),str(phone).strip().lower())).fetchone()
+    if not u: return None
+    digest = hashlib.scrypt(str(password).encode(), salt=bytes.fromhex(u['salt']), n=2**14, r=8, p=1).hex()
+    return u if hmac.compare_digest(digest, u['password_hash']) else None
+
+
+def login_allowed(db, phone, remote):
+    record = db.execute('SELECT attempts,blocked_until FROM login_attempts WHERE phone=? AND remote=?', (phone,remote)).fetchone()
+    return not record or record['attempts'] < 5 or record['blocked_until'] <= int(time.time())
+
+
+def record_failed_login(db, phone, remote):
+    record = db.execute('SELECT attempts,blocked_until FROM login_attempts WHERE phone=? AND remote=?', (phone,remote)).fetchone()
+    attempts = (record['attempts'] if record and record['blocked_until'] > int(time.time()) else 0) + 1
+    db.execute('INSERT INTO login_attempts(phone,remote,attempts,blocked_until) VALUES (?,?,?,?) ON CONFLICT(phone,remote) DO UPDATE SET attempts=excluded.attempts,blocked_until=excluded.blocked_until', (phone,remote,attempts,int(time.time())+(900 if attempts >= 5 else 60)))
+
+
+def valid_image(value, max_chars):
+    if not isinstance(value,str) or len(value)>max_chars: return False
+    try:
+        header,payload=value.split(',',1)
+        if header not in ('data:image/png;base64','data:image/jpeg;base64','data:image/webp;base64'): return False
+        raw=base64.b64decode(payload,validate=True)
+        return raw.startswith(b'\x89PNG\r\n\x1a\n') or raw.startswith(b'\xff\xd8\xff') or raw.startswith(b'RIFF') and raw[8:12]==b'WEBP'
+    except (ValueError,base64.binascii.Error): return False
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def log(db, oid, action):
+    db.execute("INSERT INTO events(order_id,action,at) VALUES (?,?,?)", (oid, action, now()))
+
+
+def assign(db, oid):
+    o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+    if not o or o["payment_status"] != "confirmed" or (o['kind']!='products' and not o['quote_accepted']) or o['medicine_review']:
+        return
+    d = db.execute("SELECT id FROM drivers WHERE area=? AND available=1 ORDER BY id LIMIT 1", (o["area"],)).fetchone()
+    if d:
+        db.execute("UPDATE orders SET driver_id=?,status='assigned' WHERE id=?", (d["id"], oid))
+        log(db, oid, "أُسند إلى مندوب المنطقة")
+    else:
+        db.execute("UPDATE orders SET status='awaiting_driver' WHERE id=?", (oid,))
+        log(db, oid, "بانتظار مندوب متاح")
+
+
+def rows(db, sql, args=()):
+    return [dict(x) for x in db.execute(sql, args)]
+
+
+class Handler(BaseHTTPRequestHandler):
+    def user(self, db):
+        header = self.headers.get('Authorization', '')
+        if not header.startswith('Bearer '): return None
+        digest = hashlib.sha256(header[7:].encode()).hexdigest()
+        return db.execute('SELECT u.id,u.name,u.phone,u.role,u.username FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires>?', (digest, int(time.time()))).fetchone()
+
+    def respond(self, value, code=200):
+        data = json.dumps(value, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def body(self):
+        n = int(self.headers.get("Content-Length", "0"))
+        if n > 3_000_000:
+            raise ValueError("حجم الطلب كبير")
+        return json.loads(self.rfile.read(n) or b"{}")
+
+    def do_GET(self):
+        path = urlparse(self.path).path
+        if path == '/health':
+            try:
+                with connect() as db:
+                    db.execute('SELECT 1').fetchone()
+                return self.respond({'ok':True})
+            except sqlite3.Error:
+                return self.respond({'ok':False},503)
+        if path in ('/', '/customer', '/driver', '/admin'):
+            data = (ROOT / "index.html").read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if path.startswith('/manifest/') and path.endswith('.json'):
+            role=path.split('/')[-1][:-5]
+            if role not in ('customer','driver','admin'): return self.respond({'error':'غير موجود'},404)
+            title={'customer':'ولّعها للعميل','driver':'ولّعها للمندوب','admin':'ولّعها الإدارة'}[role]
+            data=json.dumps({'name':title,'short_name':title,'id':'/'+role,'start_url':'/'+role,'scope':'/','display':'standalone','background_color':'#f3f7f5','theme_color':'#093d3a','icons':[{'src':'/icon-192.png','sizes':'192x192','type':'image/png','purpose':'any maskable'},{'src':'/icon-512.png','sizes':'512x512','type':'image/png','purpose':'any maskable'}]},ensure_ascii=False).encode()
+            self.send_response(200);self.send_header('Content-Type','application/manifest+json');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+            return
+        if path == '/icon.svg':
+            data=(ROOT/'icon.svg').read_bytes()
+            self.send_response(200);self.send_header('Content-Type','image/svg+xml');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+            return
+        if path in ('/icon-192.png','/icon-512.png','/sw.js'):
+            data=(ROOT/path[1:]).read_bytes()
+            mime='application/javascript' if path=='/sw.js' else 'image/png'
+            self.send_response(200);self.send_header('Content-Type',mime);self.send_header('Cache-Control','public, max-age=3600');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+            return
+        if path != "/api/state":
+            return self.respond({"error": "غير موجود"}, 404)
+        with connect() as db:
+            user = self.user(db)
+            if not user: return self.respond({'error':'سجل الدخول أولًا'}, 401)
+            clause, args = ('', ()) if user['role']=='admin' else ((' WHERE o.user_id=?', (user['id'],)) if user['role']=='customer' else (' WHERE d.user_id=?', (user['id'],)))
+            orders = rows(db, "SELECT o.*,d.name AS driver_name FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id"+clause+" ORDER BY o.id DESC", args)
+            for o in orders:
+                o["items"] = rows(db, "SELECT product_id,name,quantity,unit_price FROM order_items WHERE order_id=?", (o["id"],))
+                o["events"] = rows(db, "SELECT action,at FROM events WHERE order_id=? ORDER BY id", (o["id"],))
+                if user['role']!='admin':
+                    o['has_proof']=bool(o['proof'])
+                    o['has_prescription']=bool(o['prescription'])
+                    o.pop('proof', None)
+                    o.pop('reference', None)
+                    o.pop('prescription', None)
+            self.respond({"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings")} if user['role']!='driver' else {}})
+
+    def do_POST(self):
+        try:
+            data = self.body()
+            with connect() as db:
+                path = urlparse(self.path).path
+                if path == '/api/register':
+                    uid=create_user(db,str(data['name']),str(data['phone']),'customer',str(data['password']))
+                    return self.respond({'ok':True,'id':uid})
+                if path == '/api/login':
+                    phone=str(data.get('phone','')).strip()[:64]
+                    remote=self.client_address[0]
+                    if not login_allowed(db,phone,remote): return self.respond({'error':'محاولات دخول كثيرة. حاول لاحقًا'},429)
+                    u=authenticate(db,phone,data.get('password',''))
+                    if not u:
+                        record_failed_login(db,phone,remote)
+                        db.commit()
+                        return self.respond({'error':'بيانات الدخول غير صحيحة'},401)
+                    db.execute('DELETE FROM login_attempts WHERE phone=? AND remote=?',(phone,remote))
+                    token=secrets.token_urlsafe(32)
+                    db.execute('INSERT INTO sessions VALUES (?,?,?)',(hashlib.sha256(token.encode()).hexdigest(),u['id'],int(time.time())+86400*7))
+                    return self.respond({'token':token,'role':u['role']})
+                user=self.user(db)
+                if not user: return self.respond({'error':'سجل الدخول أولًا'},401)
+                if path == '/api/logout':
+                    db.execute('DELETE FROM sessions WHERE token_hash=?',(hashlib.sha256(self.headers['Authorization'][7:].encode()).hexdigest(),))
+                    return self.respond({'ok':True})
+                if path == '/api/change-password':
+                    current=str(data.get('current_password',''))
+                    replacement=str(data.get('new_password',''))
+                    if len(replacement)<10: raise ValueError('كلمة المرور الجديدة يجب أن تكون 10 أحرف على الأقل')
+                    if not authenticate(db,user['phone'],current): return self.respond({'error':'كلمة المرور الحالية غير صحيحة'},403)
+                    salt=secrets.token_hex(16)
+                    digest=hashlib.scrypt(replacement.encode(),salt=bytes.fromhex(salt),n=2**14,r=8,p=1).hex()
+                    db.execute('UPDATE users SET salt=?,password_hash=? WHERE id=?',(salt,digest,user['id']))
+                    db.execute('DELETE FROM sessions WHERE user_id=? AND token_hash<>?',(user['id'],hashlib.sha256(self.headers['Authorization'][7:].encode()).hexdigest()))
+                    return self.respond({'ok':True})
+                if path == "/api/product":
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    name = str(data["name"]).strip()
+                    category = str(data["category"]).strip()
+                    price, stock = float(data["price"]), int(data["stock"])
+                    if not name or not category or price < 0 or stock < 0: raise ValueError("بيانات المنتج غير صحيحة")
+                    image=str(data.get('image',''))
+                    if image and not valid_image(image,1_500_000): raise ValueError('صورة المنتج يجب أن تكون PNG أو JPEG أو WebP وحجمها صغير')
+                    db.execute("INSERT INTO products(name,category,price,stock,image,requires_prescription) VALUES (?,?,?,?,?,?)", (name, category, price, stock,image,1 if data.get('requires_prescription') and category=='أدوية' else 0))
+                elif path == '/api/product/delete':
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    cur=db.execute('UPDATE products SET active=0 WHERE id=?',(int(data['id']),))
+                    if not cur.rowcount: raise ValueError('المنتج غير موجود')
+                elif path == '/api/product/update':
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    price,stock=float(data['price']),int(data['stock'])
+                    if price<0 or stock<0: raise ValueError('السعر والكمية يجب أن يكونا غير سالبين')
+                    cur=db.execute('UPDATE products SET price=?,stock=?,active=?,requires_prescription=? WHERE id=?',(price,stock,1 if data.get('active') else 0,1 if data.get('requires_prescription') else 0,int(data['id'])))
+                    if not cur.rowcount: raise ValueError('المنتج غير موجود')
+                elif path == '/api/service':
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    key=str(data.get('key',''))
+                    cur=db.execute('UPDATE services SET active=? WHERE key=?',(1 if data.get('active') else 0,key))
+                    if not cur.rowcount: raise ValueError('خدمة غير معروفة')
+                elif path == '/api/service/create':
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    name=str(data.get('name','')).strip()
+                    if not 3<=len(name)<=60: raise ValueError('اسم الخدمة يجب أن يكون بين 3 و60 حرفًا')
+                    db.execute('INSERT INTO services(key,name) VALUES (?,?)',('custom_'+secrets.token_hex(6),name))
+                elif path == '/api/settings':
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    fee=float(data['delivery_fee'])
+                    if fee<0: raise ValueError('رسوم التوصيل غير صحيحة')
+                    for k,v in [('wallet',str(data['wallet']).strip()),('whatsapp',str(data['whatsapp']).strip()),('delivery_fee',str(fee))]:
+                        if not v: raise ValueError('الإعدادات مطلوبة')
+                        db.execute('UPDATE settings SET value=? WHERE key=?',(v,k))
+                elif path == '/api/area-fee':
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    area,fee=data['area'],float(data['fee'])
+                    if area not in AREAS or fee<0: raise ValueError('المنطقة أو الرسوم غير صحيحة')
+                    db.execute('UPDATE area_fees SET fee=? WHERE area=?',(fee,area))
+                elif path == '/api/driver/availability':
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    cur=db.execute('UPDATE drivers SET available=? WHERE id=?',(1 if data.get('available') else 0,int(data['id'])))
+                    if not cur.rowcount: raise ValueError('المندوب غير موجود')
+                    if data.get('available'):
+                        area=db.execute('SELECT area FROM drivers WHERE id=?',(int(data['id']),)).fetchone()['area']
+                        for item in db.execute("SELECT id FROM orders WHERE area=? AND status='awaiting_driver'",(area,)).fetchall(): assign(db,item['id'])
+                elif path == '/api/order/reassign':
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    oid,did=int(data['id']),int(data['driver_id'])
+                    o=db.execute('SELECT * FROM orders WHERE id=?',(oid,)).fetchone()
+                    d=db.execute('SELECT * FROM drivers WHERE id=?',(did,)).fetchone()
+                    if not o or not d or o['area']!=d['area'] or not d['available'] or o['payment_status']!='confirmed' or o['status'] not in ('assigned','awaiting_driver','ready') or (o['kind']!='products' and not o['quote_accepted']):
+                        raise ValueError('تعذر إسناد الطلب لهذا المندوب')
+                    db.execute('UPDATE orders SET driver_id=?,status=? WHERE id=?',(did,'ready' if o['status']=='ready' else 'assigned',oid))
+                    log(db,oid,'أعاد المسؤول إسناد الطلب إلى مندوب آخر')
+                elif path == "/api/driver":
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    if data["area"] not in AREAS: raise ValueError("منطقة غير معروفة")
+                    uid=create_user(db,str(data['name']),str(data['phone']),'driver',str(data['password']),data.get('username'))
+                    db.execute("INSERT INTO drivers(user_id,name,phone,area) VALUES (?,?,?,?)", (uid,str(data["name"]).strip(), str(data["phone"]).strip(), data["area"]))
+                    for o in db.execute("SELECT id FROM orders WHERE area=? AND status='awaiting_driver'", (data["area"],)).fetchall(): assign(db, o["id"])
+                elif path == "/api/order":
+                    if user['role']!='customer': return self.respond({'error':'غير مصرح'},403)
+                    request_id=str(data.get('client_request_id','')).strip()
+                    if not request_id or len(request_id)>100: raise ValueError('معرف الطلب غير صالح')
+                    previous=db.execute('SELECT id FROM orders WHERE user_id=? AND client_request_id=?',(user['id'],request_id)).fetchone()
+                    if previous: return self.respond({'ok':True,'id':previous['id'],'duplicate':True})
+                    kind = data["kind"]
+                    if kind not in ("products", "delivery", "ride", "custom"): raise ValueError("نوع خدمة غير معروف")
+                    service_key='products' if kind=='products' else 'delivery' if kind=='delivery' else ('ride_tuktuk' if data.get('vehicle')=='توك توك' else 'ride_car') if kind=='ride' else str(data.get('service_key',''))
+                    if kind=='custom' and not service_key.startswith('custom_'): raise ValueError('الخدمة غير معروفة')
+                    if not db.execute('SELECT 1 FROM services WHERE key=? AND active=1',(service_key,)).fetchone(): raise ValueError('الخدمة غير متاحة حاليًا')
+                    if data["area"] not in AREAS: raise ValueError("اختر منطقة الخدمة")
+                    payment = data["payment"]
+                    if payment not in ("cash", "wallet"): raise ValueError("طريقة دفع غير معروفة")
+                    proof = str(data.get("proof", ""))
+                    if len(proof) > 2_500_000: raise ValueError("صورة الإثبات كبيرة")
+                    customer,phone=user['name'],user['phone']
+                    address=str(data.get('address','')).strip()
+                    if not address: raise ValueError("العنوان مطلوب")
+                    fee = float(db.execute('SELECT fee FROM area_fees WHERE area=?',(data['area'],)).fetchone()[0])
+                    subtotal = 0
+                    items = []
+                    medicine_review = False
+                    requires_prescription = False
+                    if kind == "products":
+                        for it in data.get("items", []):
+                            qty = int(it["quantity"])
+                            p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (it["product_id"],)).fetchone()
+                            if not p or qty <= 0 or p["stock"] < qty: raise ValueError("منتج غير متاح أو كمية غير كافية")
+                            items.append((p, qty))
+                            medicine_review |= p['category']=='أدوية'
+                            requires_prescription |= bool(p['requires_prescription'])
+                            subtotal += p["price"] * qty
+                        if not items: raise ValueError("السلة فارغة")
+                    prescription=str(data.get('prescription',''))
+                    if requires_prescription and not valid_image(prescription,2_500_000): raise ValueError('صورة الوصفة مطلوبة لهذا المنتج')
+                    if prescription and not valid_image(prescription,2_500_000): raise ValueError('صورة الوصفة غير صالحة')
+                    if payment=='wallet' and kind=='products' and not medicine_review and not valid_image(proof,2_500_000): raise ValueError('صورة إثبات التحويل مطلوبة')
+                    if medicine_review and proof: raise ValueError('انتظر مراجعة طلب الأدوية قبل التحويل')
+                    if kind == "ride" and data.get("vehicle") not in ("توك توك", "سيارة"): raise ValueError("اختر نوع المركبة")
+                    if kind in ("ride", "delivery") and not data.get("pickup"): raise ValueError("اكتب مكان الاستلام")
+                    if kind in ("ride", "delivery") and not data.get("destination"): raise ValueError("اكتب الوجهة")
+                    # Service prices require admin review; fee is shown only for catalog orders.
+                    if kind != "products": fee = 0
+                    ps = "confirmed" if payment == "cash" else "pending"
+                    status = "awaiting_quote" if kind != "products" else ("medicine_review" if medicine_review else ("new" if payment == "cash" else "payment_review"))
+                    cur = db.execute("INSERT INTO orders(user_id,client_request_id,kind,customer,phone,area,address,details,vehicle,pickup,destination,payment,proof,reference,prescription,medicine_review,payment_status,status,total,delivery_fee,quote_accepted,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (user['id'],request_id,kind, customer, phone, data["area"], address, str(data.get("details", "")), str(data.get("vehicle", "")), str(data.get("pickup", "")), str(data.get("destination", "")), payment, proof, str(data.get("reference", "")), prescription,1 if medicine_review else 0, ps, status, subtotal+fee, fee,1 if kind=='products' else 0, now()))
+                    oid = cur.lastrowid
+                    db.execute('UPDATE orders SET service_key=? WHERE id=?',(service_key,oid))
+                    for p, qty in items:
+                        db.execute("UPDATE products SET stock=stock-? WHERE id=?", (qty, p["id"]))
+                        db.execute("INSERT INTO order_items VALUES (?,?,?,?,?)", (oid, p["id"], p["name"], qty, p["price"]))
+                    log(db, oid, "أنشأ العميل الطلب")
+                    if payment == "cash" and kind == "products": assign(db, oid)
+                    return self.respond({"ok": True, "id": oid})
+                elif path == "/api/order/action":
+                    oid, action = int(data["id"]), data["action"]
+                    o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
+                    if not o: raise ValueError("الطلب غير موجود")
+                    if action=='submit_proof':
+                        if user['role']!='customer' or o['user_id']!=user['id']: return self.respond({'error':'غير مصرح'},403)
+                    elif action in ('accept_quote','decline_quote'):
+                        if user['role']!='customer' or o['user_id']!=user['id']: return self.respond({'error':'غير مصرح'},403)
+                    elif action=='customer_cancel':
+                        if user['role']!='customer' or o['user_id']!=user['id']: return self.respond({'error':'غير مصرح'},403)
+                    elif action in ('picked_up','on_way','delivered'):
+                        d=db.execute('SELECT id FROM drivers WHERE user_id=?',(user['id'],)).fetchone()
+                        if user['role']!='driver' or not d or o['driver_id']!=d['id']: return self.respond({'error':'غير مصرح'},403)
+                    elif user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    if action == "confirm_payment" and o["payment_status"] == "pending" and o["proof"] and o["status"] == "payment_review":
+                        db.execute("UPDATE orders SET payment_status='confirmed' WHERE id=?", (oid,))
+                        log(db, oid, "أكد المسؤول وصول التحويل")
+                        assign(db, oid)
+                    elif action == 'approve_medicine' and o['status']=='medicine_review' and o['medicine_review']:
+                        db.execute("UPDATE orders SET medicine_review=0,status=? WHERE id=?",('payment_review' if o['payment']=='wallet' else 'new',oid))
+                        log(db,oid,'راجع المسؤول طلب الأدوية')
+                        if o['payment']=='cash': assign(db,oid)
+                    elif action == "price" and o["kind"] != "products" and o["status"] in ('awaiting_quote','quote_pending'):
+                        amount = float(data["amount"])
+                        if amount < 0: raise ValueError("السعر غير صحيح")
+                        db.execute("UPDATE orders SET total=?,status='quote_pending',quote_accepted=0 WHERE id=?", (amount, oid))
+                        log(db, oid, "حدد المسؤول سعر الخدمة وينتظر موافقة العميل")
+                    elif action == 'accept_quote' and o['status']=='quote_pending':
+                        db.execute("UPDATE orders SET quote_accepted=1,status=? WHERE id=?",('payment_review' if o['payment']=='wallet' else 'new',oid))
+                        log(db,oid,'وافق العميل على السعر')
+                        if o['payment']=='cash': assign(db,oid)
+                    elif action == 'decline_quote' and o['status']=='quote_pending':
+                        db.execute("UPDATE orders SET status='cancelled' WHERE id=?",(oid,))
+                        log(db,oid,'رفض العميل السعر')
+                    elif action == "submit_proof" and o["status"] == "payment_review" and o["payment"] == "wallet":
+                        proof = str(data.get("proof", ""))
+                        if not valid_image(proof,2_500_000): raise ValueError("صورة إثبات صالحة مطلوبة")
+                        db.execute("UPDATE orders SET proof=?,reference=? WHERE id=?", (proof, str(data.get("reference", "")), oid))
+                        log(db, oid, "رفع العميل إثبات التحويل")
+                    elif action == "ready" and o["kind"] == "products" and o["status"] == "assigned":
+                        db.execute("UPDATE orders SET status='ready' WHERE id=?", (oid,))
+                        log(db, oid, "الطلب جاهز للاستلام من مكان المسؤول")
+                    elif action in ("picked_up", "on_way", "delivered") and o["driver_id"] and o["status"] == ({'picked_up': 'ready' if o['kind']=='products' else 'assigned','on_way':'picked_up','delivered':'on_way'}[action]):
+                        if action=='delivered' and o['payment']=='cash' and data.get('cash_collected') is not True: raise ValueError('أكد تحصيل المبلغ النقدي أولًا')
+                        db.execute("UPDATE orders SET status=? WHERE id=?", (action, oid))
+                        if action=='delivered' and o['payment']=='cash': db.execute('UPDATE orders SET cash_collected=1 WHERE id=?',(oid,))
+                        log(db, oid, {"picked_up": "استلم المندوب الطلب", "on_way": "المندوب في الطريق", "delivered": "تم التسليم"}[action])
+                    elif action=='settle_cash' and o['payment']=='cash' and o['status']=='delivered' and o['cash_collected'] and not o['cash_settled']:
+                        db.execute('UPDATE orders SET cash_settled=1 WHERE id=?',(oid,))
+                        log(db,oid,'أكد المسؤول استلام الكاش من المندوب')
+                    elif action in ('cancel','reject_medicine','customer_cancel') and o["status"] not in ("delivered", "cancelled") and (action!='reject_medicine' or o['status']=='medicine_review') and (action!='customer_cancel' or (o['status'] in ('awaiting_quote','quote_pending','medicine_review','payment_review','new','awaiting_driver','assigned') and not (o['payment']=='wallet' and (o['payment_status']=='confirmed' or bool(o['proof']))))):
+                        db.execute("UPDATE orders SET status='cancelled' WHERE id=?", (oid,))
+                        for it in db.execute("SELECT * FROM order_items WHERE order_id=?", (oid,)):
+                            db.execute("UPDATE products SET stock=stock+? WHERE id=?", (it["quantity"], it["product_id"]))
+                        log(db, oid, "ألغي الطلب وأعيدت المنتجات للكمية المتاحة")
+                    else: raise ValueError("الإجراء غير متاح في حالة الطلب الحالية")
+                elif path == '/api/location':
+                    if user['role']!='driver': return self.respond({'error':'غير مصرح'},403)
+                    lat,lon=float(data['lat']),float(data['lon'])
+                    if not (-90<=lat<=90 and -180<=lon<=180): raise ValueError('الموقع غير صالح')
+                    d=db.execute('SELECT id FROM drivers WHERE user_id=?',(user['id'],)).fetchone()
+                    active=db.execute("SELECT 1 FROM orders WHERE driver_id=? AND status IN ('assigned','ready','picked_up','on_way') LIMIT 1",(d['id'],)).fetchone() if d else None
+                    if not active: return self.respond({'error':'لا يوجد طلب جارٍ'},403)
+                    db.execute('UPDATE drivers SET lat=?,lon=?,location_at=? WHERE id=?',(lat,lon,now(),d['id']))
+                else: return self.respond({"error": "غير موجود"}, 404)
+            self.respond({"ok": True})
+        except (ValueError, KeyError, TypeError, sqlite3.Error) as e:
+            self.respond({"error": str(e)}, 400)
+
+
+if __name__ == "__main__":
+    init()
+    host=os.environ.get('WALLAHA_BIND','127.0.0.1')
+    port=int(os.environ.get('WALLAHA_PORT',os.environ.get('PORT','8080')))
+    print(f"Wallaha development server: http://{host}:{port}")
+    ThreadingHTTPServer((host,port), Handler).serve_forever()
