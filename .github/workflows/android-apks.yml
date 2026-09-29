@@ -23,6 +23,21 @@ jobs:
       - name: Build three installable APKs
         working-directory: android-app
         run: gradle :app:assembleCustomerDebug :app:assembleAdminDebug :app:assembleDriverDebug --no-daemon
+      - name: Enable Android emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Check installation on Android 13
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          arch: x86_64
+          script: |
+            adb install android-app/app/build/outputs/apk/customer/debug/app-customer-debug.apk
+            adb install android-app/app/build/outputs/apk/admin/debug/app-admin-debug.apk
+            adb install android-app/app/build/outputs/apk/driver/debug/app-driver-debug.apk
+            adb shell pm list packages | grep -E 'com.wallah.(customer|admin|driver)'
       - uses: actions/upload-artifact@v4
         with:
           name: wallah-android-apps
