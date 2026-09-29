@@ -29,7 +29,7 @@ let customerView='home',homeQuery='';
 function cartCount(){return Object.values(cart).reduce((n,q)=>n+Math.max(0,Number(q)||0),0)}
 function cartSubtotal(){return Object.entries(cart).reduce((sum,[id,q])=>sum+(state.products.find(p=>p.id==id)?.price||0)*Math.max(0,q),0)}
 function goCustomer(view){customerView=view;render();window.scrollTo({top:0,behavior:'smooth'})}
-function chooseCategory(name){kind='products';categoryFilter=name;merchantId=0;customerView='home';render();document.getElementById('merchant-section')?.scrollIntoView({behavior:'smooth',block:'start'})}
+function chooseCategory(name){kind='products';categoryFilter=name;customerView='home';render();document.getElementById('merchant-section')?.scrollIntoView({behavior:'smooth',block:'start'})}
 function selectMerchant(value){let next=Number(value);if(merchantId!==next&&cartCount()&&!confirm('تغيير المحل هيفرّغ السلة الحالية. تكمل؟'))return;merchantId=next;kind='products';categoryFilter=state.merchants.find(m=>m.id===next)?.category||'الكل';cart={};productSearch='';goCustomer('store')}
 function changeCart(id,delta){let product=state.products.find(p=>p.id===id);if(!product)return;cart[id]=Math.max(0,Math.min(product.stock,(cart[id]||0)+delta));if(!cart[id])delete cart[id];let y=window.scrollY;render();window.scrollTo(0,y)}
 function startService(type,key=''){if(cartCount()&&!confirm('بدء خدمة جديدة هيفرّغ السلة الحالية. تكمل؟'))return;kind=type;serviceKey=key;merchantId=0;cart={};goCustomer('checkout')}
