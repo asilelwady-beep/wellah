@@ -53,7 +53,7 @@ def init():
         if not db.execute("SELECT 1 FROM users WHERE username='owner'").fetchone():
             db.execute("UPDATE users SET username='owner' WHERE role='admin' AND username IS NULL")
         db.execute("INSERT OR IGNORE INTO services(key,name) VALUES ('products','المنتجات'),('delivery','توصيل أوردر'),('ride_tuktuk','مشوار توك توك'),('ride_motorbike','مشوار موتوسيكل'),('ride_car','مشوار سيارة')")
-        db.executemany('INSERT OR IGNORE INTO categories(name,sort_order) VALUES (?,?)', [(name,i) for i,name in enumerate(('سوبر ماركت','مطاعم','خضار','أدوية','أخرى'))])
+        db.executemany('INSERT OR IGNORE INTO categories(name,sort_order) VALUES (?,?)', [(name,i) for i,name in enumerate(('سوبر ماركت','مطاعم','خضار','أدوية','مخبوزات وعيش','أخرى'))])
         db.execute('INSERT OR IGNORE INTO categories(name,sort_order) SELECT DISTINCT category,100 FROM products')
         if 'quote_accepted' not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
             db.execute('ALTER TABLE orders ADD COLUMN quote_accepted INTEGER DEFAULT 0')
@@ -210,7 +210,7 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith('/manifest/') and path.endswith('.json'):
             role=path.split('/')[-1][:-5]
             if role not in ('customer','driver','admin'): return self.respond({'error':'غير موجود'},404)
-            title={'customer':'ولّعها للعميل','driver':'ولّعها للمندوب','admin':'ولّعها الإدارة'}[role]
+            title={'customer':'ولعه للعميل','driver':'ولعه للمندوب','admin':'ولعه الإدارة'}[role]
             data=json.dumps({'name':title,'short_name':title,'id':'/'+role,'start_url':'/'+role,'scope':'/','display':'standalone','background_color':'#f3f7f5','theme_color':'#093d3a','icons':[{'src':'/icon-192.png','sizes':'192x192','type':'image/png','purpose':'any maskable'},{'src':'/icon-512.png','sizes':'512x512','type':'image/png','purpose':'any maskable'}]},ensure_ascii=False).encode()
             self.send_response(200);self.send_header('Content-Type','application/manifest+json');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
             return
