@@ -35,6 +35,7 @@ def init():
         CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), expires INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS login_attempts (phone TEXT NOT NULL, remote TEXT NOT NULL, attempts INTEGER NOT NULL, blocked_until INTEGER NOT NULL, PRIMARY KEY(phone,remote));
         CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, price REAL NOT NULL CHECK(price >= 0), stock INTEGER NOT NULL CHECK(stock >= 0), image TEXT DEFAULT '', active INTEGER DEFAULT 1, requires_prescription INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS categories (name TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS services (key TEXT PRIMARY KEY, name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1);
         CREATE TABLE IF NOT EXISTS drivers (id INTEGER PRIMARY KEY, user_id INTEGER UNIQUE REFERENCES users(id), name TEXT NOT NULL, phone TEXT DEFAULT '', area TEXT NOT NULL, available INTEGER DEFAULT 1, lat REAL, lon REAL, location_at TEXT);
         CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), client_request_id TEXT, kind TEXT NOT NULL, customer TEXT NOT NULL, phone TEXT NOT NULL, area TEXT NOT NULL, address TEXT NOT NULL, details TEXT DEFAULT '', vehicle TEXT DEFAULT '', pickup TEXT DEFAULT '', destination TEXT DEFAULT '', payment TEXT NOT NULL, proof TEXT DEFAULT '', reference TEXT DEFAULT '', prescription TEXT DEFAULT '', medicine_review INTEGER DEFAULT 0, cash_collected INTEGER DEFAULT 0, cash_settled INTEGER DEFAULT 0, payment_status TEXT NOT NULL, status TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, delivery_fee REAL NOT NULL DEFAULT 0, quote_accepted INTEGER DEFAULT 0, driver_id INTEGER REFERENCES drivers(id), created_at TEXT NOT NULL);
@@ -48,7 +49,9 @@ def init():
         db.execute('CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users(username) WHERE username IS NOT NULL')
         if not db.execute("SELECT 1 FROM users WHERE username='owner'").fetchone():
             db.execute("UPDATE users SET username='owner' WHERE role='admin' AND username IS NULL")
-        db.execute("INSERT OR IGNORE INTO services(key,name) VALUES ('products','المنتجات'),('delivery','توصيل أوردر'),('ride_tuktuk','مشوار توك توك'),('ride_car','مشوار سيارة')")
+        db.execute("INSERT OR IGNORE INTO services(key,name) VALUES ('products','المنتجات'),('delivery','توصيل أوردر'),('ride_tuktuk','مشوار توك توك'),('ride_motorbike','مشوار موتوسيكل'),('ride_car','مشوار سيارة')")
+        db.executemany('INSERT OR IGNORE INTO categories(name,sort_order) VALUES (?,?)', [(name,i) for i,name in enumerate(('سوبر ماركت','مطاعم','خضار','أدوية','أخرى'))])
+        db.execute('INSERT OR IGNORE INTO categories(name,sort_order) SELECT DISTINCT category,100 FROM products')
         if 'quote_accepted' not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
             db.execute('ALTER TABLE orders ADD COLUMN quote_accepted INTEGER DEFAULT 0')
             db.execute("UPDATE orders SET quote_accepted=1 WHERE kind='products' OR status NOT IN ('awaiting_quote','payment_review')")
@@ -203,7 +206,7 @@ class Handler(BaseHTTPRequestHandler):
                     o.pop('proof', None)
                     o.pop('reference', None)
                     o.pop('prescription', None)
-            self.respond({"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings")} if user['role']!='driver' else {}})
+            self.respond({"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings")} if user['role']!='driver' else {}})
 
     def do_POST(self):
         try:
@@ -246,7 +249,7 @@ class Handler(BaseHTTPRequestHandler):
                     name = str(data["name"]).strip()
                     category = str(data["category"]).strip()
                     price, stock = float(data["price"]), int(data["stock"])
-                    if not name or not category or price < 0 or stock < 0: raise ValueError("بيانات المنتج غير صحيحة")
+                    if not name or not db.execute('SELECT 1 FROM categories WHERE name=? AND active=1',(category,)).fetchone() or price < 0 or stock < 0: raise ValueError("بيانات المنتج أو القسم غير صحيحة")
                     image=str(data.get('image',''))
                     if image and not valid_image(image,1_500_000): raise ValueError('صورة المنتج يجب أن تكون PNG أو JPEG أو WebP وحجمها صغير')
                     db.execute("INSERT INTO products(name,category,price,stock,image,requires_prescription) VALUES (?,?,?,?,?,?)", (name, category, price, stock,image,1 if data.get('requires_prescription') and category=='أدوية' else 0))
@@ -258,13 +261,28 @@ class Handler(BaseHTTPRequestHandler):
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     price,stock=float(data['price']),int(data['stock'])
                     if price<0 or stock<0: raise ValueError('السعر والكمية يجب أن يكونا غير سالبين')
-                    cur=db.execute('UPDATE products SET price=?,stock=?,active=?,requires_prescription=? WHERE id=?',(price,stock,1 if data.get('active') else 0,1 if data.get('requires_prescription') else 0,int(data['id'])))
+                    old=db.execute('SELECT category FROM products WHERE id=?',(int(data['id']),)).fetchone()
+                    if not old: raise ValueError('المنتج غير موجود')
+                    if data.get('active') and not db.execute('SELECT 1 FROM categories WHERE name=? AND active=1',(old['category'],)).fetchone(): raise ValueError('فعّل القسم أولًا')
+                    cur=db.execute('UPDATE products SET price=?,stock=?,active=?,requires_prescription=? WHERE id=?',(price,stock,1 if data.get('active') else 0,1 if data.get('requires_prescription') and old['category']=='أدوية' else 0,int(data['id'])))
                     if not cur.rowcount: raise ValueError('المنتج غير موجود')
                 elif path == '/api/service':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     key=str(data.get('key',''))
                     cur=db.execute('UPDATE services SET active=? WHERE key=?',(1 if data.get('active') else 0,key))
                     if not cur.rowcount: raise ValueError('خدمة غير معروفة')
+                elif path == '/api/category/create':
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    name=str(data.get('name','')).strip()
+                    if not 2<=len(name)<=50: raise ValueError('اسم القسم من 2 إلى 50 حرفًا')
+                    db.execute('INSERT INTO categories(name,sort_order) VALUES (?,COALESCE((SELECT MAX(sort_order)+1 FROM categories),0))',(name,))
+                elif path == '/api/category/update':
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    name=str(data.get('name','')).strip()
+                    active=bool(data.get('active'))
+                    if not active and db.execute('SELECT 1 FROM products WHERE category=? AND active=1 LIMIT 1',(name,)).fetchone():
+                        raise ValueError('أخفِ المنتجات الظاهرة في القسم أولًا')
+                    if not db.execute('UPDATE categories SET active=? WHERE name=?',(int(active),name)).rowcount: raise ValueError('القسم غير موجود')
                 elif path == '/api/service/create':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     name=str(data.get('name','')).strip()
@@ -286,9 +304,6 @@ class Handler(BaseHTTPRequestHandler):
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     cur=db.execute('UPDATE drivers SET available=? WHERE id=?',(1 if data.get('available') else 0,int(data['id'])))
                     if not cur.rowcount: raise ValueError('المندوب غير موجود')
-                    if data.get('available'):
-                        area=db.execute('SELECT area FROM drivers WHERE id=?',(int(data['id']),)).fetchone()['area']
-                        for item in db.execute("SELECT id FROM orders WHERE area=? AND status='awaiting_driver'",(area,)).fetchall(): assign(db,item['id'])
                 elif path == '/api/order/reassign':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     oid,did=int(data['id']),int(data['driver_id'])
@@ -303,7 +318,6 @@ class Handler(BaseHTTPRequestHandler):
                     if data["area"] not in AREAS: raise ValueError("منطقة غير معروفة")
                     uid=create_user(db,str(data['name']),str(data['phone']),'driver',str(data['password']),data.get('username'))
                     db.execute("INSERT INTO drivers(user_id,name,phone,area) VALUES (?,?,?,?)", (uid,str(data["name"]).strip(), str(data["phone"]).strip(), data["area"]))
-                    for o in db.execute("SELECT id FROM orders WHERE area=? AND status='awaiting_driver'", (data["area"],)).fetchall(): assign(db, o["id"])
                 elif path == "/api/order":
                     if user['role']!='customer': return self.respond({'error':'غير مصرح'},403)
                     request_id=str(data.get('client_request_id','')).strip()
@@ -312,7 +326,7 @@ class Handler(BaseHTTPRequestHandler):
                     if previous: return self.respond({'ok':True,'id':previous['id'],'duplicate':True})
                     kind = data["kind"]
                     if kind not in ("products", "delivery", "ride", "custom"): raise ValueError("نوع خدمة غير معروف")
-                    service_key='products' if kind=='products' else 'delivery' if kind=='delivery' else ('ride_tuktuk' if data.get('vehicle')=='توك توك' else 'ride_car') if kind=='ride' else str(data.get('service_key',''))
+                    service_key='products' if kind=='products' else 'delivery' if kind=='delivery' else {'توك توك':'ride_tuktuk','موتوسيكل':'ride_motorbike','سيارة':'ride_car'}.get(data.get('vehicle'),'') if kind=='ride' else str(data.get('service_key',''))
                     if kind=='custom' and not service_key.startswith('custom_'): raise ValueError('الخدمة غير معروفة')
                     if not db.execute('SELECT 1 FROM services WHERE key=? AND active=1',(service_key,)).fetchone(): raise ValueError('الخدمة غير متاحة حاليًا')
                     if data["area"] not in AREAS: raise ValueError("اختر منطقة الخدمة")
@@ -343,7 +357,7 @@ class Handler(BaseHTTPRequestHandler):
                     if prescription and not valid_image(prescription,2_500_000): raise ValueError('صورة الوصفة غير صالحة')
                     if payment=='wallet' and kind=='products' and not medicine_review and not valid_image(proof,2_500_000): raise ValueError('صورة إثبات التحويل مطلوبة')
                     if medicine_review and proof: raise ValueError('انتظر مراجعة طلب الأدوية قبل التحويل')
-                    if kind == "ride" and data.get("vehicle") not in ("توك توك", "سيارة"): raise ValueError("اختر نوع المركبة")
+                    if kind == "ride" and data.get("vehicle") not in ("توك توك", "موتوسيكل", "سيارة"): raise ValueError("اختر نوع المركبة")
                     if kind in ("ride", "delivery") and not data.get("pickup"): raise ValueError("اكتب مكان الاستلام")
                     if kind in ("ride", "delivery") and not data.get("destination"): raise ValueError("اكتب الوجهة")
                     # Service prices require admin review; fee is shown only for catalog orders.
@@ -357,7 +371,6 @@ class Handler(BaseHTTPRequestHandler):
                         db.execute("UPDATE products SET stock=stock-? WHERE id=?", (qty, p["id"]))
                         db.execute("INSERT INTO order_items VALUES (?,?,?,?,?)", (oid, p["id"], p["name"], qty, p["price"]))
                     log(db, oid, "أنشأ العميل الطلب")
-                    if payment == "cash" and kind == "products": assign(db, oid)
                     return self.respond({"ok": True, "id": oid})
                 elif path == "/api/order/action":
                     oid, action = int(data["id"]), data["action"]
@@ -374,13 +387,14 @@ class Handler(BaseHTTPRequestHandler):
                         if user['role']!='driver' or not d or o['driver_id']!=d['id']: return self.respond({'error':'غير مصرح'},403)
                     elif user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     if action == "confirm_payment" and o["payment_status"] == "pending" and o["proof"] and o["status"] == "payment_review":
-                        db.execute("UPDATE orders SET payment_status='confirmed' WHERE id=?", (oid,))
+                        db.execute("UPDATE orders SET payment_status='confirmed',status='new' WHERE id=?", (oid,))
                         log(db, oid, "أكد المسؤول وصول التحويل")
-                        assign(db, oid)
+                    elif action == 'approve_order' and o['status']=='new' and o['payment_status']=='confirmed':
+                        log(db,oid,'راجع المسؤول الطلب ووافق على توزيعه')
+                        assign(db,oid)
                     elif action == 'approve_medicine' and o['status']=='medicine_review' and o['medicine_review']:
                         db.execute("UPDATE orders SET medicine_review=0,status=? WHERE id=?",('payment_review' if o['payment']=='wallet' else 'new',oid))
                         log(db,oid,'راجع المسؤول طلب الأدوية')
-                        if o['payment']=='cash': assign(db,oid)
                     elif action == "price" and o["kind"] != "products" and o["status"] in ('awaiting_quote','quote_pending'):
                         amount = float(data["amount"])
                         if amount < 0: raise ValueError("السعر غير صحيح")
@@ -389,7 +403,6 @@ class Handler(BaseHTTPRequestHandler):
                     elif action == 'accept_quote' and o['status']=='quote_pending':
                         db.execute("UPDATE orders SET quote_accepted=1,status=? WHERE id=?",('payment_review' if o['payment']=='wallet' else 'new',oid))
                         log(db,oid,'وافق العميل على السعر')
-                        if o['payment']=='cash': assign(db,oid)
                     elif action == 'decline_quote' and o['status']=='quote_pending':
                         db.execute("UPDATE orders SET status='cancelled' WHERE id=?",(oid,))
                         log(db,oid,'رفض العميل السعر')
