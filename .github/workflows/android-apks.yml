@@ -58,9 +58,9 @@ jobs:
             adb install android-app/app/build/outputs/apk/driver/debug/app-driver-debug.apk
             adb install signed-apks/wallah-admin-release.apk
             adb install signed-apks/wallah-driver-release.apk
-            adb shell am start -n com.wallah.adminapp/com.wallah.app.MainActivity
-            adb shell am start -n com.wallah.driverapp/com.wallah.app.MainActivity
-            adb shell pm list packages | grep -E 'com.wallah.(customer|adminapp|driverapp)'
+            adb shell am start -n com.wallah.management/com.wallah.app.MainActivity
+            adb shell am start -n com.wallah.courier/com.wallah.app.MainActivity
+            adb shell pm list packages | grep -E 'com.wallah.(customer.debug|management|courier)'
       - uses: actions/upload-artifact@v4
         with:
           name: wallah-signed-release-apks
