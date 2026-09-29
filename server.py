@@ -199,6 +199,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond({'ok':True})
             except sqlite3.Error:
                 return self.respond({'ok':False},503)
+        if path == '/api/catalog':
+            with connect() as db:
+                return self.respond({
+                    'areas': AREAS,
+                    'area_fees': {x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')},
+                    'categories': rows(db, 'SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name'),
+                    'merchants': rows(db, 'SELECT * FROM merchants WHERE active=1 ORDER BY id DESC'),
+                    'products': rows(db, 'SELECT p.* FROM products p JOIN merchants m ON m.id=p.merchant_id JOIN categories c ON c.name=p.category WHERE p.active=1 AND p.stock>0 AND m.active=1 AND c.active=1 ORDER BY p.id DESC'),
+                    'services': rows(db, 'SELECT * FROM services WHERE active=1 ORDER BY rowid'),
+                })
         if path in ('/', '/customer', '/driver', '/admin'):
             data = (ROOT / "index.html").read_bytes()
             self.send_response(200)
