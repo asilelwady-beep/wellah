@@ -20,17 +20,18 @@ android {
         }
         admin {
             dimension 'role'
-            applicationId 'com.wallah.adminapp'
+            applicationId 'com.wallah.management'
             resValue 'string', 'app_name', 'ولعه - الإدارة'
             buildConfigField 'String', 'HOME_URL', '"https://wellah-production.up.railway.app/admin"'
         }
         driver {
             dimension 'role'
-            applicationId 'com.wallah.driverapp'
+            applicationId 'com.wallah.courier'
             resValue 'string', 'app_name', 'ولعه - الطيار'
             buildConfigField 'String', 'HOME_URL', '"https://wellah-production.up.railway.app/driver"'
         }
     }
+    buildTypes { debug { applicationIdSuffix '.debug' } }
     buildFeatures { buildConfig true }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
