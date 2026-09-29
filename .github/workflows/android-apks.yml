@@ -37,7 +37,7 @@ jobs:
             adb install android-app/app/build/outputs/apk/customer/debug/app-customer-debug.apk
             adb install android-app/app/build/outputs/apk/admin/debug/app-admin-debug.apk
             adb install android-app/app/build/outputs/apk/driver/debug/app-driver-debug.apk
-            adb shell pm list packages | grep -E 'com.wallah.(customer|admin|driver)'
+            adb shell pm list packages | grep -E 'com.wallah.(customer|adminapp|driverapp)'
       - uses: actions/upload-artifact@v4
         with:
           name: wallah-android-apps
