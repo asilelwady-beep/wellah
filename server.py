@@ -10,7 +10,7 @@ import secrets
 import sqlite3
 import time
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).parent
 DB = Path(os.environ.get('WALLAHA_DB_PATH', str(ROOT / 'wallaha.sqlite3')))
 AREAS = ["أبو رجوان البحري", "أبو رجوان القبلي", "أبو صير", "ميت رهينة", "سقارة", "دهشور", "زاوية دهشور", "الشوبك الغربي", "الطرفاية", "المرازيق", "الشنباب", "العزيزية"]
+CAIRO = timezone(timedelta(hours=3))
 
 
 def connect():
@@ -44,11 +45,15 @@ def init():
         CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), client_request_id TEXT, kind TEXT NOT NULL, customer TEXT NOT NULL, phone TEXT NOT NULL, area TEXT NOT NULL, address TEXT NOT NULL, details TEXT DEFAULT '', vehicle TEXT DEFAULT '', pickup TEXT DEFAULT '', destination TEXT DEFAULT '', payment TEXT NOT NULL, proof TEXT DEFAULT '', reference TEXT DEFAULT '', prescription TEXT DEFAULT '', medicine_review INTEGER DEFAULT 0, cash_collected INTEGER DEFAULT 0, cash_settled INTEGER DEFAULT 0, payment_status TEXT NOT NULL, status TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, delivery_fee REAL NOT NULL DEFAULT 0, quote_accepted INTEGER DEFAULT 0, driver_id INTEGER REFERENCES drivers(id), created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS order_items (order_id INTEGER REFERENCES orders(id), product_id INTEGER REFERENCES products(id), name TEXT NOT NULL, quantity INTEGER NOT NULL, unit_price REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, order_id INTEGER REFERENCES orders(id), action TEXT NOT NULL, at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS driver_trip_points (driver_id INTEGER NOT NULL, order_id INTEGER NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, at TEXT NOT NULL, PRIMARY KEY(driver_id,order_id));
+        CREATE TABLE IF NOT EXISTS driver_distance_daily (driver_id INTEGER NOT NULL, day TEXT NOT NULL, meters REAL NOT NULL DEFAULT 0, PRIMARY KEY(driver_id,day));
         """)
         if not db.execute("SELECT 1 FROM settings WHERE key='wallet'").fetchone():
-            db.executemany("INSERT INTO settings VALUES (?,?)", [("wallet", "01113887292"), ("whatsapp", "01113887292"), ("delivery_fee", "20")])
+            db.executemany("INSERT INTO settings VALUES (?,?)", [("wallet", os.environ.get('WALLAHA_WALLET','')), ("whatsapp", os.environ.get('WALLAHA_WHATSAPP','')), ("delivery_fee", "20")])
         if 'username' not in {x['name'] for x in db.execute('PRAGMA table_info(users)')}:
             db.execute('ALTER TABLE users ADD COLUMN username TEXT')
+        if 'vehicle_type' not in {x['name'] for x in db.execute('PRAGMA table_info(drivers)')}:
+            db.execute("ALTER TABLE drivers ADD COLUMN vehicle_type TEXT NOT NULL DEFAULT 'موتوسيكل'")
         db.execute('CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users(username) WHERE username IS NOT NULL')
         if not db.execute("SELECT 1 FROM users WHERE username='owner'").fetchone():
             db.execute("UPDATE users SET username='owner' WHERE role='admin' AND username IS NULL")
@@ -79,7 +84,7 @@ def init():
             password = os.environ.get('WALLAHA_ADMIN_PASSWORD', '')
             if not password or len(password) < 10:
                 raise RuntimeError('Set WALLAHA_ADMIN_PASSWORD to at least 10 characters before first run')
-            create_user(db, 'المسؤول', os.environ.get('WALLAHA_ADMIN_PHONE', '01113887292'), 'admin', password, os.environ.get('WALLAHA_ADMIN_USERNAME','owner'))
+            create_user(db, 'المسؤول', os.environ.get('WALLAHA_ADMIN_PHONE', 'admin-account'), 'admin', password, os.environ.get('WALLAHA_ADMIN_USERNAME','owner'))
 
 
 def create_user(db, name, phone, role, password, username=None):
@@ -124,6 +129,42 @@ def valid_image(value, max_chars):
 
 def now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def admin_daily_stats(db):
+    today = datetime.now(CAIRO).date()
+    start = datetime.combine(today, datetime.min.time(), CAIRO).astimezone(timezone.utc).isoformat(timespec='seconds')
+    end = datetime.combine(today + timedelta(days=1), datetime.min.time(), CAIRO).astimezone(timezone.utc).isoformat(timespec='seconds')
+    customers = rows(db, """SELECT u.id,u.name,u.phone,COUNT(o.id) AS orders_today,
+        COALESCE(SUM(o.total),0) AS amount_today
+        FROM users u LEFT JOIN orders o ON o.user_id=u.id AND o.created_at>=? AND o.created_at<?
+        WHERE u.role='customer' GROUP BY u.id ORDER BY orders_today DESC,u.id""", (start,end))
+    drivers = rows(db, """SELECT d.id,d.name,d.area,d.vehicle_type,
+        COUNT(DISTINCT CASE WHEN e.id IS NOT NULL THEN o.id END) AS delivered_today,
+        COALESCE(SUM(CASE WHEN e.id IS NOT NULL THEN o.total ELSE 0 END),0) AS amount_today,
+        COALESCE(k.meters,0) AS meters_today
+        FROM drivers d LEFT JOIN orders o ON o.driver_id=d.id
+        LEFT JOIN events e ON e.order_id=o.id AND e.action='تم التسليم' AND e.at>=? AND e.at<?
+        LEFT JOIN driver_distance_daily k ON k.driver_id=d.id AND k.day=?
+        GROUP BY d.id ORDER BY delivered_today DESC,d.id""", (start,end,str(today)))
+    return {'day':str(today),'customers':customers,'drivers':drivers}
+
+
+def record_driver_distance(db, driver_id, lat, lon):
+    active = db.execute("""SELECT id FROM orders WHERE driver_id=? AND status IN ('assigned','ready','picked_up','on_way') ORDER BY id DESC LIMIT 1""",(driver_id,)).fetchone()
+    if not active: return
+    oid = active['id']
+    stamp = datetime.now(timezone.utc)
+    previous = db.execute('SELECT lat,lon,at FROM driver_trip_points WHERE driver_id=? AND order_id=?',(driver_id,oid)).fetchone()
+    db.execute('INSERT OR REPLACE INTO driver_trip_points VALUES (?,?,?,?,?)',(driver_id,oid,lat,lon,stamp.isoformat(timespec='seconds')))
+    if not previous: return
+    elapsed = (stamp-datetime.fromisoformat(previous['at'])).total_seconds()
+    a,b = math.radians(previous['lat']),math.radians(lat)
+    da,dl=math.radians(lat-previous['lat']),math.radians(lon-previous['lon'])
+    meters = 12742000*math.asin(min(1,math.sqrt(math.sin(da/2)**2+math.cos(a)*math.cos(b)*math.sin(dl/2)**2)))
+    if 5 <= elapsed <= 300 and 20 <= meters <= 5000 and meters/elapsed <= 40:
+        day=stamp.astimezone(CAIRO).date().isoformat()
+        db.execute('INSERT INTO driver_distance_daily(driver_id,day,meters) VALUES (?,?,?) ON CONFLICT(driver_id,day) DO UPDATE SET meters=meters+excluded.meters',(driver_id,day,meters))
 
 
 def log(db, oid, action):
@@ -252,7 +293,7 @@ class Handler(BaseHTTPRequestHandler):
                     o.pop('proof', None)
                     o.pop('reference', None)
                     o.pop('prescription', None)
-            self.respond({"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings")} if user['role']!='driver' else {}})
+            self.respond({"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings")} if user['role']!='driver' else {}})
 
     def do_POST(self):
         try:
@@ -382,8 +423,10 @@ class Handler(BaseHTTPRequestHandler):
                 elif path == "/api/driver":
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     if data["area"] not in AREAS: raise ValueError("منطقة غير معروفة")
+                    vehicle=str(data.get('vehicle_type','موتوسيكل'))
+                    if vehicle not in ('موتوسيكل','عجلة','توك توك','سيارة'): raise ValueError('نوع المركبة غير معروف')
                     uid=create_user(db,str(data['name']),str(data['phone']),'driver',str(data['password']),data.get('username'))
-                    db.execute("INSERT INTO drivers(user_id,name,phone,area) VALUES (?,?,?,?)", (uid,str(data["name"]).strip(), str(data["phone"]).strip(), data["area"]))
+                    db.execute("INSERT INTO drivers(user_id,name,phone,area,vehicle_type) VALUES (?,?,?,?,?)", (uid,str(data["name"]).strip(), str(data["phone"]).strip(), data["area"],vehicle))
                 elif path == "/api/order":
                     if user['role']!='customer': return self.respond({'error':'غير مصرح'},403)
                     request_id=str(data.get('client_request_id','')).strip()
@@ -526,6 +569,7 @@ class Handler(BaseHTTPRequestHandler):
                     d=db.execute('SELECT id FROM drivers WHERE user_id=?',(user['id'],)).fetchone()
                     available=db.execute('SELECT available FROM drivers WHERE id=?',(d['id'],)).fetchone() if d else None
                     if not available or not available['available']: return self.respond({'error':'المندوب غير متاح'},403)
+                    record_driver_distance(db,d['id'],lat,lon)
                     db.execute('UPDATE drivers SET lat=?,lon=?,location_at=? WHERE id=?',(lat,lon,now(),d['id']))
                     refresh_offers(db)
                 else: return self.respond({"error": "غير موجود"}, 404)
