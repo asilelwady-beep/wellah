@@ -1,9 +1,13 @@
 /* Map UI for the three signed-in roles. Coordinates are stored only with orders. */
 let mapViews=[];
 let chosenPoint=null;
+let chosenPickup=null;
+let mapPinMode='destination';
+let merchantPoint=null;
 let trackingOrderId=null;
 const mapCenter=[29.8513,31.2744];
 window.pickCurrentLocation=()=>alert('الخريطة لم تُحمّل بعد. تحقق من الاتصال ثم حدّث الصفحة.');
+window.selectMapPinMode=()=>alert('الخريطة لم تُحمّل بعد. تحقق من الاتصال ثم حدّث الصفحة.');
 
 function clearMaps(){for(const map of mapViews)map.remove();mapViews=[]}
 function baseMap(id,zoom=13){
@@ -34,15 +38,26 @@ function initMaps(){
     const map=baseMap('customer-map');
     if(map){
       let marker=null;
+      let pickupMarker=null;
       const choose=latlng=>{
-        chosenPoint={latitude:latlng.lat,longitude:latlng.lng};
-        if(marker)marker.setLatLng(latlng);
-        else marker=point(map,latlng.lat,latlng.lng,'عنوان الاستلام/الوصول','#e58029');
-        const label=document.getElementById('selected-point');
-        if(label)label.textContent=`تم تحديد موقع العنوان (${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)})`;
+        if(mapPinMode==='pickup'&&kind!=='products'){
+          chosenPickup={lat:latlng.lat,lon:latlng.lng};
+          if(pickupMarker)pickupMarker.setLatLng(latlng);
+          else pickupMarker=point(map,latlng.lat,latlng.lng,'مكان الاستلام','#2864c5');
+          const label=document.getElementById('selected-pickup');
+          if(label)label.textContent='تم تحديد مكان الاستلام على الخريطة';
+        }else{
+          chosenPoint={latitude:latlng.lat,longitude:latlng.lng};
+          if(marker)marker.setLatLng(latlng);
+          else marker=point(map,latlng.lat,latlng.lng,'عنوان العميل','#e58029');
+          const label=document.getElementById('selected-point');
+          if(label)label.textContent=`تم تحديد موقع العنوان (${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)})`;
+        }
       };
+      window.selectMapPinMode=mode=>{mapPinMode=mode;alert(mode==='pickup'?'المس الخريطة عند مكان الاستلام':'المس الخريطة عند عنوان العميل')};
       map.on('click',e=>choose(e.latlng));
-      if(chosenPoint)choose({lat:chosenPoint.latitude,lng:chosenPoint.longitude});
+      if(chosenPoint){let mode=mapPinMode;mapPinMode='destination';choose({lat:chosenPoint.latitude,lng:chosenPoint.longitude});mapPinMode=mode}
+      if(chosenPickup){let mode=mapPinMode;mapPinMode='pickup';choose({lat:chosenPickup.lat,lng:chosenPickup.lon});mapPinMode=mode}
       window.pickCurrentLocation=()=>{
         if(!navigator.geolocation)return alert('تحديد الموقع غير مدعوم');
         navigator.geolocation.getCurrentPosition(p=>{
@@ -54,6 +69,7 @@ function initMaps(){
     const track=baseMap('tracking-map');
     if(track&&o){
       const positions=[];
+      if(o.pickup_lat!=null){point(track,o.pickup_lat,o.pickup_lon,'المحل: '+esc(o.merchant_name||o.pickup),'#2864c5');positions.push([o.pickup_lat,o.pickup_lon])}
       if(o.latitude!=null){point(track,o.latitude,o.longitude,'عنوان الطلب: '+esc(o.address),'#e58029');positions.push([o.latitude,o.longitude])}
       if(o.driver_lat!=null){point(track,o.driver_lat,o.driver_lon,'آخر موقع للمندوب · '+esc(o.driver_location_at||''));positions.push([o.driver_lat,o.driver_lon])}
       showMapPoints(track,positions);
@@ -61,6 +77,10 @@ function initMaps(){
   }else if(tab==='admin'){
     const map=baseMap('admin-map');if(!map)return;
     const positions=[];
+    for(const m of state.merchants.filter(x=>x.active)){
+      point(map,m.lat,m.lon,'المحل '+esc(m.name)+' · '+esc(m.address),'#2864c5');
+      positions.push([m.lat,m.lon]);
+    }
     for(const o of state.orders.filter(x=>!['cancelled','delivered'].includes(x.status)&&x.latitude!=null)){
       point(map,o.latitude,o.longitude,'طلب #'+o.id+' · '+esc(o.area)+' · '+esc(o.address),'#e58029');
       positions.push([o.latitude,o.longitude]);
@@ -70,10 +90,24 @@ function initMaps(){
       positions.push([d.lat,d.lon]);
     }
     showMapPoints(map,positions);
+    const merchantMap=baseMap('merchant-map');
+    if(merchantMap){
+      let marker=null;
+      const choose=latlng=>{
+        merchantPoint={lat:latlng.lat,lon:latlng.lng};
+        if(marker)marker.setLatLng(latlng);
+        else marker=point(merchantMap,latlng.lat,latlng.lng,'مكان المحل','#2864c5');
+        const label=document.getElementById('merchant-point');
+        if(label)label.textContent='تم تحديد موقع المحل على الخريطة';
+      };
+      merchantMap.on('click',e=>choose(e.latlng));
+      if(merchantPoint)choose({lat:merchantPoint.lat,lng:merchantPoint.lon});
+    }
   }else if(tab==='driver'){
     const map=baseMap('driver-map');if(!map)return;
     const positions=[];
     for(const o of state.orders.filter(x=>!['cancelled','delivered'].includes(x.status)&&x.latitude!=null)){
+      if(o.pickup_lat!=null){point(map,o.pickup_lat,o.pickup_lon,'استلام من '+esc(o.merchant_name||o.pickup),'#2864c5');positions.push([o.pickup_lat,o.pickup_lon])}
       point(map,o.latitude,o.longitude,'طلب #'+o.id+' · '+esc(o.address),'#e58029');
       positions.push([o.latitude,o.longitude]);
     }
