@@ -1,0 +1,39 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.wallah.app'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'com.wallah.app'
+        minSdk 24
+        targetSdk 32
+        versionCode 1
+        versionName '1.0.0'
+    }
+    flavorDimensions 'role'
+    productFlavors {
+        customer {
+            dimension 'role'
+            applicationId 'com.wallah.customer'
+            resValue 'string', 'app_name', 'ولعه - العميل'
+            buildConfigField 'String', 'HOME_URL', '"https://wellah-production.up.railway.app/customer"'
+        }
+        admin {
+            dimension 'role'
+            applicationId 'com.wallah.admin'
+            resValue 'string', 'app_name', 'ولعه - الإدارة'
+            buildConfigField 'String', 'HOME_URL', '"https://wellah-production.up.railway.app/admin"'
+        }
+        driver {
+            dimension 'role'
+            applicationId 'com.wallah.driver'
+            resValue 'string', 'app_name', 'ولعه - الطيار'
+            buildConfigField 'String', 'HOME_URL', '"https://wellah-production.up.railway.app/driver"'
+        }
+    }
+    buildFeatures { buildConfig true }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
