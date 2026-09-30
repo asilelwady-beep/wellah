@@ -90,6 +90,23 @@ def init():
                 raise RuntimeError('Set WALLAHA_ADMIN_PASSWORD to at least 10 characters before first run')
             create_user(db, 'المسؤول', os.environ.get('WALLAHA_ADMIN_PHONE', 'admin-account'), 'admin', password, os.environ.get('WALLAHA_ADMIN_USERNAME','owner'))
 
+        # A deliberate change to the deployment's admin secret recovers the owner account.
+        # Store the baseline privately; ordinary restarts never overwrite an in-app password change.
+        db.execute('CREATE TABLE IF NOT EXISTS admin_recovery (id INTEGER PRIMARY KEY CHECK(id=1), config_hash TEXT NOT NULL)')
+        configured=os.environ.get('WALLAHA_ADMIN_PASSWORD','')
+        if len(configured)>=10:
+            fingerprint=hashlib.sha256(configured.encode()).hexdigest()
+            previous=db.execute('SELECT config_hash FROM admin_recovery WHERE id=1').fetchone()
+            if previous and not hmac.compare_digest(previous['config_hash'],fingerprint):
+                owner=db.execute("SELECT id,phone,username FROM users WHERE role='admin' AND username=?",(os.environ.get('WALLAHA_ADMIN_USERNAME','owner'),)).fetchone()
+                if owner:
+                    salt=secrets.token_hex(16)
+                    digest=hashlib.scrypt(configured.encode(),salt=bytes.fromhex(salt),n=2**14,r=8,p=1).hex()
+                    db.execute('UPDATE users SET salt=?,password_hash=? WHERE id=?',(salt,digest,owner['id']))
+                    db.execute('DELETE FROM sessions WHERE user_id=?',(owner['id'],))
+                    db.execute('DELETE FROM login_attempts WHERE phone IN (?,?)',(owner['phone'],owner['username']))
+            db.execute('INSERT INTO admin_recovery VALUES (1,?) ON CONFLICT(id) DO UPDATE SET config_hash=excluded.config_hash',(fingerprint,))
+
 
 def create_user(db, name, phone, role, password, username=None):
     if not name.strip() or not phone.strip() or len(password) < 10:
