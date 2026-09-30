@@ -57,7 +57,7 @@ def init():
         db.execute('CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users(username) WHERE username IS NOT NULL')
         if not db.execute("SELECT 1 FROM users WHERE username='owner'").fetchone():
             db.execute("UPDATE users SET username='owner' WHERE role='admin' AND username IS NULL")
-        db.execute("INSERT OR IGNORE INTO services(key,name) VALUES ('products','المنتجات'),('delivery','توصيل أوردر'),('ride_tuktuk','مشوار توك توك'),('ride_motorbike','مشوار موتوسيكل'),('ride_car','مشوار سيارة')")
+        db.execute("INSERT OR IGNORE INTO services(key,name) VALUES ('products','المنتجات'),('delivery','توصيل أوردر'),('ride_tuktuk','مشوار توك توك'),('ride_motorbike','مشوار موتوسيكل'),('ride_car','مشوار سيارة'),('ride_microbus','مشوار ميكروباص')")
         db.executemany('INSERT OR IGNORE INTO categories(name,sort_order) VALUES (?,?)', [(name,i) for i,name in enumerate(('سوبر ماركت','مطاعم','خضار','أدوية','مخبوزات وعيش','أخرى'))])
         db.execute('INSERT OR IGNORE INTO categories(name,sort_order) SELECT DISTINCT category,100 FROM products')
         if 'quote_accepted' not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
@@ -424,7 +424,7 @@ class Handler(BaseHTTPRequestHandler):
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     if data["area"] not in AREAS: raise ValueError("منطقة غير معروفة")
                     vehicle=str(data.get('vehicle_type','موتوسيكل'))
-                    if vehicle not in ('موتوسيكل','عجلة','توك توك','سيارة'): raise ValueError('نوع المركبة غير معروف')
+                    if vehicle not in ('موتوسيكل','عجلة','توك توك','سيارة','ميكروباص'): raise ValueError('نوع المركبة غير معروف')
                     uid=create_user(db,str(data['name']),str(data['phone']),'driver',str(data['password']),data.get('username'))
                     db.execute("INSERT INTO drivers(user_id,name,phone,area,vehicle_type) VALUES (?,?,?,?,?)", (uid,str(data["name"]).strip(), str(data["phone"]).strip(), data["area"],vehicle))
                 elif path == "/api/order":
@@ -435,7 +435,7 @@ class Handler(BaseHTTPRequestHandler):
                     if previous: return self.respond({'ok':True,'id':previous['id'],'duplicate':True})
                     kind = data["kind"]
                     if kind not in ("products", "delivery", "ride", "custom"): raise ValueError("نوع خدمة غير معروف")
-                    service_key='products' if kind=='products' else 'delivery' if kind=='delivery' else {'توك توك':'ride_tuktuk','موتوسيكل':'ride_motorbike','سيارة':'ride_car'}.get(data.get('vehicle'),'') if kind=='ride' else str(data.get('service_key',''))
+                    service_key='products' if kind=='products' else 'delivery' if kind=='delivery' else {'توك توك':'ride_tuktuk','موتوسيكل':'ride_motorbike','سيارة':'ride_car','ميكروباص':'ride_microbus'}.get(data.get('vehicle'),'') if kind=='ride' else str(data.get('service_key',''))
                     if kind=='custom' and not service_key.startswith('custom_'): raise ValueError('الخدمة غير معروفة')
                     if not db.execute('SELECT 1 FROM services WHERE key=? AND active=1',(service_key,)).fetchone(): raise ValueError('الخدمة غير متاحة حاليًا')
                     if data["area"] not in AREAS: raise ValueError("اختر منطقة الخدمة")
@@ -476,7 +476,7 @@ class Handler(BaseHTTPRequestHandler):
                     if prescription and not valid_image(prescription,2_500_000): raise ValueError('صورة الوصفة غير صالحة')
                     if payment=='wallet' and kind=='products' and not medicine_review and not valid_image(proof,2_500_000): raise ValueError('صورة إثبات التحويل مطلوبة')
                     if medicine_review and proof: raise ValueError('انتظر مراجعة طلب الأدوية قبل التحويل')
-                    if kind == "ride" and data.get("vehicle") not in ("توك توك", "موتوسيكل", "سيارة"): raise ValueError("اختر نوع المركبة")
+                    if kind == "ride" and data.get("vehicle") not in ("توك توك", "موتوسيكل", "سيارة", "ميكروباص"): raise ValueError("اختر نوع المركبة")
                     if kind in ("ride", "delivery") and not data.get("pickup"): raise ValueError("اكتب مكان الاستلام")
                     if kind in ("ride", "delivery") and not data.get("destination"): raise ValueError("اكتب الوجهة")
                     pickup_lat,pickup_lon=None,None
