@@ -68,6 +68,9 @@ def init():
                 db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
         if 'service_key' not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
             db.execute("ALTER TABLE orders ADD COLUMN service_key TEXT DEFAULT ''")
+        for column in ('shipment_type','shipment_other','sender_name','sender_phone','recipient_name','recipient_phone'):
+            if column not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
+                db.execute(f"ALTER TABLE orders ADD COLUMN {column} TEXT DEFAULT ''")
         for column in ('latitude','longitude'):
             if column not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
                 db.execute(f'ALTER TABLE orders ADD COLUMN {column} REAL')
@@ -435,6 +438,13 @@ class Handler(BaseHTTPRequestHandler):
                     if previous: return self.respond({'ok':True,'id':previous['id'],'duplicate':True})
                     kind = data["kind"]
                     if kind not in ("products", "delivery", "ride", "custom"): raise ValueError("نوع خدمة غير معروف")
+                    parcel={}
+                    if kind=='delivery':
+                        parcel={key:str(data.get(key,'')).strip() for key in ('shipment_type','shipment_other','sender_name','sender_phone','recipient_name','recipient_phone')}
+                        if parcel['shipment_type'] not in ('ملابس','كوزماتيكس','بيرفيوم','مواد غذائية وأطعمة','أخرى'): raise ValueError('اختر نوع الشحنة أولًا')
+                        if parcel['shipment_type']=='أخرى' and not parcel['shipment_other']: raise ValueError('اكتب وصف نوع الشحنة')
+                        if any(not parcel[key] or len(parcel[key])>120 for key in ('sender_name','recipient_name')): raise ValueError('اكتب اسم المرسل والمستلم')
+                        if any(not re.fullmatch(r'[+0-9٠-٩ ()-]{7,25}',parcel[key]) for key in ('sender_phone','recipient_phone')): raise ValueError('اكتب رقم تليفون صحيح للمرسل والمستلم')
                     service_key='products' if kind=='products' else 'delivery' if kind=='delivery' else {'توك توك':'ride_tuktuk','موتوسيكل':'ride_motorbike','سيارة':'ride_car','ميكروباص':'ride_microbus'}.get(data.get('vehicle'),'') if kind=='ride' else str(data.get('service_key',''))
                     if kind=='custom' and not service_key.startswith('custom_'): raise ValueError('الخدمة غير معروفة')
                     if not db.execute('SELECT 1 FROM services WHERE key=? AND active=1',(service_key,)).fetchone(): raise ValueError('الخدمة غير متاحة حاليًا')
@@ -490,6 +500,8 @@ class Handler(BaseHTTPRequestHandler):
                     status = "awaiting_quote" if kind != "products" else ("medicine_review" if medicine_review else ("new" if payment == "cash" else "payment_review"))
                     cur = db.execute("INSERT INTO orders(user_id,client_request_id,kind,customer,phone,area,address,details,vehicle,pickup,destination,payment,proof,reference,prescription,medicine_review,payment_status,status,total,delivery_fee,quote_accepted,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (user['id'],request_id,kind, customer, phone, data["area"], address, str(data.get("details", "")), str(data.get("vehicle", "")), str(data.get("pickup", "")), str(data.get("destination", "")), payment, proof, str(data.get("reference", "")), prescription,1 if medicine_review else 0, ps, status, subtotal+fee, fee,1 if kind=='products' else 0, now()))
                     oid = cur.lastrowid
+                    if parcel:
+                        db.execute('UPDATE orders SET shipment_type=?,shipment_other=?,sender_name=?,sender_phone=?,recipient_name=?,recipient_phone=? WHERE id=?',tuple(parcel[key] for key in ('shipment_type','shipment_other','sender_name','sender_phone','recipient_name','recipient_phone'))+(oid,))
                     db.execute('UPDATE orders SET service_key=?,latitude=?,longitude=?,merchant_id=?,pickup_lat=?,pickup_lon=? WHERE id=?',(service_key,lat,lon,merchant['id'] if merchant else None,merchant['lat'] if merchant else pickup_lat,merchant['lon'] if merchant else pickup_lon,oid))
                     for p, qty in items:
                         db.execute("UPDATE products SET stock=stock-? WHERE id=?", (qty, p["id"]))
