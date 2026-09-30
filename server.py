@@ -11,6 +11,7 @@ import sqlite3
 import time
 import math
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -18,7 +19,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).parent
 DB = Path(os.environ.get('WALLAHA_DB_PATH', str(ROOT / 'wallaha.sqlite3')))
 AREAS = ["أبو رجوان البحري", "أبو رجوان القبلي", "أبو صير", "ميت رهينة", "سقارة", "دهشور", "زاوية دهشور", "الشوبك الغربي", "الطرفاية", "المرازيق", "الشنباب", "العزيزية"]
-CAIRO = timezone(timedelta(hours=3))
+CAIRO = ZoneInfo('Africa/Cairo')
 
 
 def connect():
@@ -179,12 +180,14 @@ def assign(db, oid):
     if not o or o["payment_status"] != "confirmed" or (o['kind']!='products' and not o['quote_accepted']) or o['medicine_review']:
         return
     # Last known location must be recent. Busy and declined drivers are excluded.
-    candidates = db.execute("""SELECT d.id,d.lat,d.lon FROM drivers d WHERE d.available=1
+    candidates = db.execute("""SELECT d.id,d.lat,d.lon,d.vehicle_type FROM drivers d WHERE d.available=1
         AND d.lat IS NOT NULL AND d.lon IS NOT NULL AND d.location_at>=?
         AND NOT EXISTS (SELECT 1 FROM orders x WHERE x.driver_id=d.id AND x.id<>?
             AND x.status IN ('offered','assigned','ready','picked_up','on_way'))
         AND NOT EXISTS (SELECT 1 FROM order_declines x WHERE x.order_id=? AND x.driver_id=d.id)""",
         (datetime.fromtimestamp(time.time()-300,timezone.utc).isoformat(timespec='seconds'),oid,oid)).fetchall()
+    if o['kind']=='ride':
+        candidates=[d for d in candidates if d['vehicle_type']==o['vehicle']]
     origin=(o['pickup_lat'],o['pickup_lon']) if o['pickup_lat'] is not None else (o['latitude'],o['longitude'])
     if origin[0] is None or origin[1] is None: return
     def distance(d):
@@ -419,7 +422,7 @@ class Handler(BaseHTTPRequestHandler):
                     oid,did=int(data['id']),int(data['driver_id'])
                     o=db.execute('SELECT * FROM orders WHERE id=?',(oid,)).fetchone()
                     d=db.execute('SELECT * FROM drivers WHERE id=?',(did,)).fetchone()
-                    if not o or not d or o['area']!=d['area'] or not d['available'] or o['payment_status']!='confirmed' or o['status'] not in ('assigned','awaiting_driver','ready') or (o['kind']!='products' and not o['quote_accepted']):
+                    if not o or not d or (o['kind']=='ride' and d['vehicle_type']!=o['vehicle']) or o['area']!=d['area'] or not d['available'] or o['payment_status']!='confirmed' or o['status'] not in ('assigned','awaiting_driver','ready') or (o['kind']!='products' and not o['quote_accepted']):
                         raise ValueError('تعذر إسناد الطلب لهذا المندوب')
                     db.execute('UPDATE orders SET driver_id=?,status=? WHERE id=?',(did,'ready' if o['status']=='ready' else 'assigned',oid))
                     log(db,oid,'أعاد المسؤول إسناد الطلب إلى مندوب آخر')
