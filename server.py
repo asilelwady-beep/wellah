@@ -447,9 +447,12 @@ class Handler(BaseHTTPRequestHandler):
                     address=str(data.get('address','')).strip()
                     if not address: raise ValueError("العنوان مطلوب")
                     lat,lon=data.get('latitude'),data.get('longitude')
-                    if lat is None or lon is None: raise ValueError('حدد موقع العنوان على الخريطة')
-                    lat,lon=float(lat),float(lon)
-                    if not (-90<=lat<=90 and -180<=lon<=180): raise ValueError('إحداثيات العنوان غير صحيحة')
+                    if lat is None and lon is None and data.get('address_mode')=='manual':
+                        lat=lon=None
+                    else:
+                        if lat is None or lon is None: raise ValueError('حدد موقع العنوان على الخريطة')
+                        lat,lon=float(lat),float(lon)
+                        if not (-90<=lat<=90 and -180<=lon<=180): raise ValueError('إحداثيات العنوان غير صحيحة')
                     fee = float(db.execute('SELECT fee FROM area_fees WHERE area=?',(data['area'],)).fetchone()[0])
                     subtotal = 0
                     items = []
