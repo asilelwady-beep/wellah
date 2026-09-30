@@ -51,6 +51,9 @@ def init():
         """)
         if not db.execute("SELECT 1 FROM settings WHERE key='wallet'").fetchone():
             db.executemany("INSERT INTO settings VALUES (?,?)", [("wallet", os.environ.get('WALLAHA_WALLET','')), ("whatsapp", os.environ.get('WALLAHA_WHATSAPP','')), ("delivery_fee", "20")])
+        for column,definition in [('driver_earning_cents','INTEGER NOT NULL DEFAULT 0'),('driver_earning_paid','INTEGER NOT NULL DEFAULT 0')]:
+            if column not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
+                db.execute(f'ALTER TABLE orders ADD COLUMN {column} {definition}')
         if 'username' not in {x['name'] for x in db.execute('PRAGMA table_info(users)')}:
             db.execute('ALTER TABLE users ADD COLUMN username TEXT')
         if 'vehicle_type' not in {x['name'] for x in db.execute('PRAGMA table_info(drivers)')}:
@@ -233,6 +236,15 @@ def rows(db, sql, args=()):
     return [dict(x) for x in db.execute(sql, args)]
 
 
+def driver_wallet(db, driver_id):
+    entries=rows(db,"SELECT id,status,total,payment,cash_collected,cash_settled,driver_earning_cents,driver_earning_paid,created_at FROM orders WHERE driver_id=? AND status='delivered' ORDER BY id DESC",(driver_id,))
+    return {'balance':sum(o['driver_earning_cents'] for o in entries if not o['driver_earning_paid'])/100,
+            'earned':sum(o['driver_earning_cents'] for o in entries)/100,
+            'paid':sum(o['driver_earning_cents'] for o in entries if o['driver_earning_paid'])/100,
+            'cash_due':round(sum(o['total'] for o in entries if o['payment']=='cash' and o['cash_collected'] and not o['cash_settled']),2),
+            'entries':entries}
+
+
 class Handler(BaseHTTPRequestHandler):
     def user(self, db):
         header = self.headers.get('Authorization', '')
@@ -316,7 +328,9 @@ class Handler(BaseHTTPRequestHandler):
                     o.pop('proof', None)
                     o.pop('reference', None)
                     o.pop('prescription', None)
-            self.respond({"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings")} if user['role']!='driver' else {}})
+            profile=db.execute('SELECT id,name,phone,area,vehicle_type,available FROM drivers WHERE user_id=?',(user['id'],)).fetchone() if user['role']=='driver' else None
+            wallets={str(d['id']):driver_wallet(db,d['id']) for d in db.execute('SELECT id FROM drivers')} if user['role']=='admin' else {}
+            self.respond({"driver_profile":dict(profile) if profile else None,"driver_wallet":driver_wallet(db,profile['id']) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings")} if user['role']!='driver' else {}})
 
     def do_POST(self):
         try:
@@ -425,6 +439,22 @@ class Handler(BaseHTTPRequestHandler):
                     area,fee=data['area'],float(data['fee'])
                     if area not in AREAS or fee<0: raise ValueError('المنطقة أو الرسوم غير صحيحة')
                     db.execute('UPDATE area_fees SET fee=? WHERE area=?',(fee,area))
+                elif path == '/api/driver/earning':
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    from decimal import Decimal, InvalidOperation
+                    o=db.execute("SELECT * FROM orders WHERE id=? AND status='delivered' AND driver_id IS NOT NULL",(int(data['id']),)).fetchone()
+                    if not o: raise ValueError('حدد مشوارًا تم تسليمه')
+                    if o['driver_earning_paid']: raise ValueError('تم صرف المستحق بالفعل')
+                    if data.get('paid') is True:
+                        if o['driver_earning_cents']<=0: raise ValueError('حدد أجر المشوار أولًا')
+                        db.execute('UPDATE orders SET driver_earning_paid=1 WHERE id=?',(o['id'],))
+                        log(db,o['id'],'سجل المسؤول صرف مستحق الطيار')
+                    else:
+                        try: amount=Decimal(str(data.get('amount','')))
+                        except InvalidOperation: raise ValueError('أجر غير صالح')
+                        if not amount.is_finite() or amount<0 or amount>100000 or amount!=amount.quantize(Decimal('0.01')): raise ValueError('اكتب مبلغًا صحيحًا بحد أقصى منزلتين عشريتين')
+                        db.execute('UPDATE orders SET driver_earning_cents=? WHERE id=?',(int(amount*100),o['id']))
+                        log(db,o['id'],'حدد المسؤول أجر الطيار: '+str(amount)+' جنيه')
                 elif path == '/api/driver/availability':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     did=int(data['id'])
