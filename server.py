@@ -340,7 +340,7 @@ class Handler(BaseHTTPRequestHandler):
                 if path == '/api/register':
                     uid=create_user(db,str(data['name']),str(data['phone']),'customer',str(data['password']))
                     return self.respond({'ok':True,'id':uid})
-                if path == '/api/login':
+                if path in ('/api/login','/api/admin/login'):
                     phone=str(data.get('phone','')).strip()[:64]
                     remote=self.client_address[0]
                     if not login_allowed(db,phone,remote): return self.respond({'error':'محاولات دخول كثيرة. حاول لاحقًا'},429)
@@ -349,6 +349,8 @@ class Handler(BaseHTTPRequestHandler):
                         record_failed_login(db,phone,remote)
                         db.commit()
                         return self.respond({'error':'بيانات الدخول غير صحيحة'},401)
+                    if path == '/api/admin/login' and u['role'] != 'admin':
+                        return self.respond({'error':'لوحة التحكم خاصة بالمسؤول فقط'},403)
                     db.execute('DELETE FROM login_attempts WHERE phone=? AND remote=?',(phone,remote))
                     token=secrets.token_urlsafe(32)
                     db.execute('INSERT INTO sessions VALUES (?,?,?)',(hashlib.sha256(token.encode()).hexdigest(),u['id'],int(time.time())+86400*7))
