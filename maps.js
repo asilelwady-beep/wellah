@@ -34,6 +34,14 @@ function showMapPoints(map,points){
 }
 function initMaps(){
   if(!state)return;
+  const tripMap=baseMap('trip-map');
+  if(tripMap){
+    const active=state.orders.filter(o=>!['cancelled','delivered'].includes(o.status));
+    const o=state.orders.find(o=>o.id===selectedTripId)||(tab==='driver'?active.find(o=>['assigned','ready','picked_up','on_way'].includes(o.status)):null);
+    const positions=[];
+    if(o){for(const [lat,lon,label,color] of [[o.pickup_lat,o.pickup_lon,'الاستلام: '+esc(o.merchant_address||o.pickup),'#2864c5'],[o.latitude,o.longitude,'التسليم: '+esc(o.address),'#e58029'],[o.driver_lat,o.driver_lon,'آخر موقع للطيار: '+esc(o.driver_location_at||''),'#087b5b']]){if(lat!=null&&lon!=null){point(tripMap,lat,lon,label,color);positions.push([lat,lon])}}}
+    showMapPoints(tripMap,positions);
+  }
   if(tab==='customer'){
     const map=baseMap('customer-map');
     if(map){
@@ -81,7 +89,7 @@ function initMaps(){
       point(map,m.lat,m.lon,'المحل '+esc(m.name)+' · '+esc(m.address),'#2864c5');
       positions.push([m.lat,m.lon]);
     }
-    for(const o of state.orders.filter(x=>!['cancelled','delivered'].includes(x.status)&&x.latitude!=null)){
+    for(const o of state.orders.filter(x=>!['cancelled','delivered'].includes(x.status))){
       point(map,o.latitude,o.longitude,'طلب #'+o.id+' · '+esc(o.area)+' · '+esc(o.address),'#e58029');
       positions.push([o.latitude,o.longitude]);
     }
@@ -106,11 +114,11 @@ function initMaps(){
   }else if(tab==='driver'){
     const map=baseMap('driver-map');if(!map)return;
     const positions=[];
-    for(const o of state.orders.filter(x=>!['cancelled','delivered'].includes(x.status)&&x.latitude!=null)){
+    for(const o of state.orders.filter(x=>!['cancelled','delivered'].includes(x.status))){
       if(o.pickup_lat!=null){point(map,o.pickup_lat,o.pickup_lon,'استلام من '+esc(o.merchant_name||o.pickup),'#2864c5');positions.push([o.pickup_lat,o.pickup_lon])}
-      point(map,o.latitude,o.longitude,'طلب #'+o.id+' · '+esc(o.address),'#e58029');
-      positions.push([o.latitude,o.longitude]);
+      if(o.latitude!=null&&o.longitude!=null){point(map,o.latitude,o.longitude,'طلب #'+o.id+' · '+esc(o.address),'#e58029');positions.push([o.latitude,o.longitude])}
     }
     showMapPoints(map,positions);
   }
 }
+
