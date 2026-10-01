@@ -1,3 +1,20 @@
+const tripRouteCache=new Map();
+function tripRouteTarget(o){return ['assigned','ready'].includes(o.status)?{lat:o.pickup_lat,lon:o.pickup_lon,label:'مكان الاستلام'}:['picked_up','on_way'].includes(o.status)?{lat:o.latitude,lon:o.longitude,label:'عنوان العميل'}:null}
+async function drawTripRoute(map,o){
+ const info=document.getElementById('trip-route-info'),target=tripRouteTarget(o);if(!info||!target)return;
+ const profile=tab==='driver'?state.driver_profile:null,lat=profile?.lat??o.driver_lat,lon=profile?.lon??o.driver_lon,stamp=profile?.location_at??o.driver_location_at;
+ if(target.lat==null||target.lon==null){info.textContent='لا يمكن رسم الطريق: حدد نقطة دقيقة لـ'+target.label+'. استخدم زر الاتجاهات للبحث بالعنوان.';return}
+ if(lat==null||lon==null||!stamp||Date.now()-Date.parse(stamp)>300000){info.textContent='فعّل مشاركة موقع الطيار ليظهر الطريق إلى '+target.label;return}
+ info.textContent='جاري حساب الطريق إلى '+target.label+'…';
+ const key=[lat,lon,target.lat,target.lon].map(x=>Number(x).toFixed(5)).join(','),cached=tripRouteCache.get(key);
+ try{
+  let route=cached&&Date.now()-cached.at<30000?cached.route:null;
+  if(!route){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),12000);try{const response=await fetch('https://router.project-osrm.org/route/v1/driving/'+lon+','+lat+';'+target.lon+','+target.lat+'?overview=full&geometries=geojson',{signal:controller.signal});if(!response.ok)throw Error('route');const result=await response.json();route=result.routes?.[0];if(result.code!=='Ok'||!route?.geometry?.coordinates?.length)throw Error('no route');tripRouteCache.set(key,{at:Date.now(),route});if(tripRouteCache.size>20)tripRouteCache.delete(tripRouteCache.keys().next().value)}finally{clearTimeout(timer)}}
+  if(!mapViews.includes(map))return;
+  const line=L.polyline(route.geometry.coordinates.map(([x,y])=>[y,x]),{color:['assigned','ready'].includes(o.status)?'#2864c5':'#d94d16',weight:6,opacity:.85}).addTo(map);map.fitBounds(line.getBounds(),{padding:[25,25],maxZoom:17});info.textContent='الطريق إلى '+target.label+' · '+(route.distance/1000).toFixed(1)+' كم · وقت قيادة تقديري '+Math.max(1,Math.round(route.duration/60))+' دقيقة. مسار قيادة؛ راجع ملاءمته لمركبتك.';
+ }catch(e){if(mapViews.includes(map))info.textContent='تعذر تحميل طريق الشوارع الآن. استخدم زر الاتجاهات؛ علامات المواقع ما زالت ظاهرة.'}
+}
+
 /* Map UI for the three signed-in roles. Coordinates are stored only with orders. */
 let mapViews=[];
 let chosenPoint=null;
@@ -41,6 +58,7 @@ function initMaps(){
     const positions=[];
     if(o){for(const [lat,lon,label,color] of [[o.pickup_lat,o.pickup_lon,'الاستلام: '+esc(o.merchant_address||o.pickup),'#2864c5'],[o.latitude,o.longitude,'التسليم: '+esc(o.address),'#e58029'],[o.driver_lat,o.driver_lon,'آخر موقع للطيار: '+esc(o.driver_location_at||''),'#087b5b']]){if(lat!=null&&lon!=null){point(tripMap,lat,lon,label,color);positions.push([lat,lon])}}}
     showMapPoints(tripMap,positions);
+    if(o)drawTripRoute(tripMap,o);
   }
   if(tab==='customer'){
     const map=baseMap('customer-map');
