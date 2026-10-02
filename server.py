@@ -196,20 +196,28 @@ def log(db, oid, action):
 
 
 def assign(db, oid):
+    # Serialize selection and reservation so two concurrent orders cannot claim one driver.
+    if not db.in_transaction:
+        db.execute('BEGIN IMMEDIATE')
     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
-    if not o or o["payment_status"] != "confirmed" or (o['kind']!='products' and not o['quote_accepted']) or o['medicine_review']:
+    if not o or o['status'] not in ('new','awaiting_driver','offered') or o["payment_status"] != "confirmed" or (o['kind']!='products' and not o['quote_accepted']) or o['medicine_review']:
         return
+    merchant = db.execute('SELECT area FROM merchants WHERE id=?',(o['merchant_id'],)).fetchone() if o['merchant_id'] else None
+    pickup_area = merchant['area'] if merchant else o['area']
     # Last known location must be recent. Busy and declined drivers are excluded.
-    candidates = db.execute("""SELECT d.id,d.lat,d.lon,d.vehicle_type FROM drivers d WHERE d.available=1
+    candidates = db.execute("""SELECT d.id,d.lat,d.lon,d.vehicle_type FROM drivers d WHERE d.available=1 AND d.area=?
         AND d.lat IS NOT NULL AND d.lon IS NOT NULL AND d.location_at>=?
         AND NOT EXISTS (SELECT 1 FROM orders x WHERE x.driver_id=d.id AND x.id<>?
             AND x.status IN ('offered','assigned','ready','picked_up','on_way'))
         AND NOT EXISTS (SELECT 1 FROM order_declines x WHERE x.order_id=? AND x.driver_id=d.id)""",
-        (datetime.fromtimestamp(time.time()-300,timezone.utc).isoformat(timespec='seconds'),oid,oid)).fetchall()
+        (pickup_area,datetime.fromtimestamp(time.time()-300,timezone.utc).isoformat(timespec='seconds'),oid,oid)).fetchall()
     if o['kind']=='ride':
         candidates=[d for d in candidates if d['vehicle_type']==o['vehicle']]
     origin=(o['pickup_lat'],o['pickup_lon']) if o['pickup_lat'] is not None else (o['latitude'],o['longitude'])
-    if origin[0] is None or origin[1] is None: return
+    if origin[0] is None or origin[1] is None:
+        db.execute("UPDATE orders SET driver_id=NULL,status='awaiting_driver',offer_until=NULL WHERE id=?",(oid,))
+        if o['status']!='awaiting_driver': log(db,oid,'بانتظار تحديد موقع الاستلام لتوزيع الطلب')
+        return
     def distance(d):
         a,b=map(math.radians,(origin[0],d['lat']))
         da=math.radians(d['lat']-origin[0]);dl=math.radians(d['lon']-origin[1])
@@ -217,13 +225,15 @@ def assign(db, oid):
     d=min(candidates,key=lambda x:(distance(x),x['id'])) if candidates else None
     if d:
         db.execute("UPDATE orders SET driver_id=?,status='offered',offer_until=? WHERE id=?", (d['id'],int(time.time())+90,oid))
-        log(db, oid, "عُرض الطلب تلقائيًا على أقرب مندوب للمحل")
+        log(db, oid, "عُرض الطلب تلقائيًا على أقرب مندوب متاح في منطقة الاستلام")
     else:
         db.execute("UPDATE orders SET driver_id=NULL,status='awaiting_driver',offer_until=NULL WHERE id=?", (oid,))
-        if o['status']!='awaiting_driver': log(db, oid, "بانتظار مندوب متاح يشارك موقعًا حديثًا")
+        if o['status']!='awaiting_driver': log(db, oid, "بانتظار مندوب متاح في منطقة الاستلام يشارك موقعًا حديثًا")
 
 
 def refresh_offers(db):
+    if not db.in_transaction:
+        db.execute('BEGIN IMMEDIATE')
     for o in db.execute("SELECT id,driver_id FROM orders WHERE status='offered' AND offer_until<?",(int(time.time()),)).fetchall():
         db.execute('INSERT OR IGNORE INTO order_declines VALUES (?,?)',(o['id'],o['driver_id']))
         log(db,o['id'],'انتهت مهلة قبول المندوب؛ يجري البحث عن التالي')
