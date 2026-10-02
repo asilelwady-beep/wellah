@@ -15,6 +15,8 @@ from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
+from urllib.request import urlopen
+from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 
 ROOT = Path(__file__).parent
 DB = Path(os.environ.get('WALLAHA_DB_PATH', str(ROOT / 'wallaha.sqlite3')))
@@ -51,7 +53,12 @@ def init():
         """)
         if not db.execute("SELECT 1 FROM settings WHERE key='wallet'").fetchone():
             db.executemany("INSERT INTO settings VALUES (?,?)", [("wallet", os.environ.get('WALLAHA_WALLET','')), ("whatsapp", os.environ.get('WALLAHA_WHATSAPP','')), ("delivery_fee", "20")])
-        for column,definition in [('driver_earning_cents','INTEGER NOT NULL DEFAULT 0'),('driver_earning_paid','INTEGER NOT NULL DEFAULT 0')]:
+        db.execute("INSERT OR IGNORE INTO settings VALUES ('per_km_rate','')")
+        db.execute("INSERT OR IGNORE INTO settings VALUES ('quote_secret',?)",(secrets.token_hex(32),))
+        for table,column,definition in [('orders','route_km','REAL'),('orders','km_rate','REAL'),('products','price_pending','INTEGER NOT NULL DEFAULT 0')]:
+            if column not in {x['name'] for x in db.execute(f'PRAGMA table_info({table})')}:
+                db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
+        for column,definition in [('driver_earning_cents' ,'INTEGER NOT NULL DEFAULT 0'),('driver_earning_paid','INTEGER NOT NULL DEFAULT 0')]:
             if column not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
                 db.execute(f'ALTER TABLE orders ADD COLUMN {column} {definition}')
         if 'username' not in {x['name'] for x in db.execute('PRAGMA table_info(users)')}:
@@ -193,6 +200,58 @@ def record_driver_distance(db, driver_id, lat, lon):
 
 def log(db, oid, action):
     db.execute("INSERT INTO events(order_id,action,at) VALUES (?,?,?)", (oid, action, now()))
+
+
+def delivery_points(db,data):
+    kind=data.get('kind')
+    if kind not in ('products','delivery'): raise ValueError('تسعير الكيلومتر متاح للمنتجات وتوصيل الشحنات')
+    if kind=='products':
+        m=db.execute('SELECT lat,lon FROM merchants WHERE id=? AND active=1',(int(data.get('merchant_id') or 0),)).fetchone()
+        if not m: raise ValueError('اختر محلًا متاحًا')
+        origin=[m['lat'],m['lon']]
+    else: origin=[data.get('pickup_lat'),data.get('pickup_lon')]
+    dest=[data.get('latitude'),data.get('longitude')]
+    try: points=[float(x) for x in origin+dest]
+    except (TypeError,ValueError): raise ValueError('حدد نقطتي الاستلام والتسليم على الخريطة لحساب الكيلومترات')
+    if not all(math.isfinite(x) for x in points) or not (-90<=points[0]<=90 and -180<=points[1]<=180 and -90<=points[2]<=90 and -180<=points[3]<=180):
+        raise ValueError('إحداثيات غير صحيحة')
+    return points
+
+
+def road_km(points):
+    lat,lon,dlat,dlon=points
+    url=f'https://router.project-osrm.org/route/v1/driving/{lon},{lat};{dlon},{dlat}?overview=false'
+    try:
+        with urlopen(url,timeout=12) as response: result=json.loads(response.read(1_000_000))
+        meters=float(result['routes'][0]['distance'])
+        if result.get('code')!='Ok' or not math.isfinite(meters) or not 0<=meters<=500_000: raise ValueError()
+        return round(meters/1000,3)
+    except Exception:
+        raise ValueError('تعذر حساب طريق الشوارع. حاول مرة أخرى؛ لم تُحسب رسوم بديلة')
+
+
+def quote_delivery(db,user_id,data):
+    rate=db.execute("SELECT value FROM settings WHERE key='per_km_rate'").fetchone()[0]
+    if not rate: raise ValueError('لم تُفعّل الإدارة تسعير الكيلومتر بعد')
+    points=delivery_points(db,data);km=road_km(points)
+    fee=float((Decimal(str(km))*Decimal(rate)).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP))
+    payload={'user_id':user_id,'kind':data['kind'],'points':points,'km':km,'rate':float(rate),'fee':fee,'expires':int(time.time())+600}
+    body=base64.urlsafe_b64encode(json.dumps(payload,separators=(',',':')).encode()).decode()
+    secret=db.execute("SELECT value FROM settings WHERE key='quote_secret'").fetchone()[0]
+    signature=hmac.new(secret.encode(),body.encode(),hashlib.sha256).hexdigest()
+    return {**payload,'quote_token':body+'.'+signature}
+
+
+def verify_delivery_quote(db,user_id,data):
+    try:
+        body,signature=str(data.get('delivery_quote','')).split('.')
+        secret=db.execute("SELECT value FROM settings WHERE key='quote_secret'").fetchone()[0]
+        if not hmac.compare_digest(signature,hmac.new(secret.encode(),body.encode(),hashlib.sha256).hexdigest()): raise ValueError()
+        q=json.loads(base64.urlsafe_b64decode(body))
+        if q['user_id']!=user_id or q['kind']!=data['kind'] or q['expires']<int(time.time()) or q['points']!=delivery_points(db,data): raise ValueError()
+        return q
+    except (ValueError,KeyError,TypeError):
+        raise ValueError('احسب رسوم التوصيل مجددًا بعد تحديد الموقع؛ عرض السعر غير صالح أو انتهت صلاحيته')
 
 
 def assign(db, oid):
@@ -340,7 +399,7 @@ class Handler(BaseHTTPRequestHandler):
                     o.pop('prescription', None)
             profile=db.execute('SELECT id,name,phone,area,vehicle_type,available FROM drivers WHERE user_id=?',(user['id'],)).fetchone() if user['role']=='driver' else None
             wallets={str(d['id']):driver_wallet(db,d['id']) for d in db.execute('SELECT id FROM drivers')} if user['role']=='admin' else {}
-            self.respond({"driver_profile":dict(profile) if profile else None,"driver_wallet":driver_wallet(db,profile['id']) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings")} if user['role']!='driver' else {}})
+            self.respond({"driver_profile":dict(profile) if profile else None,"driver_wallet":driver_wallet(db,profile['id']) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}})
 
     def do_POST(self):
         try:
@@ -367,6 +426,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond({'token':token,'role':u['role']})
                 user=self.user(db)
                 if not user: return self.respond({'error':'سجل الدخول أولًا'},401)
+                if path == '/api/delivery-quote':
+                    if user['role']!='customer': return self.respond({'error':'غير مصرح'},403)
+                    return self.respond(quote_delivery(db,user['id'],data))
                 if path == '/api/logout':
                     db.execute('DELETE FROM sessions WHERE token_hash=?',(hashlib.sha256(self.headers['Authorization'][7:].encode()).hexdigest(),))
                     return self.respond({'ok':True})
@@ -404,7 +466,7 @@ class Handler(BaseHTTPRequestHandler):
                     merchant_id=int(data.get('merchant_id') or 0)
                     if data.get('active') and not db.execute('SELECT 1 FROM merchants WHERE id=? AND category=? AND active=1',(merchant_id,old['category'])).fetchone(): raise ValueError('حدد محلًا نشطًا من نفس القسم')
                     if data.get('active') and not db.execute('SELECT 1 FROM categories WHERE name=? AND active=1',(old['category'],)).fetchone(): raise ValueError('فعّل القسم أولًا')
-                    cur=db.execute('UPDATE products SET price=?,stock=?,active=?,requires_prescription=?,merchant_id=? WHERE id=?',(price,stock,1 if data.get('active') else 0,1 if data.get('requires_prescription') and old['category']=='أدوية' else 0,merchant_id or None,int(data['id'])))
+                    cur=db.execute('UPDATE products SET price_pending=0,price=?,stock=?,active=?,requires_prescription=?,merchant_id=? WHERE id=?',(price,stock,1 if data.get('active') else 0,1 if data.get('requires_prescription') and old['category']=='أدوية' else 0,merchant_id or None,int(data['id'])))
                     if not cur.rowcount: raise ValueError('المنتج غير موجود')
                 elif path == '/api/service':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
@@ -439,6 +501,28 @@ class Handler(BaseHTTPRequestHandler):
                     name=str(data.get('name','')).strip()
                     if not 3<=len(name)<=60: raise ValueError('اسم الخدمة يجب أن يكون بين 3 و60 حرفًا')
                     db.execute('INSERT INTO services(key,name) VALUES (?,?)',('custom_'+secrets.token_hex(6),name))
+                elif path == '/api/delivery-rate':
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    rate=str(data.get('per_km_rate','')).strip()
+                    if rate:
+                        number=float(rate)
+                        if not math.isfinite(number) or not 0<number<=10000: raise ValueError('سعر الكيلومتر يجب أن يكون أكبر من صفر وحتى 10000 جنيه')
+                        rate=str(Decimal(rate).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP))
+                        if Decimal(rate)<=0: raise ValueError('سعر الكيلومتر صغير جدًا')
+                    db.execute("UPDATE settings SET value=? WHERE key='per_km_rate'",(rate,))
+                elif path == '/api/products/import-names':
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    merchant=db.execute("SELECT id FROM merchants WHERE id=? AND category='سوبر ماركت' AND active=1",(int(data.get('merchant_id') or 0),)).fetchone()
+                    if not merchant: raise ValueError('اختر سوبر ماركت نشطًا')
+                    names=list(dict.fromkeys(str(data.get('names','')).splitlines()))
+                    names=[n.strip() for n in names if n.strip()]
+                    if not names or len(names)>1000 or any(len(n)>160 for n in names): raise ValueError('أدخل حتى 1000 اسم، كل منتج في سطر وبحد أقصى 160 حرفًا')
+                    count=0
+                    for name in names:
+                        if db.execute('SELECT 1 FROM products WHERE merchant_id=? AND name=?',(merchant['id'],name)).fetchone(): continue
+                        db.execute("INSERT INTO products(name,category,price,stock,active,merchant_id,price_pending) VALUES (?,'سوبر ماركت',0,0,0,?,1)",(name,merchant['id']))
+                        count+=1
+                    return self.respond({'ok':True,'imported':count})
                 elif path == '/api/settings':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     fee=float(data['delivery_fee'])
@@ -453,7 +537,6 @@ class Handler(BaseHTTPRequestHandler):
                     db.execute('UPDATE area_fees SET fee=? WHERE area=?',(fee,area))
                 elif path == '/api/driver/earning':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
-                    from decimal import Decimal, InvalidOperation
                     o=db.execute("SELECT * FROM orders WHERE id=? AND status='delivered' AND driver_id IS NOT NULL",(int(data['id']),)).fetchone()
                     if not o: raise ValueError('حدد مشوارًا تم تسليمه')
                     if o['driver_earning_paid']: raise ValueError('تم صرف المستحق بالفعل')
@@ -558,10 +641,19 @@ class Handler(BaseHTTPRequestHandler):
                         if not (-90<=pickup_lat<=90 and -180<=pickup_lon<=180): raise ValueError('موقع الاستلام غير صحيح')
                     # Service prices require admin review; fee is shown only for catalog orders.
                     if kind != "products": fee = 0
+                    km_quote=None
+                    rate=db.execute("SELECT value FROM settings WHERE key='per_km_rate'").fetchone()[0]
+                    if rate and kind in ('products','delivery'):
+                        km_quote=verify_delivery_quote(db,user['id'],data)
+                        fee=km_quote['fee']
                     ps = "confirmed" if payment == "cash" else "pending"
                     status = "awaiting_quote" if kind != "products" else ("medicine_review" if medicine_review else ("new" if payment == "cash" else "payment_review"))
                     cur = db.execute("INSERT INTO orders(user_id,client_request_id,kind,customer,phone,area,address,details,vehicle,pickup,destination,payment,proof,reference,prescription,medicine_review,payment_status,status,total,delivery_fee,quote_accepted,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (user['id'],request_id,kind, customer, phone, data["area"], address, str(data.get("details", "")), str(data.get("vehicle", "")), str(data.get("pickup", "")), str(data.get("destination", "")), payment, proof, str(data.get("reference", "")), prescription,1 if medicine_review else 0, ps, status, subtotal+fee, fee,1 if kind=='products' else 0, now()))
                     oid = cur.lastrowid
+                    if km_quote:
+                        db.execute('UPDATE orders SET route_km=?,km_rate=? WHERE id=?',(km_quote['km'],km_quote['rate'],oid))
+                        if kind=='delivery': db.execute("UPDATE orders SET status=?,quote_accepted=1 WHERE id=?",('new' if payment=='cash' else 'payment_review',oid))
+                        log(db,oid,f"رسوم الطريق: {km_quote['km']} كم × {km_quote['rate']} ج = {fee} ج")
                     if parcel:
                         db.execute('UPDATE orders SET shipment_type=?,shipment_other=?,sender_name=?,sender_phone=?,recipient_name=?,recipient_phone=? WHERE id=?',tuple(parcel[key] for key in ('shipment_type','shipment_other','sender_name','sender_phone','recipient_name','recipient_phone'))+(oid,))
                     db.execute('UPDATE orders SET service_key=?,latitude=?,longitude=?,merchant_id=?,pickup_lat=?,pickup_lon=? WHERE id=?',(service_key,lat,lon,merchant['id'] if merchant else None,merchant['lat'] if merchant else pickup_lat,merchant['lon'] if merchant else pickup_lon,oid))
@@ -569,7 +661,7 @@ class Handler(BaseHTTPRequestHandler):
                         db.execute("UPDATE products SET stock=stock-? WHERE id=?", (qty, p["id"]))
                         db.execute("INSERT INTO order_items VALUES (?,?,?,?,?)", (oid, p["id"], p["name"], qty, p["price"]))
                     log(db, oid, "أنشأ العميل الطلب")
-                    if status=='new': assign(db,oid)
+                    if status=='new' or (km_quote and kind=='delivery' and payment=='cash'): assign(db,oid)
                     return self.respond({"ok": True, "id": oid})
                 elif path == "/api/order/action":
                     oid, action = int(data["id"]), data["action"]
