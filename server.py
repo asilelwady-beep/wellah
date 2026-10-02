@@ -47,6 +47,8 @@ def init():
         CREATE TABLE IF NOT EXISTS drivers (id INTEGER PRIMARY KEY, user_id INTEGER UNIQUE REFERENCES users(id), name TEXT NOT NULL, phone TEXT DEFAULT '', area TEXT NOT NULL, available INTEGER DEFAULT 1, lat REAL, lon REAL, location_at TEXT);
         CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), client_request_id TEXT, kind TEXT NOT NULL, customer TEXT NOT NULL, phone TEXT NOT NULL, area TEXT NOT NULL, address TEXT NOT NULL, details TEXT DEFAULT '', vehicle TEXT DEFAULT '', pickup TEXT DEFAULT '', destination TEXT DEFAULT '', payment TEXT NOT NULL, proof TEXT DEFAULT '', reference TEXT DEFAULT '', prescription TEXT DEFAULT '', medicine_review INTEGER DEFAULT 0, cash_collected INTEGER DEFAULT 0, cash_settled INTEGER DEFAULT 0, payment_status TEXT NOT NULL, status TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, delivery_fee REAL NOT NULL DEFAULT 0, quote_accepted INTEGER DEFAULT 0, driver_id INTEGER REFERENCES drivers(id), created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS order_items (order_id INTEGER REFERENCES orders(id), product_id INTEGER REFERENCES products(id), name TEXT NOT NULL, quantity INTEGER NOT NULL, unit_price REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS order_messages (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders(id), driver_id INTEGER NOT NULL REFERENCES drivers(id), sender_id INTEGER NOT NULL REFERENCES users(id), request_id TEXT NOT NULL, body TEXT NOT NULL, at TEXT NOT NULL, UNIQUE(sender_id,request_id));
+        CREATE INDEX IF NOT EXISTS order_messages_thread ON order_messages(order_id,driver_id,id);
         CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, order_id INTEGER REFERENCES orders(id), action TEXT NOT NULL, at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS driver_trip_points (driver_id INTEGER NOT NULL, order_id INTEGER NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, at TEXT NOT NULL, PRIMARY KEY(driver_id,order_id));
         CREATE TABLE IF NOT EXISTS driver_distance_daily (driver_id INTEGER NOT NULL, day TEXT NOT NULL, meters REAL NOT NULL DEFAULT 0, PRIMARY KEY(driver_id,day));
@@ -426,6 +428,36 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond({'token':token,'role':u['role']})
                 user=self.user(db)
                 if not user: return self.respond({'error':'سجل الدخول أولًا'},401)
+                if path == '/api/order/chat':
+                    oid=int(data['order_id'])
+                    o=db.execute('SELECT * FROM orders WHERE id=?',(oid,)).fetchone()
+                    d=db.execute('SELECT user_id FROM drivers WHERE id=?',(o['driver_id'],)).fetchone() if o and o['driver_id'] else None
+                    is_customer=bool(o and user['role']=='customer' and o['user_id']==user['id'])
+                    is_driver=bool(d and user['role']=='driver' and d['user_id']==user['id'])
+                    if not o or not d or not (is_customer or is_driver) or o['status'] not in ('assigned','ready','picked_up','on_way','delivered','cancelled'):
+                        return self.respond({'error':'الدردشة متاحة لصاحب الطلب والمندوب الذي قبله فقط'},403)
+                    mode=data.get('mode','list')
+                    if mode not in ('list','send'): raise ValueError('إجراء دردشة غير معروف')
+                    if mode=='send':
+                        db.execute('BEGIN IMMEDIATE')
+                        # Check assignment again under the write lock before recording a private message.
+                        current=db.execute('SELECT driver_id,status FROM orders WHERE id=?',(oid,)).fetchone()
+                        if current['driver_id']!=o['driver_id'] or current['status'] not in ('assigned','ready','picked_up','on_way'):
+                            raise ValueError('انتهى الطلب أو تغيّر المندوب؛ لا يمكن إرسال رسالة الآن')
+                        body=str(data.get('body','')).strip()
+                        request_id=str(data.get('request_id',''))
+                        if not body or len(body)>1000: raise ValueError('الرسالة من حرف إلى 1000 حرف')
+                        if not re.fullmatch(r'[a-zA-Z0-9_-]{10,100}',request_id): raise ValueError('معرف الرسالة غير صالح')
+                        previous=db.execute('SELECT order_id,driver_id,body FROM order_messages WHERE sender_id=? AND request_id=?',(user['id'],request_id)).fetchone()
+                        if previous:
+                            if previous['order_id']!=oid or previous['driver_id']!=o['driver_id'] or previous['body']!=body: raise ValueError('معرف الرسالة مستخدم لرسالة أخرى')
+                        else:
+                            cutoff=datetime.fromtimestamp(time.time()-60,timezone.utc).isoformat(timespec='seconds')
+                            if db.execute('SELECT COUNT(*) FROM order_messages WHERE sender_id=? AND at>=?',(user['id'],cutoff)).fetchone()[0]>=30:
+                                return self.respond({'error':'رسائل كثيرة؛ انتظر قليلًا ثم أرسل'},429)
+                            db.execute('INSERT INTO order_messages(order_id,driver_id,sender_id,request_id,body,at) VALUES (?,?,?,?,?,?)',(oid,o['driver_id'],user['id'],request_id,body,now()))
+                    messages=rows(db,"SELECT id,sender_id,body,at FROM (SELECT id,sender_id,body,at FROM order_messages WHERE order_id=? AND driver_id=? ORDER BY id DESC LIMIT 200) ORDER BY id",(oid,o['driver_id']))
+                    return self.respond({'messages':messages,'driver_id':o['driver_id'],'can_send':o['status'] in ('assigned','ready','picked_up','on_way')})
                 if path == '/api/delivery-quote':
                     if user['role']!='customer': return self.respond({'error':'غير مصرح'},403)
                     return self.respond(quote_delivery(db,user['id'],data))
