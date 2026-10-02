@@ -10,6 +10,7 @@ import secrets
 import sqlite3
 import time
 import math
+from html import escape as xml_escape
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -313,8 +314,64 @@ def refresh_offers(db):
         assign(db,o['id'])
 
 
+def product_illustration(name,category):
+    title=xml_escape(name);label=xml_escape(name.split('—')[0].strip());size=xml_escape(name.split('—')[-1].strip() if '—' in name else '')
+    tone=['#fff0df','#eef6e8','#fcebea','#eaf2fc'][int(hashlib.sha256(name.encode()).hexdigest()[:4],16)%4]
+    def has(*terms): return any(t in name for t in terms)
+    art=''
+    if category=='خضار':
+        if has('بقدونس','جرجير','كزبرة','شبت','نعناع','خس','سبانخ','ملوخية','بصل أخضر'):
+            art='<path d="M143 155L162 85M157 156L185 100M168 155L132 90" stroke="#50984a" stroke-width="7"/>' + ''.join(f'<ellipse cx="{x}" cy="{y}" rx="22" ry="13" transform="rotate({r} {x} {y})" fill="{c}"/>' for x,y,r,c in [(140,84,-35,'#539b45'),(172,76,30,'#3b813c'),(181,108,-35,'#64aa4d'),(129,110,40,'#70b151'),(155,120,-30,'#448b40')])
+        elif has('جزر','بطاطا'):
+            art='<path d="M140 75Q175 70 184 92L132 165Q126 170 129 158Z" fill="#eb8a32"/><path d="M147 77L141 49M156 75L165 45M166 77L185 52" stroke="#4a944c" stroke-width="7" stroke-linecap="round"/><path d="M142 111L154 113M133 137L145 139" stroke="#cf6d22" stroke-width="3"/>'
+        elif has('خيار','كوسة','باذنجان','موز'):
+            color='#683c80' if has('باذنجان') else '#efca4a' if has('موز') else '#55924e'
+            art=f'<path d="M130 70C104 90 117 160 154 165Q174 172 184 145C163 145 150 90 158 72Z" fill="{color}"/><path d="M143 76L158 61" stroke="#4b7d3c" stroke-width="8"/>'
+        elif has('عنب'):
+            art=''.join(f'<circle cx="{x}" cy="{y}" r="16" fill="#825eaa" stroke="#725096" stroke-width="2"/>' for x,y in [(140,87),(167,85),(127,112),(153,111),(179,110),(141,138),(167,137),(154,159)])+'<path d="M158 71Q151 47 179 45" fill="none" stroke="#548149" stroke-width="5"/>'
+        else:
+            color='#e85c4f' if has('طماطم','تفاح','فراولة') else '#e9aa46' if has('برتقال','يوسفي','مانجو') else '#e3cc64' if has('ليمون','جوافة') else '#d6bda0' if has('بطاطس','بصل','ثوم') else '#5e9b52'
+            art=f'<ellipse cx="155" cy="119" rx="51" ry="43" fill="{color}"/><ellipse cx="136" cy="103" rx="10" ry="17" fill="#ffffff" opacity=".18"/><path d="M155 77L160 55" stroke="#55784b" stroke-width="6"/><path d="M158 69Q175 47 186 61Q177 79 158 69" fill="#659652"/>'
+    elif category=='لحوم ودواجن':
+        if has('سمك','جمبري'):
+            art='<path d="M102 117Q148 56 195 118Q152 172 102 117L77 91L77 145Z" fill="#77a8b7"/><path d="M134 89L151 71L159 84M137 146L157 159L161 145" fill="#5b8b9c"/><circle cx="181" cy="112" r="5" fill="#24424c"/><path d="M163 99Q148 118 162 139" fill="none" stroke="#48788a" stroke-width="3"/>'
+        elif has('دجاج','دبابيس','دجاجة','أجنحة','بط','أرانب','قوانص','بانيه','شيش'):
+            art='<path d="M138 131L176 160" stroke="#ead4b9" stroke-width="16" stroke-linecap="round"/><circle cx="181" cy="164" r="11" fill="#f6e9d8"/><circle cx="178" cy="152" r="10" fill="#f6e9d8"/><path d="M110 77C158 59 181 113 145 142C112 164 78 98 110 77" fill="#dfab7f" stroke="#c98e68" stroke-width="5"/><path d="M114 83Q137 77 151 101" fill="none" stroke="#f4caaa" stroke-width="8" stroke-linecap="round"/>'
+        else:
+            art='<path d="M114 73C139 62 183 78 193 111C213 144 171 166 142 158C116 164 87 138 92 111Z" fill="#b95f62" stroke="#f0c4b1" stroke-width="9"/><path d="M137 85L154 115L145 145M111 116L156 119L182 142" fill="none" stroke="#f3c5b6" stroke-width="6"/><ellipse cx="166" cy="94" rx="13" ry="9" fill="#f3d9c6"/>'
+    elif category=='أدوية':
+        if has('ترمومتر'):
+            art='<rect x="126" y="65" width="55" height="105" rx="22" fill="#f7fafc" stroke="#91c4d0" stroke-width="5"/><rect x="139" y="82" width="30" height="32" rx="5" fill="#bce1d6"/><text x="154" y="104" text-anchor="middle" font-size="14" fill="#305955">°C</text><circle cx="154" cy="136" r="6" fill="#64a8b9"/>'
+        elif has('كمامات'):
+            art='<path d="M115 91C79 81 79 150 115 140M197 91C231 81 231 150 197 140" fill="none" stroke="#87b8ce" stroke-width="5"/><rect x="109" y="85" width="91" height="66" rx="12" fill="#97d0e0"/><path d="M121 100H188M121 116H188M121 132H188" stroke="#d1edf3" stroke-width="4"/>'
+        elif has('بلاستر','ضمادات','رباط','شاش','قطن'):
+            art='<rect x="95" y="77" width="126" height="74" rx="31" transform="rotate(-25 158 114)" fill="#deb68b"/><rect x="135" y="86" width="46" height="57" rx="8" transform="rotate(-25 158 114)" fill="#f2d3ad"/><g fill="#b28a66"><circle cx="112" cy="120" r="3"/><circle cx="124" cy="114" r="3"/><circle cx="194" cy="98" r="3"/><circle cx="207" cy="91" r="3"/></g>'
+        elif has('شامبو','كحول','غسول','جل','كريم','فازلين'):
+            art='<rect x="131" y="49" width="47" height="25" rx="5" fill="#64a7b9"/><rect x="117" y="71" width="75" height="94" rx="18" fill="#f9fcfc" stroke="#b7dce2" stroke-width="4"/><rect x="119" y="102" width="71" height="39" fill="#91c7ce"/><path d="M154 110V132M143 121H165" stroke="white" stroke-width="5"/>'
+        else:
+            art='<rect x="107" y="67" width="98" height="102" rx="13" fill="#f8fcff" stroke="#aec9df" stroke-width="4"/><path d="M108 79H204V109H108Z" fill="#8bc7c3"/><path d="M146 126H165M155 117V136" stroke="#62aaa5" stroke-width="5"/><path d="M123 151H184" stroke="#d3e3ef" stroke-width="5"/>'
+    elif has('زيت','خل','مياه','عصير','مشروب','سائل','جل غسيل','منعم','منظف','مبيض'):
+        color='#efd164' if has('زيت') else '#dba54f' if has('عصير') else '#9cd2e7' if has('مياه') else '#76b7a7'
+        art=f'<rect x="139" y="47" width="32" height="20" rx="5" fill="#687f78"/><path d="M139 65H171V77Q190 85 190 103V161Q156 173 120 161V103Q120 84 139 77Z" fill="{color}" stroke="#ffffff" stroke-width="4"/><rect x="122" y="110" width="66" height="33" rx="5" fill="#fffdf5"/><path d="M135 90V105" stroke="#ffffff" stroke-width="5" opacity=".7"/>'
+    elif has('لبن','زبادي','جبنة','زبدة'):
+        art='<path d="M121 80L146 55H188L201 80V167H112V83Z" fill="#fafcff" stroke="#b4cfdf" stroke-width="4"/><path d="M121 80H201L188 55H146Z" fill="#75b4cd"/><path d="M145 57V79" stroke="#e5f2fa" stroke-width="4"/><path d="M113 111H200V151H113Z" fill="#9dcdda"/><circle cx="156" cy="132" r="12" fill="#fff"/>'
+    elif has('بيض'):
+        art='<path d="M89 135L105 164H210L227 135Z" fill="#b69a76"/>'+''.join(f'<ellipse cx="{x}" cy="{y}" rx="17" ry="24" fill="{c}" stroke="#e4d4bd" stroke-width="2"/>' for x,y,c in [(119,112,'#f9eee0'),(155,104,'#f3e4cf'),(191,112,'#fff5e8')])
+    elif has('تونة','سردين','معلب','ذرة'):
+        art='<rect x="111" y="79" width="90" height="77" rx="8" fill="#dc9163"/><ellipse cx="156" cy="80" rx="45" ry="12" fill="#dce4e4" stroke="#a5b3b5" stroke-width="3"/><ellipse cx="156" cy="154" rx="45" ry="10" fill="#c77a50"/><path d="M115 98H197V137H115Z" fill="#fff5df"/><ellipse cx="157" cy="80" rx="12" ry="4" fill="none" stroke="#98a4a6" stroke-width="3"/>'
+    elif has('مربى','عسل','حلاوة','طحينة','قهوة','كاكاو','كاتشب','مايونيز','مستردة','مخلل','زيتون'):
+        art='<rect x="121" y="63" width="73" height="20" rx="7" fill="#8f6951"/><rect x="115" y="83" width="85" height="80" rx="18" fill="#d7a460"/><rect x="117" y="105" width="81" height="35" rx="4" fill="#fff4d9"/><path d="M128 89V99" stroke="#f1d4a8" stroke-width="5"/>'
+    elif has('شوكولاتة','بسكويت','بطاطس'):
+        art='<path d="M104 68H204V164H104Z" fill="#bd6959"/><path d="M104 68H204V94H104Z" fill="#f1d6a5"/><rect x="125" y="103" width="58" height="45" rx="5" fill="#755044"/><path d="M145 105V146M164 105V146M127 125H181" stroke="#ad8070" stroke-width="3"/>'
+    else:
+        color='#d3ae6c' if has('أرز','دقيق','سكر','ملح') else '#bb965a' if has('مكرونة','شعرية','نودلز') else '#91a46f'
+        grains=''.join(f'<ellipse cx="{130+(i%5)*12}" cy="{104+(i//5)*12}" rx="3" ry="5" transform="rotate(25 {130+(i%5)*12} {104+(i//5)*12})" fill="#fff4cf"/>' for i in range(15))
+        art=f'<path d="M117 62H195L200 163Q156 176 110 163Z" fill="{color}" stroke="#ffffff" stroke-width="3"/><path d="M118 65H194M115 155H198" stroke="#886944" stroke-width="4" opacity=".3"/><rect x="121" y="92" width="68" height="54" rx="13" fill="#80643f" opacity=".25"/>'+grains
+    return f'<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240" viewBox="0 0 320 240" role="img"><title>صورة توضيحية: {title}</title><rect width="320" height="240" rx="22" fill="{tone}"/><circle cx="157" cy="105" r="83" fill="white" opacity=".6"/><ellipse cx="157" cy="174" rx="66" ry="9" fill="#473a2f" opacity=".1"/>{art}<text x="160" y="204" text-anchor="middle" direction="rtl" font-family="Tahoma,Arial,sans-serif" font-size="15" font-weight="bold" fill="#544136">{label}</text><text x="160" y="225" text-anchor="middle" direction="rtl" font-family="Tahoma,Arial,sans-serif" font-size="12" fill="#8d796d">{size} · صورة توضيحية</text></svg>'
+
+
 def preview_catalog(db):
-    return rows(db,"SELECT p.id,p.name,p.category FROM products p JOIN categories c ON c.name=p.category WHERE p.catalog_preview=1 AND p.price_pending=1 AND c.active=1 ORDER BY p.category,p.id")
+    return rows(db,"SELECT p.id,p.name,p.category,'/product-illustration/' || p.id || '.svg' AS image FROM products p JOIN categories c ON c.name=p.category WHERE p.catalog_preview=1 AND p.price_pending=1 AND c.active=1 ORDER BY p.category,p.id")
 
 
 def rows(db, sql, args=()):
@@ -385,6 +442,14 @@ class Handler(BaseHTTPRequestHandler):
             title={'customer':'ولعه للعميل','driver':'ولعه للمندوب','admin':'ولعه الإدارة'}[role]
             data=json.dumps({'name':title,'short_name':title,'id':'/'+role,'start_url':'/'+role,'scope':'/','display':'standalone','background_color':'#f3f7f5','theme_color':'#093d3a','icons':[{'src':'/icon-192.png','sizes':'192x192','type':'image/png','purpose':'any maskable'},{'src':'/icon-512.png','sizes':'512x512','type':'image/png','purpose':'any maskable'}]},ensure_ascii=False).encode()
             self.send_response(200);self.send_header('Content-Type','application/manifest+json');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+            return
+        if re.fullmatch(r'/product-illustration/[0-9]+[.]svg',path):
+            pid=int(path.split('/')[-1][:-4])
+            with connect() as db:
+                p=db.execute('SELECT name,category FROM products WHERE id=? AND catalog_preview=1',(pid,)).fetchone()
+            if not p: return self.respond({'error':'الصورة غير متاحة'},404)
+            image=product_illustration(p['name'],p['category']).encode()
+            self.send_response(200);self.send_header('Content-Type','image/svg+xml; charset=utf-8');self.send_header('Cache-Control','public, max-age=3600');self.send_header('Content-Length',str(len(image)));self.end_headers();self.wfile.write(image)
             return
         if path == '/icon.svg':
             data=(ROOT/'icon.svg').read_bytes()
