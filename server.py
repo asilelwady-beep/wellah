@@ -31,7 +31,7 @@ def sold_by_weight(product):
     if re.search(r'علبة|عبوة|باكت|معلب|مجمد|مجمّد|Frozen|Pack|حزمة|ربطة|قطعة|قطعتين|حبة|سبريد|شرائح جاهزة', name, re.I):
         return False
     return bool(re.search(r'خضار|فاكهة|فواكه|لحوم|أسماك|دواجن', category) or
-                (category == 'سوبر ماركت' and re.search(r'^(?:لحم|لحمة|كبدة|دجاج طازج|فراخ طازجة|سمك|بلطي|بوري|جمبري|كابوريا|ثوم طازج|لانشون|لنشون|لَنشون|بسطرمة|سلامي|مرتديلا|ديك رومي|جبنة رومي|جبن رومي|جبنة شيدر|جبن شيدر)(?:\s|$)', name)))
+                (category == 'سوبر ماركت' and (re.search(r'^(?:لحم|لحمة|كبدة|دجاج طازج|فراخ طازجة|سمك|بلطي|بوري|جمبري|كابوريا|ثوم طازج|لانشون|لنشون|لَنشون|بسطرمة|سلامي|مرتديلا|ديك رومي|جبنة رومي|جبن رومي|جبنة شيدر|جبن شيدر)(?:\s|$)', name) or (re.search(r'لانشون|سلامي|سلامى|بسطرمة', name) and re.search(r'بالوزن|بالكيلو', name)))))
 
 
 def weight_basis(product):
@@ -215,6 +215,21 @@ def init():
             for category,name in loose_goods:
                 db.execute('INSERT INTO products(name,category,price,stock,active,price_pending,catalog_preview) SELECT ?,?,0,0,0,1,1 WHERE NOT EXISTS (SELECT 1 FROM products WHERE name=? AND category=?)',(name,category,name,category))
             db.execute("INSERT INTO catalog_imports VALUES ('everyday-goods-v1',?)",(now(),))
+        if not db.execute("SELECT 1 FROM catalog_imports WHERE key='branded-deli-photos-v1'").fetchone():
+            branded_deli=[
+                ('أطياب لانشون بقري بالزيتون — بالوزن','atyab-beef-with-olive-luncheon-by-weight','o/l/olives_1_1.jpg'),
+                ('أطياب لانشون بقري بالتوابل — بالوزن','atyab-beef-with-bohar-luncheon-by-weight','b/l/black_pepper_1.jpg'),
+                ('الإلهامي لانشون سادة — بالوزن','elleheimy-plain-luncheon-by-weight','2/7/273634_yqnhvzidgal4ylqj.jpg'),
+                ('ريتش فوود سلامي — بالوزن','rich-food-salami-by-weight','s/a/salami_2.jpg'),
+            ]
+            base='https://mcprod.spinneys-egypt.com/media/catalog/product/cache/74c1057f7991b4edb2bc7bdaa94de933/'
+            db.execute('CREATE TABLE IF NOT EXISTS catalog_sources (product_id INTEGER PRIMARY KEY REFERENCES products(id), source_url TEXT NOT NULL, image_source_url TEXT NOT NULL)')
+            for name,slug,photo in branded_deli:
+                image=base+photo+'?width=250&format=webp'
+                existing=db.execute("SELECT id FROM products WHERE name=? AND category='سوبر ماركت'",(name,)).fetchone()
+                pid=existing['id'] if existing else db.execute("INSERT INTO products(name,category,price,stock,active,price_pending,catalog_preview,image) VALUES (?,'سوبر ماركت',0,0,0,1,1,?)",(name,image)).lastrowid
+                db.execute('INSERT OR IGNORE INTO catalog_sources(product_id,source_url,image_source_url) VALUES (?,?,?)',(pid,'https://spinneys-egypt.com/ar/'+slug,image))
+            db.execute("INSERT INTO catalog_imports VALUES ('branded-deli-photos-v1',?)",(now(),))
         if not db.execute("SELECT 1 FROM products").fetchone():
             db.executemany("INSERT INTO products(name,category,price,stock) VALUES (?,?,?,?)", [("منتج تجريبي: أرز 1 كجم", "سوبر ماركت", 40, 20), ("منتج تجريبي: خضار مشكل", "خضار", 35, 15), ("منتج تجريبي: وجبة", "مطاعم", 85, 10)])
         if not db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
@@ -481,7 +496,7 @@ def product_illustration(name,category):
 
 
 def preview_catalog(db):
-    return rows(db,"SELECT p.id,p.name,p.category,CASE WHEN p.image<>'' THEN p.image ELSE '/product-illustration/' || p.id || '.svg' END AS image FROM products p JOIN categories c ON c.name=p.category WHERE p.catalog_preview=1 AND p.price_pending=1 AND c.active=1 ORDER BY CASE WHEN p.name IN ('ثوم بلدي طازج','ثوم صيني طازج','لانشون سادة','لانشون فراخ','لانشون لحم') THEN 0 ELSE 1 END,(p.image LIKE '/product-photo-%') DESC,c.sort_order,p.category,p.id")
+    return rows(db,"SELECT p.id,p.name,p.category,CASE WHEN p.image<>'' THEN p.image ELSE '/product-illustration/' || p.id || '.svg' END AS image FROM products p JOIN categories c ON c.name=p.category WHERE p.catalog_preview=1 AND p.price_pending=1 AND c.active=1 ORDER BY CASE WHEN p.image<>'' AND (p.name LIKE '%لانشون%بالوزن' OR p.name LIKE '%سلامي%بالوزن') THEN 0 WHEN p.name IN ('ثوم بلدي طازج','ثوم صيني طازج','لانشون سادة','لانشون فراخ','لانشون لحم') THEN 1 ELSE 2 END,(p.image LIKE '/product-photo-%') DESC,c.sort_order,p.category,p.id")
 
 
 def rows(db, sql, args=()):
