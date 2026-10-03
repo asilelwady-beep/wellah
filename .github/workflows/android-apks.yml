@@ -54,7 +54,7 @@ jobs:
           arch: x86_64
           script: |
             adb install android-app/app/build/outputs/apk/customer/debug/app-customer-debug.apk
-            adb shell am start -W -a android.intent.action.VIEW -d 'geo:0,0?q=29.85,31.28(Test+Destination)' com.wallah.customer.debug | tee /tmp/wallah-geo-intent.txt
+            adb shell am start -W -a android.intent.action.VIEW -d geo:29.85,31.28 com.wallah.customer.debug | tee /tmp/wallah-geo-intent.txt
             grep -q 'com.wallah.customer.debug/com.wallah.app.MainActivity' /tmp/wallah-geo-intent.txt
             adb install android-app/app/build/outputs/apk/admin/debug/app-admin-debug.apk
             adb install android-app/app/build/outputs/apk/driver/debug/app-driver-debug.apk
