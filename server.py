@@ -105,6 +105,19 @@ def init():
                 if not db.execute('SELECT 1 FROM products WHERE name=? AND category=?',(name,category)).fetchone():
                     db.execute('INSERT INTO products(name,category,price,stock,active,price_pending,catalog_preview) VALUES (?,?,0,0,0,1,1)',(name,category))
             db.execute("INSERT INTO catalog_imports VALUES ('starter-catalog-v1',?)",(now(),))
+        # Verified Egyptian retail pack photographs; sale prices and stock remain owner-controlled.
+        if not db.execute("SELECT 1 FROM catalog_imports WHERE key='market-pack-photos-v1'").fetchone():
+            market_products = [('سكر أبيض الضحى — 1 كجم', '/product-photo-17964.jpg', 'سكر أبيض — 1 كجم'), ('أرز مصري الضحى — 1 كجم', '/product-photo-17997.jpg', 'أرز مصري — 1 كجم'), ('زيت عباد الشمس عافية — 2.2 لتر', '/product-photo-544731.jpg', None), ('زيت عباد الشمس كريستال — 1.6 لتر', '/product-photo-488095.jpg', None), ('مكرونة مرمرية الملكة — 400 جم', '/product-photo-46905.jpg', 'مكرونة خواتم — 400 جم'), ('صلصة طماطم هارفست — 320 جم', '/product-photo-322974.jpg', None), ('تونة صن شاين إكسبريس قطعة واحدة — 160 جم', '/product-photo-399095.jpg', None), ('ملح كوكس — 400 جم', '/product-photo-641453.jpg', None)]
+            for name,image,old_name in market_products:
+                existing = db.execute('SELECT id FROM products WHERE name=? AND category=?',(name,'سوبر ماركت')).fetchone()
+                if existing:
+                    continue
+                draft = db.execute("SELECT id FROM products WHERE name=? AND category='سوبر ماركت' AND catalog_preview=1 AND price_pending=1 AND active=0 AND stock=0 AND image=''",(old_name,)).fetchone() if old_name else None
+                if draft:
+                    db.execute('UPDATE products SET name=?,image=? WHERE id=?',(name,image,draft['id']))
+                else:
+                    db.execute("INSERT INTO products(name,category,price,stock,active,price_pending,catalog_preview,image) VALUES (?,'سوبر ماركت',0,0,0,1,1,?)",(name,image))
+            db.execute("INSERT INTO catalog_imports VALUES ('market-pack-photos-v1',?)",(now(),))
         if not db.execute("SELECT 1 FROM products").fetchone():
             db.executemany("INSERT INTO products(name,category,price,stock) VALUES (?,?,?,?)", [("منتج تجريبي: أرز 1 كجم", "سوبر ماركت", 40, 20), ("منتج تجريبي: خضار مشكل", "خضار", 35, 15), ("منتج تجريبي: وجبة", "مطاعم", 85, 10)])
         if not db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
@@ -371,7 +384,7 @@ def product_illustration(name,category):
 
 
 def preview_catalog(db):
-    return rows(db,"SELECT p.id,p.name,p.category,'/product-illustration/' || p.id || '.svg' AS image FROM products p JOIN categories c ON c.name=p.category WHERE p.catalog_preview=1 AND p.price_pending=1 AND c.active=1 ORDER BY p.category,p.id")
+    return rows(db,"SELECT p.id,p.name,p.category,CASE WHEN p.image<>'' THEN p.image ELSE '/product-illustration/' || p.id || '.svg' END AS image FROM products p JOIN categories c ON c.name=p.category WHERE p.catalog_preview=1 AND p.price_pending=1 AND c.active=1 ORDER BY (p.image LIKE '/product-photo-%') DESC,p.category,p.id")
 
 
 def rows(db, sql, args=()):
@@ -443,11 +456,19 @@ class Handler(BaseHTTPRequestHandler):
             data=json.dumps({'name':title,'short_name':title,'id':'/'+role,'start_url':'/'+role,'scope':'/','display':'standalone','background_color':'#f3f7f5','theme_color':'#093d3a','icons':[{'src':'/icon-192.png','sizes':'192x192','type':'image/png','purpose':'any maskable'},{'src':'/icon-512.png','sizes':'512x512','type':'image/png','purpose':'any maskable'}]},ensure_ascii=False).encode()
             self.send_response(200);self.send_header('Content-Type','application/manifest+json');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
             return
+        if re.fullmatch(r'/product-photo-[0-9]+[.]jpg',path):
+            photo=ROOT/path[1:]
+            if not photo.is_file(): return self.respond({'error':'الصورة غير متاحة'},404)
+            data=photo.read_bytes()
+            self.send_response(200);self.send_header('Content-Type','image/jpeg');self.send_header('Cache-Control','public, max-age=86400');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+            return
         if re.fullmatch(r'/product-illustration/[0-9]+[.]svg',path):
             pid=int(path.split('/')[-1][:-4])
             with connect() as db:
-                p=db.execute('SELECT name,category FROM products WHERE id=? AND catalog_preview=1',(pid,)).fetchone()
+                p=db.execute('SELECT name,category,image FROM products WHERE id=? AND catalog_preview=1',(pid,)).fetchone()
             if not p: return self.respond({'error':'الصورة غير متاحة'},404)
+            if re.fullmatch(r'/product-photo-[0-9]+[.]jpg',p['image'] or ''):
+                self.send_response(302);self.send_header('Location',p['image']);self.end_headers();return
             image=product_illustration(p['name'],p['category']).encode()
             self.send_response(200);self.send_header('Content-Type','image/svg+xml; charset=utf-8');self.send_header('Cache-Control','public, max-age=3600');self.send_header('Content-Length',str(len(image)));self.end_headers();self.wfile.write(image)
             return
