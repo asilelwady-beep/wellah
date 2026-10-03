@@ -140,6 +140,22 @@ def init():
             for category,name in manifest['retired_placeholders']:
                 db.execute("UPDATE products SET catalog_preview=0 WHERE name=? AND category=? AND catalog_preview=1 AND price_pending=1 AND active=0 AND stock=0 AND price=0 AND image='' AND merchant_id IS NULL",(name,category))
             db.execute("INSERT INTO catalog_imports VALUES ('market-photo-catalog-v2',?)",(now(),))
+        health_archive=ROOT/'health-beauty-catalog.zip'
+        if health_archive.is_file() and not db.execute("SELECT 1 FROM catalog_imports WHERE key='health-beauty-photos-v1'").fetchone():
+            with zipfile.ZipFile(health_archive) as bundle:
+                health_manifest=json.loads(bundle.read('manifest.json'))
+                photo_names=set(bundle.namelist())
+            db.execute("INSERT OR IGNORE INTO categories(name,sort_order) VALUES ('مستحضرات تجميل',7)")
+            for image in health_manifest['move_care_images']:
+                db.execute("UPDATE products SET category='مستحضرات تجميل' WHERE image=? AND category='أدوية' AND price_pending=1 AND price=0 AND stock=0 AND active=0 AND merchant_id IS NULL",(image,))
+            for item in health_manifest['products']:
+                image=item['image']
+                if not re.fullmatch(r'/product-photo-[0-9]+[.]jpg',image) or image[1:] not in photo_names:
+                    raise ValueError('Health catalog photograph is missing')
+                existing=db.execute('SELECT id FROM products WHERE image=? OR (name=? AND category=?) ORDER BY id LIMIT 1',(image,item['name'],item['category'])).fetchone()
+                pid=existing['id'] if existing else db.execute('INSERT INTO products(name,category,price,stock,active,price_pending,catalog_preview,image) VALUES (?,?,0,0,0,1,1,?)',(item['name'],item['category'],image)).lastrowid
+                db.execute('INSERT OR IGNORE INTO catalog_sources(product_id,source_url,image_source_url) VALUES (?,?,?)',(pid,item['source'],item['image_source']))
+            db.execute("INSERT INTO catalog_imports VALUES ('health-beauty-photos-v1',?)",(now(),))
         if not db.execute("SELECT 1 FROM products").fetchone():
             db.executemany("INSERT INTO products(name,category,price,stock) VALUES (?,?,?,?)", [("منتج تجريبي: أرز 1 كجم", "سوبر ماركت", 40, 20), ("منتج تجريبي: خضار مشكل", "خضار", 35, 15), ("منتج تجريبي: وجبة", "مطاعم", 85, 10)])
         if not db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
@@ -483,10 +499,15 @@ class Handler(BaseHTTPRequestHandler):
             if photo.is_file():
                 data=photo.read_bytes()
             else:
-                try:
-                    with zipfile.ZipFile(ROOT/'market-catalog.zip') as bundle:
-                        data=bundle.read(path[1:])
-                except (FileNotFoundError,KeyError,zipfile.BadZipFile):
+                data=None
+                for archive_name in ('market-catalog.zip','health-beauty-catalog.zip'):
+                    try:
+                        with zipfile.ZipFile(ROOT/archive_name) as bundle:
+                            data=bundle.read(path[1:])
+                        break
+                    except (FileNotFoundError,KeyError,zipfile.BadZipFile):
+                        continue
+                if data is None:
                     return self.respond({'error':'الصورة غير متاحة'},404)
             self.send_response(200);self.send_header('Content-Type','image/jpeg');self.send_header('Cache-Control','public, max-age=86400');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
             return
