@@ -26,6 +26,34 @@ AREAS = ["أبو رجوان البحري", "أبو رجوان القبلي", "أ
 CAIRO = ZoneInfo('Africa/Cairo')
 
 
+def sold_by_weight(product):
+    name, category = product['name'], product['category']
+    if re.search(r'علبة|عبوة|باكت|معلب|مجمد|مجمّد|Frozen|Pack|حزمة|ربطة|قطعة|حبة', name, re.I):
+        return False
+    return bool(re.search(r'خضار|فاكهة|فواكه|لحوم|أسماك|دواجن', category) or
+                (category == 'سوبر ماركت' and re.search(r'^(?:لحم|لحمة|كبدة|دجاج طازج|فراخ طازجة|سمك|بلطي|بوري|جمبري|كابوريا)(?:\s|$)', name)))
+
+
+def weight_basis(product):
+    match = re.search(r'(\d+(?:[.]\d+)?)\s*(كجم|كيلو|kg|جرام|غرام|جم|g)\b', product['name'], re.I)
+    if not match:
+        return 1.0
+    value = float(match[1])
+    return (value / 1000 if match[2].lower() in ('جرام','غرام','جم','g') else value) or 1.0
+
+
+def order_quantity(product, value):
+    quantity = float(value)
+    if not math.isfinite(quantity) or quantity <= 0 or quantity > 100000:
+        raise ValueError('الكمية غير صحيحة')
+    if sold_by_weight(product):
+        if quantity * 2 != int(quantity * 2):
+            raise ValueError('اختر الوزن بمضاعفات نصف كيلو')
+    elif quantity != int(quantity):
+        raise ValueError('هذا المنتج يباع بالقطعة')
+    return quantity
+
+
 def connect():
     db = sqlite3.connect(DB)
     db.row_factory = sqlite3.Row
@@ -59,7 +87,7 @@ def init():
             db.executemany("INSERT INTO settings VALUES (?,?)", [("wallet", os.environ.get('WALLAHA_WALLET','')), ("whatsapp", os.environ.get('WALLAHA_WHATSAPP','')), ("delivery_fee", "20")])
         db.execute("INSERT OR IGNORE INTO settings VALUES ('per_km_rate','')")
         db.execute("INSERT OR IGNORE INTO settings VALUES ('quote_secret',?)",(secrets.token_hex(32),))
-        for table,column,definition in [('orders','route_km','REAL'),('orders','km_rate','REAL'),('products','price_pending','INTEGER NOT NULL DEFAULT 0')]:
+        for table,column,definition in [('orders','route_km','REAL'),('orders','km_rate','REAL'),('products','price_pending','INTEGER NOT NULL DEFAULT 0'),('order_items','unit',"TEXT NOT NULL DEFAULT 'قطعة'"),('order_items','stock_quantity','REAL')]:
             if column not in {x['name'] for x in db.execute(f'PRAGMA table_info({table})')}:
                 db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
         for column,definition in [('driver_earning_cents' ,'INTEGER NOT NULL DEFAULT 0'),('driver_earning_paid','INTEGER NOT NULL DEFAULT 0')]:
@@ -553,7 +581,7 @@ class Handler(BaseHTTPRequestHandler):
             clause, args = ('', ()) if user['role']=='admin' else ((' WHERE o.user_id=?', (user['id'],)) if user['role']=='customer' else (' WHERE d.user_id=?', (user['id'],)))
             orders = rows(db, "SELECT o.*,d.name AS driver_name,d.lat AS driver_lat,d.lon AS driver_lon,d.location_at AS driver_location_at,m.name AS merchant_name,m.address AS merchant_address FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id LEFT JOIN merchants m ON m.id=o.merchant_id"+clause+" ORDER BY o.id DESC", args)
             for o in orders:
-                o["items"] = rows(db, "SELECT product_id,name,quantity,unit_price FROM order_items WHERE order_id=?", (o["id"],))
+                o["items"] = rows(db, "SELECT product_id,name,quantity,unit_price,unit FROM order_items WHERE order_id=?", (o["id"],))
                 o["events"] = rows(db, "SELECT action,at FROM events WHERE order_id=? ORDER BY id", (o["id"],))
                 if user['role']!='admin':
                     if user['role']=='customer' and o['status'] not in ('assigned','ready','picked_up','on_way'):
@@ -814,13 +842,17 @@ class Handler(BaseHTTPRequestHandler):
                         merchant=db.execute('SELECT * FROM merchants WHERE id=? AND active=1',(int(data.get('merchant_id') or 0),)).fetchone()
                         if not merchant: raise ValueError('اختر محلًا أو صيدلية متاحة')
                         for it in data.get("items", []):
-                            qty = int(it["quantity"])
+                            qty = float(it["quantity"])
                             p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (it["product_id"],)).fetchone()
-                            if not p or p['merchant_id']!=merchant['id'] or qty <= 0 or p["stock"] < qty: raise ValueError("اختر منتجات من نفس المحل وبكمية متاحة")
+                            if not p: raise ValueError('المنتج غير متاح')
+                            qty = order_quantity(p, qty)
+                            stock_qty = qty / weight_basis(p) if sold_by_weight(p) else qty
+                            if any(existing['id'] == p['id'] for existing, _ in items): raise ValueError('منتج مكرر في السلة')
+                            if p['merchant_id']!=merchant['id'] or p["stock"] < stock_qty: raise ValueError("اختر منتجات من نفس المحل وبكمية متاحة")
                             items.append((p, qty))
                             medicine_review |= p['category']=='أدوية'
                             requires_prescription |= bool(p['requires_prescription'])
-                            subtotal += p["price"] * qty
+                            subtotal += (p["price"] / weight_basis(p) if sold_by_weight(p) else p["price"]) * qty
                         if not items: raise ValueError("السلة فارغة")
                     prescription=str(data.get('prescription',''))
                     if requires_prescription and not valid_image(prescription,2_500_000): raise ValueError('صورة الوصفة مطلوبة لهذا المنتج')
@@ -854,8 +886,8 @@ class Handler(BaseHTTPRequestHandler):
                         db.execute('UPDATE orders SET shipment_type=?,shipment_other=?,sender_name=?,sender_phone=?,recipient_name=?,recipient_phone=? WHERE id=?',tuple(parcel[key] for key in ('shipment_type','shipment_other','sender_name','sender_phone','recipient_name','recipient_phone'))+(oid,))
                     db.execute('UPDATE orders SET service_key=?,latitude=?,longitude=?,merchant_id=?,pickup_lat=?,pickup_lon=? WHERE id=?',(service_key,lat,lon,merchant['id'] if merchant else None,merchant['lat'] if merchant else pickup_lat,merchant['lon'] if merchant else pickup_lon,oid))
                     for p, qty in items:
-                        db.execute("UPDATE products SET stock=stock-? WHERE id=?", (qty, p["id"]))
-                        db.execute("INSERT INTO order_items VALUES (?,?,?,?,?)", (oid, p["id"], p["name"], qty, p["price"]))
+                        db.execute("UPDATE products SET stock=stock-? WHERE id=?", (qty / weight_basis(p) if sold_by_weight(p) else qty, p["id"]))
+                        db.execute("INSERT INTO order_items(order_id,product_id,name,quantity,unit_price,unit,stock_quantity) VALUES (?,?,?,?,?,?,?)", (oid, p["id"], p["name"], qty, p["price"] / weight_basis(p) if sold_by_weight(p) else p["price"], "كجم" if sold_by_weight(p) else "قطعة", qty / weight_basis(p) if sold_by_weight(p) else qty))
                     log(db, oid, "أنشأ العميل الطلب")
                     if status=='new' or (km_quote and kind=='delivery' and payment=='cash'): assign(db,oid)
                     return self.respond({"ok": True, "id": oid})
@@ -924,7 +956,7 @@ class Handler(BaseHTTPRequestHandler):
                     elif action in ('cancel','reject_medicine','customer_cancel') and o["status"] not in ("delivered", "cancelled") and (action!='reject_medicine' or o['status']=='medicine_review') and (action!='customer_cancel' or (o['status'] in ('awaiting_quote','quote_pending','medicine_review','payment_review','new','awaiting_driver','offered','assigned') and not (o['payment']=='wallet' and (o['payment_status']=='confirmed' or bool(o['proof']))))):
                         db.execute("UPDATE orders SET status='cancelled' WHERE id=?", (oid,))
                         for it in db.execute("SELECT * FROM order_items WHERE order_id=?", (oid,)):
-                            db.execute("UPDATE products SET stock=stock+? WHERE id=?", (it["quantity"], it["product_id"]))
+                            db.execute("UPDATE products SET stock=stock+? WHERE id=?", (it["stock_quantity"] if it["stock_quantity"] is not None else it["quantity"], it["product_id"]))
                         log(db, oid, "ألغي الطلب وأعيدت المنتجات للكمية المتاحة")
                     else: raise ValueError("الإجراء غير متاح في حالة الطلب الحالية")
                 elif path == '/api/location':
