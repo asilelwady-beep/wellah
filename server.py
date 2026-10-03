@@ -198,6 +198,23 @@ def init():
                 pid=existing['id'] if existing else db.execute('INSERT INTO products(name,category,price,stock,active,price_pending,catalog_preview,image) VALUES (?,?,0,0,0,1,1,?)',(item['name'],item['category'],image)).lastrowid
                 db.execute('INSERT OR IGNORE INTO catalog_sources(product_id,source_url,image_source_url) VALUES (?,?,?)',(pid,item['source'],item['image_source']))
             db.execute("INSERT INTO catalog_imports VALUES ('expanded-source-catalog-v1',?)",(now(),))
+        # Surface household cleaners and spices as browsable sections, and add
+        # loose-weight goods missing from the sourced packaged-goods catalog.
+        if not db.execute("SELECT 1 FROM catalog_imports WHERE key='everyday-goods-v1'").fetchone():
+            for category,position in [('منظفات',8),('عطارة',9)]:
+                db.execute('INSERT OR IGNORE INTO categories(name,sort_order) VALUES (?,?)',(category,position))
+            cleaner_terms=('منظف','مطهر','كلور','سائل غسيل','مسحوق غسيل','جل غسيل','منعم ملابس','صابون أطباق','سائل أطباق','ملمع','معطر جو','أكياس قمامة','إسفنجة أطباق')
+            spice_terms=('كمون','كزبرة جافة','كركم','قرفة','شطة','بابريكا','فلفل أسود','زعتر','يانسون','كركديه','حبهان','حبه البركة','حبة البركة','قرنفل','زنجبيل مطحون','بهارات','سماق')
+            for product in db.execute("SELECT id,name FROM products WHERE category='سوبر ماركت' AND catalog_preview=1 AND price_pending=1 AND active=0 AND stock=0 AND merchant_id IS NULL AND image<>''").fetchall():
+                name=product['name']
+                if any(term in name for term in cleaner_terms):
+                    db.execute("UPDATE products SET category='منظفات' WHERE id=?",(product['id'],))
+                elif any(term in name for term in spice_terms) and not any(term in name for term in ('جبنة','بسكويت','شاي','شوربة','شيبسي','شوكولاتة','عسل','صوص','كاتشب','فول مدمس')):
+                    db.execute("UPDATE products SET category='عطارة' WHERE id=?",(product['id'],))
+            loose_goods=[('خضار','ثوم بلدي طازج'),('خضار','ثوم صيني طازج'),('سوبر ماركت','لانشون سادة'),('سوبر ماركت','لانشون فراخ'),('سوبر ماركت','لانشون لحم'),('سوبر ماركت','بسطرمة شرائح بالوزن'),('سوبر ماركت','سلامي شرائح بالوزن'),('سوبر ماركت','جبنة رومي بالوزن'),('سوبر ماركت','جبنة شيدر بالوزن'),('منظفات','سائل غسيل أطباق — 750 مل'),('منظفات','مسحوق غسيل ملابس — 1 كجم'),('منظفات','مطهر أرضيات — 1 لتر'),('منظفات','كلور أبيض — 1 لتر'),('منظفات','منظف زجاج — 500 مل'),('عطارة','كمون مطحون — 50 جم'),('عطارة','فلفل أسود مطحون — 50 جم'),('عطارة','كزبرة ناشفة — 50 جم'),('عطارة','كركم مطحون — 50 جم'),('عطارة','يانسون — 100 جم'),('عطارة','كركديه — 100 جم'),('عطارة','حبة البركة — 100 جم'),('عطارة','زعتر — 100 جم')]
+            for category,name in loose_goods:
+                db.execute('INSERT INTO products(name,category,price,stock,active,price_pending,catalog_preview) SELECT ?,?,0,0,0,1,1 WHERE NOT EXISTS (SELECT 1 FROM products WHERE name=? AND category=?)',(name,category,name,category))
+            db.execute("INSERT INTO catalog_imports VALUES ('everyday-goods-v1',?)",(now(),))
         if not db.execute("SELECT 1 FROM products").fetchone():
             db.executemany("INSERT INTO products(name,category,price,stock) VALUES (?,?,?,?)", [("منتج تجريبي: أرز 1 كجم", "سوبر ماركت", 40, 20), ("منتج تجريبي: خضار مشكل", "خضار", 35, 15), ("منتج تجريبي: وجبة", "مطاعم", 85, 10)])
         if not db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
@@ -464,7 +481,7 @@ def product_illustration(name,category):
 
 
 def preview_catalog(db):
-    return rows(db,"SELECT p.id,p.name,p.category,CASE WHEN p.image<>'' THEN p.image ELSE '/product-illustration/' || p.id || '.svg' END AS image FROM products p JOIN categories c ON c.name=p.category WHERE p.catalog_preview=1 AND p.price_pending=1 AND c.active=1 ORDER BY (p.image LIKE '/product-photo-%') DESC,c.sort_order,p.category,p.id")
+    return rows(db,"SELECT p.id,p.name,p.category,CASE WHEN p.image<>'' THEN p.image ELSE '/product-illustration/' || p.id || '.svg' END AS image FROM products p JOIN categories c ON c.name=p.category WHERE p.catalog_preview=1 AND p.price_pending=1 AND c.active=1 ORDER BY CASE WHEN p.name IN ('ثوم بلدي طازج','ثوم صيني طازج','لانشون سادة','لانشون فراخ','لانشون لحم') THEN 0 ELSE 1 END,(p.image LIKE '/product-photo-%') DESC,c.sort_order,p.category,p.id")
 
 
 def rows(db, sql, args=()):
