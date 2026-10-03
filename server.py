@@ -28,10 +28,10 @@ CAIRO = ZoneInfo('Africa/Cairo')
 
 def sold_by_weight(product):
     name, category = product['name'], product['category']
-    if re.search(r'علبة|عبوة|باكت|معلب|مجمد|مجمّد|Frozen|Pack|حزمة|ربطة|قطعة|حبة', name, re.I):
+    if re.search(r'علبة|عبوة|باكت|معلب|مجمد|مجمّد|Frozen|Pack|حزمة|ربطة|قطعة|قطعتين|حبة|سبريد|شرائح جاهزة', name, re.I):
         return False
     return bool(re.search(r'خضار|فاكهة|فواكه|لحوم|أسماك|دواجن', category) or
-                (category == 'سوبر ماركت' and re.search(r'^(?:لحم|لحمة|كبدة|دجاج طازج|فراخ طازجة|سمك|بلطي|بوري|جمبري|كابوريا)(?:\s|$)', name)))
+                (category == 'سوبر ماركت' and re.search(r'^(?:لحم|لحمة|كبدة|دجاج طازج|فراخ طازجة|سمك|بلطي|بوري|جمبري|كابوريا|ثوم طازج|لانشون|لنشون|لَنشون|بسطرمة|سلامي|مرتديلا|ديك رومي|جبنة رومي|جبن رومي|جبنة شيدر|جبن شيدر)(?:\s|$)', name)))
 
 
 def weight_basis(product):
@@ -47,8 +47,8 @@ def order_quantity(product, value):
     if not math.isfinite(quantity) or quantity <= 0 or quantity > 100000:
         raise ValueError('الكمية غير صحيحة')
     if sold_by_weight(product):
-        if quantity * 2 != int(quantity * 2):
-            raise ValueError('اختر الوزن بمضاعفات نصف كيلو')
+        if quantity * 4 != int(quantity * 4):
+            raise ValueError('اختر الوزن بمضاعفات ربع كيلو')
     elif quantity != int(quantity):
         raise ValueError('هذا المنتج يباع بالقطعة')
     return quantity
