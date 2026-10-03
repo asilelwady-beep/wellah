@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import sqlite3
+import zipfile
 import time
 import math
 from html import escape as xml_escape
@@ -118,6 +119,27 @@ def init():
                 else:
                     db.execute("INSERT INTO products(name,category,price,stock,active,price_pending,catalog_preview,image) VALUES (?,'سوبر ماركت',0,0,0,1,1,?)",(name,image))
             db.execute("INSERT INTO catalog_imports VALUES ('market-pack-photos-v1',?)",(now(),))
+        # Import a locally bundled, sourced photo catalog once without changing owner pricing.
+        archive=ROOT/'market-catalog.zip'
+        if archive.is_file() and not db.execute("SELECT 1 FROM catalog_imports WHERE key='market-photo-catalog-v2'").fetchone():
+            with zipfile.ZipFile(archive) as bundle:
+                manifest=json.loads(bundle.read('manifest.json'))
+                bundled_names=set(bundle.namelist())
+            db.execute('CREATE TABLE IF NOT EXISTS catalog_sources (product_id INTEGER PRIMARY KEY REFERENCES products(id), source_url TEXT NOT NULL, image_source_url TEXT NOT NULL)')
+            for item in manifest['products']:
+                image=item['image']
+                if not re.fullmatch(r'/product-photo-[0-9]+[.]jpg',image) or image[1:] not in bundled_names:
+                    raise ValueError('Catalog photograph is missing')
+                db.execute('INSERT OR IGNORE INTO categories(name,sort_order) VALUES (?,?)',(item['category'],5))
+                existing=db.execute('SELECT id FROM products WHERE image=? OR (name=? AND category=?) ORDER BY id LIMIT 1',(image,item['name'],item['category'])).fetchone()
+                if existing:
+                    pid=existing['id']
+                else:
+                    pid=db.execute('INSERT INTO products(name,category,price,stock,active,price_pending,catalog_preview,image) VALUES (?,?,0,0,0,1,1,?)',(item['name'],item['category'],image)).lastrowid
+                db.execute('INSERT OR IGNORE INTO catalog_sources(product_id,source_url,image_source_url) VALUES (?,?,?)',(pid,item['source'],item['image_source']))
+            for category,name in manifest['retired_placeholders']:
+                db.execute("UPDATE products SET catalog_preview=0 WHERE name=? AND category=? AND catalog_preview=1 AND price_pending=1 AND active=0 AND stock=0 AND price=0 AND image='' AND merchant_id IS NULL",(name,category))
+            db.execute("INSERT INTO catalog_imports VALUES ('market-photo-catalog-v2',?)",(now(),))
         if not db.execute("SELECT 1 FROM products").fetchone():
             db.executemany("INSERT INTO products(name,category,price,stock) VALUES (?,?,?,?)", [("منتج تجريبي: أرز 1 كجم", "سوبر ماركت", 40, 20), ("منتج تجريبي: خضار مشكل", "خضار", 35, 15), ("منتج تجريبي: وجبة", "مطاعم", 85, 10)])
         if not db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
@@ -384,7 +406,7 @@ def product_illustration(name,category):
 
 
 def preview_catalog(db):
-    return rows(db,"SELECT p.id,p.name,p.category,CASE WHEN p.image<>'' THEN p.image ELSE '/product-illustration/' || p.id || '.svg' END AS image FROM products p JOIN categories c ON c.name=p.category WHERE p.catalog_preview=1 AND p.price_pending=1 AND c.active=1 ORDER BY (p.image LIKE '/product-photo-%') DESC,p.category,p.id")
+    return rows(db,"SELECT p.id,p.name,p.category,CASE WHEN p.image<>'' THEN p.image ELSE '/product-illustration/' || p.id || '.svg' END AS image FROM products p JOIN categories c ON c.name=p.category WHERE p.catalog_preview=1 AND p.price_pending=1 AND c.active=1 ORDER BY (p.image LIKE '/product-photo-%') DESC,c.sort_order,p.category,p.id")
 
 
 def rows(db, sql, args=()):
@@ -458,8 +480,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         if re.fullmatch(r'/product-photo-[0-9]+[.]jpg',path):
             photo=ROOT/path[1:]
-            if not photo.is_file(): return self.respond({'error':'الصورة غير متاحة'},404)
-            data=photo.read_bytes()
+            if photo.is_file():
+                data=photo.read_bytes()
+            else:
+                try:
+                    with zipfile.ZipFile(ROOT/'market-catalog.zip') as bundle:
+                        data=bundle.read(path[1:])
+                except (FileNotFoundError,KeyError,zipfile.BadZipFile):
+                    return self.respond({'error':'الصورة غير متاحة'},404)
             self.send_response(200);self.send_header('Content-Type','image/jpeg');self.send_header('Cache-Control','public, max-age=86400');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
             return
         if re.fullmatch(r'/product-illustration/[0-9]+[.]svg',path):
