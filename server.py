@@ -156,6 +156,20 @@ def init():
                 pid=existing['id'] if existing else db.execute('INSERT INTO products(name,category,price,stock,active,price_pending,catalog_preview,image) VALUES (?,?,0,0,0,1,1,?)',(item['name'],item['category'],image)).lastrowid
                 db.execute('INSERT OR IGNORE INTO catalog_sources(product_id,source_url,image_source_url) VALUES (?,?,?)',(pid,item['source'],item['image_source']))
             db.execute("INSERT INTO catalog_imports VALUES ('health-beauty-photos-v1',?)",(now(),))
+        expanded_catalog=ROOT/'expanded-market-catalog.json'
+        if expanded_catalog.is_file() and not db.execute("SELECT 1 FROM catalog_imports WHERE key='expanded-source-catalog-v1'").fetchone():
+            manifest=json.loads(expanded_catalog.read_text())
+            db.execute('CREATE INDEX IF NOT EXISTS product_image_lookup ON products(image)')
+            db.execute('CREATE INDEX IF NOT EXISTS product_name_category_lookup ON products(name,category)')
+            for item in manifest['products']:
+                image=item['image']
+                parsed=urlparse(image)
+                if parsed.scheme!='https' or not parsed.hostname or item['category'] not in ('سوبر ماركت','خضار','أدوية'):
+                    raise ValueError('Invalid source catalog item')
+                existing=db.execute('SELECT id FROM products WHERE image=? OR (name=? AND category=?) ORDER BY id LIMIT 1',(image,item['name'],item['category'])).fetchone()
+                pid=existing['id'] if existing else db.execute('INSERT INTO products(name,category,price,stock,active,price_pending,catalog_preview,image) VALUES (?,?,0,0,0,1,1,?)',(item['name'],item['category'],image)).lastrowid
+                db.execute('INSERT OR IGNORE INTO catalog_sources(product_id,source_url,image_source_url) VALUES (?,?,?)',(pid,item['source'],item['image_source']))
+            db.execute("INSERT INTO catalog_imports VALUES ('expanded-source-catalog-v1',?)",(now(),))
         if not db.execute("SELECT 1 FROM products").fetchone():
             db.executemany("INSERT INTO products(name,category,price,stock) VALUES (?,?,?,?)", [("منتج تجريبي: أرز 1 كجم", "سوبر ماركت", 40, 20), ("منتج تجريبي: خضار مشكل", "خضار", 35, 15), ("منتج تجريبي: وجبة", "مطاعم", 85, 10)])
         if not db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
@@ -516,7 +530,7 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as db:
                 p=db.execute('SELECT name,category,image FROM products WHERE id=? AND catalog_preview=1',(pid,)).fetchone()
             if not p: return self.respond({'error':'الصورة غير متاحة'},404)
-            if re.fullmatch(r'/product-photo-[0-9]+[.]jpg',p['image'] or ''):
+            if re.fullmatch(r'/product-photo-[0-9]+[.]jpg',p['image'] or '') or (p['image'] or '').startswith('https://'):
                 self.send_response(302);self.send_header('Location',p['image']);self.end_headers();return
             image=product_illustration(p['name'],p['category']).encode()
             self.send_response(200);self.send_header('Content-Type','image/svg+xml; charset=utf-8');self.send_header('Cache-Control','public, max-age=3600');self.send_header('Content-Length',str(len(image)));self.end_headers();self.wfile.write(image)
