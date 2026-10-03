@@ -84,6 +84,8 @@ function initMaps(){
       map.on('click',e=>choose(e.latlng));
       if(chosenPoint){let mode=mapPinMode;mapPinMode='destination';choose({lat:chosenPoint.latitude,lng:chosenPoint.longitude});mapPinMode=mode}
       if(chosenPickup){let mode=mapPinMode;mapPinMode='pickup';choose({lat:chosenPickup.lat,lng:chosenPickup.lon});mapPinMode=mode}
+      if(chosenPoint&&chosenPickup)map.fitBounds([[chosenPoint.latitude,chosenPoint.longitude],[chosenPickup.lat,chosenPickup.lon]],{padding:[30,30],maxZoom:16});
+      else if(chosenPoint)map.setView([chosenPoint.latitude,chosenPoint.longitude],16);
       window.pickCurrentLocation=()=>{
         if(!navigator.geolocation)return alert('تحديد الموقع غير مدعوم');
         navigator.geolocation.getCurrentPosition(p=>{
@@ -139,4 +141,3 @@ function initMaps(){
     showMapPoints(map,positions);
   }
 }
-
