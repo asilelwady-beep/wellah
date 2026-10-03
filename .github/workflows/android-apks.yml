@@ -1,4 +1,4 @@
-name: Build Android apps
+name: Build Android apps 
 on:
   push:
     branches: [main]
