@@ -559,6 +559,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond({'ok':True})
             except sqlite3.Error:
                 return self.respond({'ok':False},503)
+        if path == '/api/maps-config':
+            # Maps JavaScript browser keys are public; restrict this key to walla3ha.com
+            # and to the Maps JavaScript API in Google Cloud Console.
+            return self.respond({'google_maps_key': os.environ.get('WALLAHA_GOOGLE_MAPS_API_KEY','')})
         if path == '/api/catalog':
             with connect() as db:
                 return self.respond({
