@@ -16,26 +16,41 @@ const mapCenter=[29.8513,31.2744];
 window.pickCurrentLocation=()=>alert('الخريطة لم تُحمّل بعد. تحقق من الاتصال ثم حدّث الصفحة.');
 window.selectMapPinMode=()=>alert('الخريطة لم تُحمّل بعد. تحقق من الاتصال ثم حدّث الصفحة.');
 
-function clearMaps(){for(const map of mapViews){if(map._gpsWatch!=null)navigator.geolocation?.clearWatch(map._gpsWatch);map.remove()}mapViews=[]}
+function closeExpandedMap(){
+  const el=document.querySelector('.map.map-expanded');
+  if(!el)return;
+  el.classList.remove('map-expanded');
+  document.body.classList.remove('map-open');
+  const map=mapViews.find(m=>m.getContainer()===el);
+  if(map)requestAnimationFrame(()=>map.invalidateSize());
+}
+window.addEventListener('keydown',e=>{if(e.key==='Escape')closeExpandedMap()});
+function expandMap(map){
+  closeExpandedMap();
+  map.getContainer().classList.add('map-expanded');
+  document.body.classList.add('map-open');
+  requestAnimationFrame(()=>map.invalidateSize());
+}
+function clearMaps(){closeExpandedMap();for(const map of mapViews){if(map._gpsWatch!=null)navigator.geolocation?.clearWatch(map._gpsWatch);map.remove()}mapViews=[]}
 function showMyLocationOnMap(id){
   const map=mapViews.find(m=>m.getContainer().id===id);
   if(!map||!navigator.geolocation){alert('GPS غير متاح على هذا الجهاز');return}
-  map.getContainer().scrollIntoView({behavior:'smooth',block:'center'});
+  expandMap(map);
   if(map._gpsWatch!=null)navigator.geolocation.clearWatch(map._gpsWatch);
   let first=true;
   map._gpsWatch=navigator.geolocation.watchPosition(pos=>{
     if(!mapViews.includes(map))return;
     const coords=[pos.coords.latitude,pos.coords.longitude];
-    if(!map._gpsMarker)map._gpsMarker=L.circleMarker(coords,{radius:9,color:'#fff',weight:3,fillColor:'#1686ef',fillOpacity:1}).addTo(map).bindPopup('موقعي الحالي');
+    if(!map._gpsMarker)map._gpsMarker=L.circleMarker(coords,{radius:11,color:'#fff',weight:4,fillColor:'#1686ef',fillOpacity:1,className:'live-gps-dot'}).addTo(map).bindPopup('موقعي الحالي');
     else map._gpsMarker.setLatLng(coords);
-    if(first){map.setView(coords,16);first=false}
+    if(first){map.flyTo(coords,17,{duration:0.7});first=false}
   },()=>alert('تعذر الوصول إلى موقعك. فعّل GPS واسمح للموقع بالوصول.'),{enableHighAccuracy:true,maximumAge:3000,timeout:15000});
 }
 function baseMap(id,zoom=13){
   const el=document.getElementById(id);
   if(!el)return null;
   if(!window.L){el.textContent='تعذر تحميل الخريطة الآن. تحقق من الاتصال ثم حدّث الصفحة.';return null}
-  const map=L.map(el,{scrollWheelZoom:false,zoomControl:false}).setView(mapCenter,zoom);
+  const map=L.map(el,{scrollWheelZoom:false,zoomControl:false,zoomAnimation:true,fadeAnimation:true}).setView(mapCenter,zoom);
   L.control.zoom({position:'bottomleft'}).addTo(map);
   let webgl=false;try{const canvas=document.createElement('canvas');webgl=!!(canvas.getContext('webgl2')||canvas.getContext('webgl'));}catch(e){}
   if(webgl&&typeof L.maplibreGL==='function'){
@@ -48,6 +63,10 @@ function baseMap(id,zoom=13){
   const locate=L.control({position:'topleft'});
   locate.onAdd=()=>{const button=L.DomUtil.create('button','map-locate');button.type='button';button.title='اعرض موقعي الحالي';button.setAttribute('aria-label','اعرض موقعي الحالي');button.textContent='⌖';L.DomEvent.disableClickPropagation(button);L.DomEvent.on(button,'click',()=>showMyLocationOnMap(id));return button};
   locate.addTo(map);
+  const expand=L.control({position:'topright'});
+  expand.onAdd=()=>{const button=L.DomUtil.create('button','map-expand');button.type='button';button.title='تكبير الخريطة';button.setAttribute('aria-label','تكبير الخريطة');button.textContent='⛶';L.DomEvent.disableClickPropagation(button);L.DomEvent.on(button,'click',()=>{if(el.classList.contains('map-expanded'))closeExpandedMap();else expandMap(map)});return button};
+  expand.addTo(map);
+  const close=document.createElement('button');close.type='button';close.className='map-close';close.textContent='✕ إغلاق الخريطة';close.setAttribute('aria-label','إغلاق الخريطة');close.addEventListener('click',e=>{e.stopPropagation();closeExpandedMap()});el.appendChild(close);
   mapViews.push(map);
   requestAnimationFrame(()=>map.invalidateSize());
   return map;
