@@ -123,6 +123,9 @@ def init():
                 db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
         if 'service_key' not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
             db.execute("ALTER TABLE orders ADD COLUMN service_key TEXT DEFAULT ''")
+        for column,definition in [('shop_anywhere','INTEGER NOT NULL DEFAULT 0')]:
+            if column not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
+                db.execute(f'ALTER TABLE orders ADD COLUMN {column} {definition}')
         for column in ('shipment_type','shipment_other','sender_name','sender_phone','recipient_name','recipient_phone'):
             if column not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
                 db.execute(f"ALTER TABLE orders ADD COLUMN {column} TEXT DEFAULT ''")
@@ -429,7 +432,7 @@ def assign(db, oid):
     if not o or o['status'] not in ('new','awaiting_driver','offered') or o["payment_status"] != "confirmed" or (o['kind']!='products' and not o['quote_accepted']) or o['medicine_review']:
         return
     merchant = db.execute('SELECT area FROM merchants WHERE id=?',(o['merchant_id'],)).fetchone() if o['merchant_id'] else None
-    pickup_area = merchant['area'] if merchant else o['area']
+    pickup_area = merchant['area'] if merchant and not o['shop_anywhere'] else o['area']
     # Last known location must be recent. Busy and declined drivers are excluded.
     candidates = db.execute("""SELECT d.id,d.lat,d.lon,d.vehicle_type FROM drivers d WHERE d.available=1 AND d.area=?
         AND d.lat IS NOT NULL AND d.lon IS NOT NULL AND d.location_at>=?
@@ -696,7 +699,7 @@ class Handler(BaseHTTPRequestHandler):
             clause, args = ('', ()) if user['role']=='admin' else ((' WHERE o.user_id=?', (user['id'],)) if user['role']=='customer' else (' WHERE d.user_id=?', (user['id'],)))
             orders = rows(db, "SELECT o.*,d.name AS driver_name,d.lat AS driver_lat,d.lon AS driver_lon,d.location_at AS driver_location_at,m.name AS merchant_name,m.address AS merchant_address FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id LEFT JOIN merchants m ON m.id=o.merchant_id"+clause+" ORDER BY o.id DESC", args)
             for o in orders:
-                o["items"] = rows(db, "SELECT product_id,name,quantity,unit_price,unit FROM order_items WHERE order_id=?", (o["id"],))
+                o["items"] = rows(db, "SELECT oi.product_id,oi.name,oi.quantity,oi.unit_price,oi.unit,COALESCE(NULLIF(p.image,''),CASE WHEN p.catalog_preview=1 THEN '/product-illustration/' || p.id || '.svg' ELSE '/icon.svg' END) AS image FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=?", (o["id"],))
                 o["events"] = rows(db, "SELECT action,at FROM events WHERE order_id=? ORDER BY id", (o["id"],))
                 if user['role']!='admin':
                     if user['role']=='customer' and o['status'] not in ('assigned','ready','picked_up','on_way'):
@@ -706,7 +709,7 @@ class Handler(BaseHTTPRequestHandler):
                     o.pop('proof', None)
                     o.pop('reference', None)
                     o.pop('prescription', None)
-            profile=db.execute('SELECT id,name,phone,area,vehicle_type,available FROM drivers WHERE user_id=?',(user['id'],)).fetchone() if user['role']=='driver' else None
+            profile=db.execute('SELECT id,name,phone,area,vehicle_type,available,lat,lon,location_at FROM drivers WHERE user_id=?',(user['id'],)).fetchone() if user['role']=='driver' else None
             wallets={str(d['id']):driver_wallet(db,d['id']) for d in db.execute('SELECT id FROM drivers')} if user['role']=='admin' else {}
             self.respond({"draft_catalog":preview_catalog(db) if user['role'] in ('customer','admin') else [],"driver_profile":dict(profile) if profile else None,"driver_wallet":driver_wallet(db,profile['id']) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}})
 
@@ -974,6 +977,8 @@ class Handler(BaseHTTPRequestHandler):
                     if kind == "products":
                         merchant=db.execute('SELECT * FROM merchants WHERE id=? AND active=1',(int(data.get('merchant_id') or 0),)).fetchone()
                         if not merchant: raise ValueError('اختر محلًا أو صيدلية متاحة')
+                        shop_anywhere=bool(data.get('shop_anywhere'))
+                        if shop_anywhere and merchant['category']!='سوبر ماركت': raise ValueError('الشراء من أي متجر متاح للسوبر ماركت فقط')
                         for it in data.get("items", []):
                             qty = float(it["quantity"])
                             p = db.execute("SELECT * FROM products WHERE id=? AND active=1", (it["product_id"],)).fetchone()
@@ -1004,7 +1009,7 @@ class Handler(BaseHTTPRequestHandler):
                     if kind != "products": fee = 0
                     km_quote=None
                     rate=db.execute("SELECT value FROM settings WHERE key='per_km_rate'").fetchone()[0]
-                    if rate and kind in ('products','delivery'):
+                    if rate and kind in ('products','delivery') and not (kind=='products' and shop_anywhere):
                         km_quote=verify_delivery_quote(db,user['id'],data)
                         fee=km_quote['fee']
                     ps = "confirmed" if payment == "cash" else "pending"
@@ -1017,10 +1022,10 @@ class Handler(BaseHTTPRequestHandler):
                         log(db,oid,f"رسوم الطريق: {km_quote['km']} كم × {km_quote['rate']} ج = {fee} ج")
                     if parcel:
                         db.execute('UPDATE orders SET shipment_type=?,shipment_other=?,sender_name=?,sender_phone=?,recipient_name=?,recipient_phone=? WHERE id=?',tuple(parcel[key] for key in ('shipment_type','shipment_other','sender_name','sender_phone','recipient_name','recipient_phone'))+(oid,))
-                    db.execute('UPDATE orders SET service_key=?,latitude=?,longitude=?,merchant_id=?,pickup_lat=?,pickup_lon=? WHERE id=?',(service_key,lat,lon,merchant['id'] if merchant else None,merchant['lat'] if merchant else pickup_lat,merchant['lon'] if merchant else pickup_lon,oid))
+                    db.execute('UPDATE orders SET service_key=?,latitude=?,longitude=?,merchant_id=?,pickup_lat=?,pickup_lon=?,shop_anywhere=?,pickup=? WHERE id=?',(service_key,lat,lon,merchant['id'] if merchant else None,None if kind=='products' and shop_anywhere else merchant['lat'] if merchant else pickup_lat,None if kind=='products' and shop_anywhere else merchant['lon'] if merchant else pickup_lon,1 if kind=='products' and shop_anywhere else 0,'أي سوبر ماركت قريب يختاره الطيار' if kind=='products' and shop_anywhere else str(data.get('pickup','')),oid))
                     for p, qty in items:
-                        db.execute("UPDATE products SET stock=stock-? WHERE id=?", (qty / weight_basis(p) if sold_by_weight(p) else qty, p["id"]))
-                        db.execute("INSERT INTO order_items(order_id,product_id,name,quantity,unit_price,unit,stock_quantity) VALUES (?,?,?,?,?,?,?)", (oid, p["id"], p["name"], qty, p["price"] / weight_basis(p) if sold_by_weight(p) else p["price"], "كجم" if sold_by_weight(p) else "قطعة", qty / weight_basis(p) if sold_by_weight(p) else qty))
+                        if not (kind=='products' and shop_anywhere): db.execute("UPDATE products SET stock=stock-? WHERE id=?", (qty / weight_basis(p) if sold_by_weight(p) else qty, p["id"]))
+                        db.execute("INSERT INTO order_items(order_id,product_id,name,quantity,unit_price,unit,stock_quantity) VALUES (?,?,?,?,?,?,?)", (oid, p["id"], p["name"], qty, p["price"] / weight_basis(p) if sold_by_weight(p) else p["price"], "كجم" if sold_by_weight(p) else "قطعة", 0 if kind=='products' and shop_anywhere else qty / weight_basis(p) if sold_by_weight(p) else qty))
                     log(db, oid, "أنشأ العميل الطلب")
                     if status=='new' or (km_quote and kind=='delivery' and payment=='cash'): assign(db,oid)
                     return self.respond({"ok": True, "id": oid})
@@ -1080,6 +1085,16 @@ class Handler(BaseHTTPRequestHandler):
                         assign(db,oid)
                     elif action in ("picked_up", "on_way", "delivered") and o["driver_id"] and o["status"] in ({'picked_up': ('assigned','ready'),'on_way':('picked_up',),'delivered':('on_way',)}[action]):
                         if action=='delivered' and o['payment']=='cash' and data.get('cash_collected') is not True: raise ValueError('أكد تحصيل المبلغ النقدي أولًا')
+                        if action=='picked_up' and o['shop_anywhere']:
+                            shop=str(data.get('purchase_shop','')).strip()
+                            if not 3<=len(shop)<=120: raise ValueError('اكتب اسم أو عنوان السوبر ماركت الذي اشتريت منه')
+                            coords=data.get('purchase_lat'),data.get('purchase_lon')
+                            if coords[0] is not None or coords[1] is not None:
+                                if coords[0] is None or coords[1] is None: raise ValueError('موقع الشراء غير مكتمل')
+                                plat,plon=float(coords[0]),float(coords[1])
+                                if not all(math.isfinite(x) for x in (plat,plon)) or not (-90<=plat<=90 and -180<=plon<=180): raise ValueError('موقع الشراء غير صحيح')
+                                db.execute('UPDATE orders SET pickup_lat=?,pickup_lon=? WHERE id=?',(plat,plon,oid))
+                            db.execute('UPDATE orders SET pickup=? WHERE id=?',(shop,oid))
                         db.execute("UPDATE orders SET status=? WHERE id=?", (action, oid))
                         if action=='delivered' and o['payment']=='cash': db.execute('UPDATE orders SET cash_collected=1 WHERE id=?',(oid,))
                         log(db, oid, {"picked_up": "استلم المندوب الطلب", "on_way": "المندوب في الطريق", "delivered": "تم التسليم"}[action])
