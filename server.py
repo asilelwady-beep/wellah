@@ -580,7 +580,7 @@ class Handler(BaseHTTPRequestHandler):
                 if entry and time.monotonic()-entry[0] < 3600: return self.respond({'results':entry[1]})
                 if time.monotonic()-GEOCODE_STATE['last'] < 1.2: return self.respond({'error':'انتظر لحظة ثم ابحث مرة أخرى'},429)
                 GEOCODE_STATE['last'] = time.monotonic()
-            url = 'https://photon.komoot.io/api/?' + urlencode({'q':query,'limit':5,'lang':'ar','countrycode':'EG','bbox':'31.10,29.70,31.50,30.02','lat':'29.8513','lon':'31.2744'})
+            url = 'https://photon.komoot.io/api/?' + urlencode({'q':query,'limit':5,'lang':'default','countrycode':'EG','bbox':'31.10,29.70,31.50,30.02','lat':'29.8513','lon':'31.2744'})
             try:
                 request = Request(url,headers={'User-Agent':'Walla3ha/1.0 (+https://walla3ha.com)','Accept':'application/json'})
                 with urlopen(request,timeout=8) as response: payload=json.load(response)
