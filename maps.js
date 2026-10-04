@@ -31,10 +31,18 @@ function baseMap(id,zoom=13){
   const el=document.getElementById(id);
   if(!el)return null;
   if(!window.L){el.textContent='تعذر تحميل الخريطة الآن. تحقق من الاتصال ثم حدّث الصفحة.';return null}
-  const map=L.map(el,{scrollWheelZoom:false}).setView(mapCenter,zoom);
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
-    maxZoom:19,attribution:'&copy; OpenStreetMap contributors'
-  }).addTo(map);
+  const map=L.map(el,{scrollWheelZoom:false,zoomControl:false}).setView(mapCenter,zoom);
+  L.control.zoom({position:'bottomleft'}).addTo(map);
+  if(typeof L.maplibreGL==='function'){
+    L.maplibreGL({style:'https://tiles.openfreemap.org/styles/liberty',interactive:false,attribution:'© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors'}).addTo(map);
+  }else{
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
+      maxZoom:19,attribution:'&copy; OpenStreetMap contributors'
+    }).addTo(map);
+  }
+  const locate=L.control({position:'topleft'});
+  locate.onAdd=()=>{const button=L.DomUtil.create('button','map-locate');button.type='button';button.title='اعرض موقعي الحالي';button.setAttribute('aria-label','اعرض موقعي الحالي');button.textContent='⌖';L.DomEvent.disableClickPropagation(button);L.DomEvent.on(button,'click',()=>{if(!navigator.geolocation)return alert('تحديد الموقع غير مدعوم');navigator.geolocation.getCurrentPosition(p=>map.setView([p.coords.latitude,p.coords.longitude],16),()=>alert('تعذر تحديد موقعك؛ تأكد من صلاحية الموقع.'),{enableHighAccuracy:true,timeout:15000})});return button};
+  locate.addTo(map);
   mapViews.push(map);
   requestAnimationFrame(()=>map.invalidateSize());
   return map;
