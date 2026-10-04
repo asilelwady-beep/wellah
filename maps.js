@@ -46,6 +46,33 @@ function showMyLocationOnMap(id){
     if(first){map.flyTo(coords,17,{duration:0.7});first=false}
   },()=>alert('تعذر الوصول إلى موقعك. فعّل GPS واسمح للموقع بالوصول.'),{enableHighAccuracy:true,maximumAge:3000,timeout:15000});
 }
+let googleMapsReadyPromise=null;
+function loadGoogleMaps(){
+  if(googleMapsReadyPromise)return googleMapsReadyPromise;
+  googleMapsReadyPromise=fetch('/api/maps-config').then(r=>r.ok?r.json():{}).then(config=>{
+    const key=config.google_maps_key;
+    if(!key)return false;
+    const googleReady=window.google?.maps?Promise.resolve():new Promise((resolve,reject)=>{
+      const callback='__wallahGoogleMapsReady';
+      const timer=setTimeout(()=>reject(new Error('Google Maps timed out')),15000);
+      window[callback]=()=>{clearTimeout(timer);delete window[callback];resolve()};
+      const script=document.createElement('script');
+      script.src='https://maps.googleapis.com/maps/api/js?key='+encodeURIComponent(key)+'&v=weekly&language=ar&region=EG&loading=async&callback='+callback;
+      script.async=true;
+      script.onerror=()=>{clearTimeout(timer);delete window[callback];reject(new Error('Google Maps unavailable'))};
+      document.head.appendChild(script);
+    });
+    return googleReady.then(()=>new Promise((resolve,reject)=>{
+      if(L.gridLayer?.googleMutant)return resolve(true);
+      const script=document.createElement('script');
+      script.src='https://unpkg.com/leaflet.gridlayer.googlemutant@latest/Leaflet.GoogleMutant.js';
+      script.onload=()=>resolve(!!L.gridLayer?.googleMutant);
+      script.onerror=()=>reject(new Error('Google map adapter unavailable'));
+      document.head.appendChild(script);
+    }));
+  }).catch(()=>false);
+  return googleMapsReadyPromise;
+}
 function baseMap(id,zoom=13){
   const el=document.getElementById(id);
   if(!el)return null;
@@ -53,13 +80,22 @@ function baseMap(id,zoom=13){
   const map=L.map(el,{scrollWheelZoom:false,zoomControl:false,zoomAnimation:true,fadeAnimation:true}).setView(mapCenter,zoom);
   L.control.zoom({position:'bottomleft'}).addTo(map);
   let webgl=false;try{const canvas=document.createElement('canvas');webgl=!!(canvas.getContext('webgl2')||canvas.getContext('webgl'));}catch(e){}
+  let baseLayer;
   if(webgl&&typeof L.maplibreGL==='function'){
-    L.maplibreGL({style:'https://tiles.openfreemap.org/styles/liberty',interactive:false,attribution:'© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors'}).addTo(map);
+    baseLayer=L.maplibreGL({style:'https://tiles.openfreemap.org/styles/liberty',interactive:false,attribution:'© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors'}).addTo(map);
   }else{
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    baseLayer=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
       maxZoom:19,attribution:'&copy; OpenStreetMap contributors'
     }).addTo(map);
   }
+  loadGoogleMaps().then(ready=>{
+    if(!ready||!mapViews.includes(map))return;
+    try{
+      const googleLayer=L.gridLayer.googleMutant({type:'roadmap',maxZoom:21});
+      googleLayer.once('load',()=>{if(mapViews.includes(map)){map.removeLayer(baseLayer);el.dataset.mapProvider='google'}});
+      googleLayer.addTo(map);
+    }catch(error){console.warn('Google Maps layer unavailable',error)}
+  });
   const locate=L.control({position:'topleft'});
   locate.onAdd=()=>{const button=L.DomUtil.create('button','map-locate');button.type='button';button.title='اعرض موقعي الحالي';button.setAttribute('aria-label','اعرض موقعي الحالي');button.textContent='⌖';L.DomEvent.disableClickPropagation(button);L.DomEvent.on(button,'click',()=>showMyLocationOnMap(id));return button};
   locate.addTo(map);
