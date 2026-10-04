@@ -33,7 +33,7 @@ function baseMap(id,zoom=13){
   if(!window.L){el.textContent='تعذر تحميل الخريطة الآن. تحقق من الاتصال ثم حدّث الصفحة.';return null}
   const map=L.map(el,{scrollWheelZoom:false,zoomControl:false}).setView(mapCenter,zoom);
   L.control.zoom({position:'bottomleft'}).addTo(map);
-  if(typeof L.maplibreGL==='function'){
+  let webgl=false;try{const canvas=document.createElement('canvas');webgl=!!(canvas.getContext('webgl2')||canvas.getContext('webgl'));}catch(e){}\n  if(webgl&&typeof L.maplibreGL==='function'){
     L.maplibreGL({style:'https://tiles.openfreemap.org/styles/liberty',interactive:false,attribution:'© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors'}).addTo(map);
   }else{
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
