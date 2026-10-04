@@ -23,7 +23,7 @@ from threading import Lock
 
 ROOT = Path(__file__).parent
 DB = Path(os.environ.get('WALLAHA_DB_PATH', str(ROOT / 'wallaha.sqlite3')))
-AREAS = ["أبو رجوان البحري", "أبو رجوان القبلي", "أبو صير", "ميت رهينة", "سقارة", "دهشور", "زاوية دهشور", "الشوبك الغربي", "الطرفاية", "المرازيق", "الشنباب", "العزيزية"]
+AREAS = ["مدينة البدرشين", "أبو رجوان البحري", "أبو رجوان القبلي", "أبو صير", "ميت رهينة", "سقارة", "دهشور", "زاوية دهشور", "الشوبك الغربي", "الطرفاية", "المرازيق", "الشنباب", "العزيزية"]
 CAIRO = ZoneInfo('Africa/Cairo')
 GEOCODE_LOCK = Lock()
 GEOCODE_STATE = {'last': 0.0, 'cache': {}}
