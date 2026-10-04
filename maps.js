@@ -139,13 +139,13 @@ function initMaps(){
           if(pickupMarker)pickupMarker.setLatLng(latlng);
           else pickupMarker=point(map,latlng.lat,latlng.lng,'مكان الاستلام','#2864c5');
           const label=document.getElementById('selected-pickup');
-          if(label)label.textContent='تم تحديد مكان الاستلام على الخريطة';
+          if(label)label.textContent='تم تحديد مكان الانطلاق';const pickup=document.getElementById('pickup');if(pickup&&!pickup.value.trim())pickup.value='نقطة الانطلاق على الخريطة';
         }else{
           chosenPoint={latitude:latlng.lat,longitude:latlng.lng};
           if(marker)marker.setLatLng(latlng);
           else marker=point(map,latlng.lat,latlng.lng,'عنوان العميل','#e58029');
           const label=document.getElementById('selected-point');
-          if(label)label.textContent=`تم تحديد موقع العنوان (${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)})`;
+          if(label)label.textContent='تم تحديد المكان على الخريطة';if(kind!=='products'){const address=document.getElementById('address'),destination=document.getElementById('destination');if(address&&!address.value.trim())address.value='الوجهة على الخريطة';if(destination&&!destination.value.trim())destination.value='الوجهة على الخريطة'}
         }
       };
       window.selectMapPinMode=mode=>{mapPinMode=mode;map.getContainer().scrollIntoView({behavior:'smooth',block:'center'});const label=document.getElementById(mode==='pickup'?'selected-pickup':'selected-point');if(label)label.textContent=mode==='pickup'?'المس الخريطة لتحديد الاستلام':'المس الخريطة لتحديد الوجهة'};
@@ -158,9 +158,21 @@ function initMaps(){
         mapPinMode='destination';
         if(!navigator.geolocation)return alert('تحديد الموقع غير مدعوم');
         navigator.geolocation.getCurrentPosition(p=>{
-          const pos={lat:p.coords.latitude,lng:p.coords.longitude};choose(pos);map.setView(pos,16);
-        },e=>alert('تعذر تحديد موقعك: '+e.message),{enableHighAccuracy:true,timeout:15000});
+          if(!mapViews.includes(map))return;
+          const pos={lat:p.coords.latitude,lng:p.coords.longitude};choose(pos);map.flyTo(pos,17,{duration:0.7});
+        },()=>{const label=document.getElementById('selected-point');if(label)label.textContent='اسمح بالوصول إلى الموقع أو المس مكانك على الخريطة'}, {enableHighAccuracy:true,maximumAge:0,timeout:15000});
       };
+      if(customerView==='checkout'&&!autoCheckoutLocationAttempted){
+        autoCheckoutLocationAttempted=true;
+        if(!navigator.geolocation){const label=document.getElementById(kind==='products'?'selected-point':'selected-pickup');if(label)label.textContent='الموقع غير متاح؛ المس مكانك على الخريطة'}
+        else navigator.geolocation.getCurrentPosition(p=>{
+          if(!mapViews.includes(map))return;
+          const pos={lat:p.coords.latitude,lng:p.coords.longitude};
+          if(kind==='products'){if(chosenPoint)return;mapPinMode='destination';choose(pos)}
+          else{if(chosenPickup)return;mapPinMode='pickup';choose(pos);mapPinMode='destination'}
+          map.flyTo(pos,17,{duration:0.7});
+        },()=>{const label=document.getElementById(kind==='products'?'selected-point':'selected-pickup');if(label)label.textContent='اسمح بالوصول إلى الموقع أو المس مكانك على الخريطة'}, {enableHighAccuracy:true,maximumAge:0,timeout:15000});
+      }
     }
     const o=state.orders.find(x=>x.id===trackingOrderId);
     const track=baseMap('tracking-map');
