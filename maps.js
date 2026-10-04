@@ -83,10 +83,15 @@ window.searchCustomerMapAddress=async()=>{
     if(!places.length){status.textContent='العنوان غير موجود بدقة. جرّب اسم شارع أو معلم قريب، أو حدد النقطة على الخريطة.';return}
     const showPlace=place=>window.setCustomerMapPoint(place.lat,place.lon,place.label||address);
     showPlace(places[0]);
-    status.textContent='تم وضع العلامة على أول نتيجة. راجع المكان أو اختر نتيجة أدق:';
-    for(const place of places.slice(0,4)){
-      const button=document.createElement('button');button.type='button';button.textContent=place.label||address;
-      button.addEventListener('click',()=>{showPlace(place);status.textContent='تم تحديد '+(place.label||address)});results.appendChild(button);
+    status.textContent='📍 '+(places[0].label||address)+' — راجع العلامة على الخريطة';
+    if(places.length>1){
+      const other=document.createElement('details'),summary=document.createElement('summary');
+      summary.textContent='نتائج أخرى';other.appendChild(summary);
+      for(const place of places.slice(1,4)){
+        const button=document.createElement('button');button.type='button';button.textContent=place.label||address;
+        button.addEventListener('click',()=>{showPlace(place);status.textContent='📍 '+(place.label||address);other.open=false});other.appendChild(button);
+      }
+      results.appendChild(other);
     }
   }catch(error){status.textContent=error.message||'تعذر البحث؛ حدد النقطة على الخريطة'}
 };
