@@ -1,18 +1,8 @@
 const tripRouteCache=new Map();
 function tripRouteTarget(o){return ['assigned','ready'].includes(o.status)?{lat:o.pickup_lat,lon:o.pickup_lon,label:'مكان الاستلام'}:['picked_up','on_way'].includes(o.status)?{lat:o.latitude,lon:o.longitude,label:'عنوان العميل'}:null}
-async function drawTripRoute(map,o){
- const info=document.getElementById('trip-route-info'),target=tripRouteTarget(o);if(!info||!target)return;
- const profile=tab==='driver'?state.driver_profile:null,lat=profile?.lat??o.driver_lat,lon=profile?.lon??o.driver_lon,stamp=profile?.location_at??o.driver_location_at;
- if(target.lat==null||target.lon==null){info.textContent='لا يمكن رسم الطريق: حدد نقطة دقيقة لـ'+target.label+'. استخدم زر الاتجاهات للبحث بالعنوان.';return}
- if(lat==null||lon==null||!stamp||Date.now()-Date.parse(stamp)>300000){info.textContent='فعّل مشاركة موقع الطيار ليظهر الطريق إلى '+target.label;return}
- info.textContent='جاري حساب الطريق إلى '+target.label+'…';
- const key=[lat,lon,target.lat,target.lon].map(x=>Number(x).toFixed(5)).join(','),cached=tripRouteCache.get(key);
- try{
-  let route=cached&&Date.now()-cached.at<30000?cached.route:null;
-  if(!route){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),12000);try{const response=await fetch('https://router.project-osrm.org/route/v1/driving/'+lon+','+lat+';'+target.lon+','+target.lat+'?overview=full&geometries=geojson',{signal:controller.signal});if(!response.ok)throw Error('route');const result=await response.json();route=result.routes?.[0];if(result.code!=='Ok'||!route?.geometry?.coordinates?.length)throw Error('no route');tripRouteCache.set(key,{at:Date.now(),route});if(tripRouteCache.size>20)tripRouteCache.delete(tripRouteCache.keys().next().value)}finally{clearTimeout(timer)}}
-  if(!mapViews.includes(map))return;
-  const line=L.polyline(route.geometry.coordinates.map(([x,y])=>[y,x]),{color:['assigned','ready'].includes(o.status)?'#2864c5':'#d94d16',weight:6,opacity:.85}).addTo(map);map.fitBounds(line.getBounds(),{padding:[25,25],maxZoom:17});info.textContent='الطريق إلى '+target.label+' · '+(route.distance/1000).toFixed(1)+' كم · وقت قيادة تقديري '+Math.max(1,Math.round(route.duration/60))+' دقيقة. مسار قيادة؛ راجع ملاءمته لمركبتك.';
- }catch(e){if(mapViews.includes(map))info.textContent='تعذر تحميل طريق الشوارع الآن. استخدم زر الاتجاهات؛ علامات المواقع ما زالت ظاهرة.'}
+function drawTripRoute(map,o){
+ const info=document.getElementById('trip-route-info'),target=tripRouteTarget(o);
+ if(info&&target)info.textContent='اضغط الاتجاهات إلى '+target.label+' لفتح الملاحة من موقعك الحالي.';
 }
 
 /* Map UI for the three signed-in roles. Coordinates are stored only with orders. */
@@ -26,7 +16,21 @@ const mapCenter=[29.8513,31.2744];
 window.pickCurrentLocation=()=>alert('الخريطة لم تُحمّل بعد. تحقق من الاتصال ثم حدّث الصفحة.');
 window.selectMapPinMode=()=>alert('الخريطة لم تُحمّل بعد. تحقق من الاتصال ثم حدّث الصفحة.');
 
-function clearMaps(){for(const map of mapViews)map.remove();mapViews=[]}
+function clearMaps(){for(const map of mapViews){if(map._gpsWatch!=null)navigator.geolocation?.clearWatch(map._gpsWatch);map.remove()}mapViews=[]}
+function showMyLocationOnMap(id){
+  const map=mapViews.find(m=>m.getContainer().id===id);
+  if(!map||!navigator.geolocation){alert('GPS غير متاح على هذا الجهاز');return}
+  map.getContainer().scrollIntoView({behavior:'smooth',block:'center'});
+  if(map._gpsWatch!=null)navigator.geolocation.clearWatch(map._gpsWatch);
+  let first=true;
+  map._gpsWatch=navigator.geolocation.watchPosition(pos=>{
+    if(!mapViews.includes(map))return;
+    const coords=[pos.coords.latitude,pos.coords.longitude];
+    if(!map._gpsMarker)map._gpsMarker=L.circleMarker(coords,{radius:9,color:'#fff',weight:3,fillColor:'#1686ef',fillOpacity:1}).addTo(map).bindPopup('موقعي الحالي');
+    else map._gpsMarker.setLatLng(coords);
+    if(first){map.setView(coords,16);first=false}
+  },()=>alert('تعذر الوصول إلى موقعك. فعّل GPS واسمح للموقع بالوصول.'),{enableHighAccuracy:true,maximumAge:3000,timeout:15000});
+}
 function baseMap(id,zoom=13){
   const el=document.getElementById(id);
   if(!el)return null;
@@ -42,7 +46,7 @@ function baseMap(id,zoom=13){
     }).addTo(map);
   }
   const locate=L.control({position:'topleft'});
-  locate.onAdd=()=>{const button=L.DomUtil.create('button','map-locate');button.type='button';button.title='اعرض موقعي الحالي';button.setAttribute('aria-label','اعرض موقعي الحالي');button.textContent='⌖';L.DomEvent.disableClickPropagation(button);L.DomEvent.on(button,'click',()=>{if(!navigator.geolocation)return alert('تحديد الموقع غير مدعوم');navigator.geolocation.getCurrentPosition(p=>map.setView([p.coords.latitude,p.coords.longitude],16),()=>alert('تعذر تحديد موقعك؛ تأكد من صلاحية الموقع.'),{enableHighAccuracy:true,timeout:15000})});return button};
+  locate.onAdd=()=>{const button=L.DomUtil.create('button','map-locate');button.type='button';button.title='اعرض موقعي الحالي';button.setAttribute('aria-label','اعرض موقعي الحالي');button.textContent='⌖';L.DomEvent.disableClickPropagation(button);L.DomEvent.on(button,'click',()=>showMyLocationOnMap(id));return button};
   locate.addTo(map);
   mapViews.push(map);
   requestAnimationFrame(()=>map.invalidateSize());
@@ -89,13 +93,14 @@ function initMaps(){
           if(label)label.textContent=`تم تحديد موقع العنوان (${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)})`;
         }
       };
-      window.selectMapPinMode=mode=>{mapPinMode=mode;alert(mode==='pickup'?'المس الخريطة عند مكان الاستلام':'المس الخريطة عند عنوان العميل')};
+      window.selectMapPinMode=mode=>{mapPinMode=mode;map.getContainer().scrollIntoView({behavior:'smooth',block:'center'});const label=document.getElementById(mode==='pickup'?'selected-pickup':'selected-point');if(label)label.textContent=mode==='pickup'?'المس الخريطة لتحديد الاستلام':'المس الخريطة لتحديد الوجهة'};
       map.on('click',e=>choose(e.latlng));
       if(chosenPoint){let mode=mapPinMode;mapPinMode='destination';choose({lat:chosenPoint.latitude,lng:chosenPoint.longitude});mapPinMode=mode}
       if(chosenPickup){let mode=mapPinMode;mapPinMode='pickup';choose({lat:chosenPickup.lat,lng:chosenPickup.lon});mapPinMode=mode}
       if(chosenPoint&&chosenPickup)map.fitBounds([[chosenPoint.latitude,chosenPoint.longitude],[chosenPickup.lat,chosenPickup.lon]],{padding:[30,30],maxZoom:16});
       else if(chosenPoint)map.setView([chosenPoint.latitude,chosenPoint.longitude],16);
       window.pickCurrentLocation=()=>{
+        mapPinMode='destination';
         if(!navigator.geolocation)return alert('تحديد الموقع غير مدعوم');
         navigator.geolocation.getCurrentPosition(p=>{
           const pos={lat:p.coords.latitude,lng:p.coords.longitude};choose(pos);map.setView(pos,16);
