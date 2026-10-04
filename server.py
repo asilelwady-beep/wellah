@@ -16,14 +16,26 @@ from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
-from urllib.request import urlopen
+from urllib.parse import urlparse, parse_qs, urlencode
+from urllib.request import urlopen, Request, build_opener, HTTPRedirectHandler
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+from threading import Lock
 
 ROOT = Path(__file__).parent
 DB = Path(os.environ.get('WALLAHA_DB_PATH', str(ROOT / 'wallaha.sqlite3')))
 AREAS = ["أبو رجوان البحري", "أبو رجوان القبلي", "أبو صير", "ميت رهينة", "سقارة", "دهشور", "زاوية دهشور", "الشوبك الغربي", "الطرفاية", "المرازيق", "الشنباب", "العزيزية"]
 CAIRO = ZoneInfo('Africa/Cairo')
+GEOCODE_LOCK = Lock()
+GEOCODE_STATE = {'last': 0.0, 'cache': {}}
+MAP_LINK_HOSTS = {'maps.app.goo.gl', 'www.google.com', 'google.com', 'maps.google.com'}
+
+class SafeMapsRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        target = urlparse(newurl)
+        if target.scheme != 'https' or target.hostname not in MAP_LINK_HOSTS:
+            raise ValueError('رابط الخريطة غير مدعوم')
+        return super().redirect_request(request, fp, code, msg, headers, newurl)
+
 
 
 def sold_by_weight(product):
@@ -559,6 +571,46 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond({'ok':True})
             except sqlite3.Error:
                 return self.respond({'ok':False},503)
+        if path == '/api/geocode':
+            query = parse_qs(urlparse(self.path).query).get('q', [''])[0].strip()
+            if len(query) < 3 or len(query) > 150: return self.respond({'error':'اكتب عنوانًا واضحًا داخل البدرشين'},400)
+            cache_key = query.casefold()
+            with GEOCODE_LOCK:
+                entry = GEOCODE_STATE['cache'].get(cache_key)
+                if entry and time.monotonic()-entry[0] < 3600: return self.respond({'results':entry[1]})
+                if time.monotonic()-GEOCODE_STATE['last'] < 1.2: return self.respond({'error':'انتظر لحظة ثم ابحث مرة أخرى'},429)
+                GEOCODE_STATE['last'] = time.monotonic()
+            url = 'https://photon.komoot.io/api/?' + urlencode({'q':query,'limit':5,'lang':'ar','countrycode':'EG','bbox':'31.10,29.70,31.50,30.02','lat':'29.8513','lon':'31.2744'})
+            try:
+                request = Request(url,headers={'User-Agent':'Walla3ha/1.0 (+https://walla3ha.com)','Accept':'application/json'})
+                with urlopen(request,timeout=8) as response: payload=json.load(response)
+                results=[]
+                for feature in payload.get('features',[])[:5]:
+                    lon,lat=feature.get('geometry',{}).get('coordinates',[None,None])[:2]
+                    if not isinstance(lat,(int,float)) or not isinstance(lon,(int,float)) or not (29.70<=lat<=30.02 and 31.10<=lon<=31.50): continue
+                    props=feature.get('properties',{})
+                    name='، '.join(str(props[k]) for k in ('name','street','housenumber','district','city') if props.get(k))
+                    results.append({'lat':lat,'lon':lon,'label':name or query})
+                with GEOCODE_LOCK:
+                    cache=GEOCODE_STATE['cache']
+                    if len(cache)>400: cache.clear()
+                    cache[cache_key]=(time.monotonic(),results)
+                return self.respond({'results':results})
+            except Exception:
+                return self.respond({'error':'البحث غير متاح الآن؛ حدد المكان بلمسة على الخريطة أو الصق رابط اللوكيشن'},502)
+        if path == '/api/resolve-map-link':
+            link=parse_qs(urlparse(self.path).query).get('url',[''])[0].strip()
+            parsed=urlparse(link)
+            if len(link)>512 or parsed.scheme!='https' or parsed.hostname not in MAP_LINK_HOSTS:
+                return self.respond({'error':'الصق رابط Google Maps صحيحًا'},400)
+            try:
+                request=Request(link,headers={'User-Agent':'Walla3ha/1.0 (+https://walla3ha.com)'})
+                with build_opener(SafeMapsRedirect()).open(request,timeout=7) as response:
+                    final=response.url
+                if urlparse(final).hostname not in MAP_LINK_HOSTS: raise ValueError()
+                return self.respond({'url':final})
+            except Exception:
+                return self.respond({'error':'تعذر قراءة الرابط المختصر؛ افتح اللوكيشن وانسخ الرابط الكامل أو حدد النقطة على الخريطة'},502)
         if path == '/api/maps-config':
             # Maps JavaScript browser keys are public; restrict this key to walla3ha.com
             # and to the Maps JavaScript API in Google Cloud Console.
