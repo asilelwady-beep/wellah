@@ -1,8 +1,8 @@
 const tripRouteCache=new Map();
-function tripRouteTarget(o){return ['assigned','ready'].includes(o.status)?{lat:o.pickup_lat,lon:o.pickup_lon,label:'مكان الاستلام'}:['picked_up','on_way'].includes(o.status)?{lat:o.latitude,lon:o.longitude,label:'عنوان العميل'}:null}
+function tripRouteTarget(o){return ['assigned','ready'].includes(o.status)?(o.shop_anywhere?null:{lat:o.pickup_lat,lon:o.pickup_lon,label:'مكان الاستلام'}):['picked_up','on_way'].includes(o.status)?{lat:o.latitude,lon:o.longitude,label:'عنوان العميل'}:null}
 function drawTripRoute(map,o){
  const info=document.getElementById('trip-route-info'),target=tripRouteTarget(o);
- if(info&&target)info.textContent='اضغط الاتجاهات إلى '+target.label+' لفتح الملاحة من موقعك الحالي.';
+ if(info)info.textContent=target?'اضغط الاتجاهات إلى '+target.label+' لفتح الملاحة من موقعك الحالي.':o.shop_anywhere&&['assigned','ready'].includes(o.status)?'اختار سوبر ماركت قريب، راجع صور المنتجات، ثم أكد شراءها.':'تابع حالة الطلب على الخريطة.';
 }
 
 /* Map UI for the three signed-in roles. Coordinates are stored only with orders. */
@@ -292,10 +292,15 @@ function initMaps(){
   }else if(tab==='driver'){
     const map=baseMap('driver-map');if(!map)return;
     const positions=[];
-    for(const o of state.orders.filter(x=>!['cancelled','delivered'].includes(x.status))){
-      if(o.pickup_lat!=null){point(map,o.pickup_lat,o.pickup_lon,'استلام من '+esc(o.merchant_name||o.pickup),'#2864c5');positions.push([o.pickup_lat,o.pickup_lon])}
-      if(o.latitude!=null&&o.longitude!=null){point(map,o.latitude,o.longitude,'طلب #'+o.id+' · '+esc(o.address),'#e58029');positions.push([o.latitude,o.longitude])}
+    const active=state.orders.filter(x=>!['cancelled','delivered'].includes(x.status));
+    const chosen=active.find(o=>o.id===selectedTripId);
+    for(const o of (chosen?[chosen]:active)){
+      const popup='<strong>طلب #'+o.id+'</strong> · '+esc(o.area)+'<br>'+esc(o.address)+'<br><button type="button" onclick="openTrip('+o.id+')">تفاصيل الطلب</button>'+(o.status==='offered'?'<button type="button" onclick="act('+o.id+',\'accept_offer\')">قبول</button>':'');
+      if(o.pickup_lat!=null){point(map,o.pickup_lat,o.pickup_lon,'استلام من '+esc(o.shop_anywhere?o.pickup:o.merchant_name||o.pickup),'#2864c5');positions.push([o.pickup_lat,o.pickup_lon])}
+      if(o.latitude!=null&&o.longitude!=null){point(map,o.latitude,o.longitude,popup,'#e58029');positions.push([o.latitude,o.longitude])}
     }
+    const profile=state.driver_profile;
+    if(profile?.lat!=null&&profile?.lon!=null){point(map,profile.lat,profile.lon,'موقعي الحالي','#087b5b');if(!positions.length)positions.push([profile.lat,profile.lon])}
     showMapPoints(map,positions);
   }
 }
