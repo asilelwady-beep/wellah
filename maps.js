@@ -215,6 +215,13 @@ function initMaps(){
         const address=document.getElementById('address'),destination=document.getElementById('destination');
         if(address)address.value=label;
         if(destination)destination.value=label;
+        const area=document.getElementById('area');
+        if(area){
+          const name=String(label||'');
+          const village=[...area.options].find(option=>option.value!=='مدينة البدرشين'&&name.includes(option.value));
+          const match=village||([...area.options].find(option=>option.value==='مدينة البدرشين'&&name.includes('البدرشين')));
+          if(match){area.value=match.value;area.dispatchEvent(new Event('change'))}
+        }
         const chosen=document.getElementById('selected-point');
         if(chosen)chosen.textContent='📍 '+label;
         map.flyTo([point.lat,point.lon],17,{duration:0.6});
