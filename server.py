@@ -524,6 +524,16 @@ def product_illustration(name,category):
     return f'<svg xmlns="http://www.w3.org/2000/svg" width="320" height="240" viewBox="0 0 320 240" role="img"><title>صورة توضيحية: {title}</title><rect width="320" height="240" rx="22" fill="{tone}"/><circle cx="157" cy="105" r="83" fill="white" opacity=".6"/><ellipse cx="157" cy="174" rx="66" ry="9" fill="#473a2f" opacity=".1"/>{art}<text x="160" y="204" text-anchor="middle" direction="rtl" font-family="Tahoma,Arial,sans-serif" font-size="15" font-weight="bold" fill="#544136">{label}</text><text x="160" y="225" text-anchor="middle" direction="rtl" font-family="Tahoma,Arial,sans-serif" font-size="12" fill="#8d796d">{size} · صورة توضيحية</text></svg>'
 
 
+def warehouse_for_category(db, category):
+    """Use the owner's saved pickup point for products from their own stock."""
+    existing=db.execute("SELECT id FROM merchants WHERE name='مخزن ولعه' AND category=? AND active=1 ORDER BY id LIMIT 1",(category,)).fetchone()
+    if existing: return existing['id']
+    settings={r['key']:r['value'] for r in db.execute("SELECT key,value FROM settings WHERE key IN ('warehouse_area','warehouse_address','warehouse_lat','warehouse_lon')")}
+    if len(settings)!=4: return None
+    cur=db.execute('INSERT INTO merchants(name,category,area,address,lat,lon) VALUES (?,?,?,?,?,?)',('مخزن ولعه',category,settings['warehouse_area'],settings['warehouse_address'],float(settings['warehouse_lat']),float(settings['warehouse_lon'])))
+    return cur.lastrowid
+
+
 def preview_catalog(db):
     return rows(db,"SELECT p.id,p.name,p.category,CASE WHEN p.image<>'' THEN p.image ELSE '/product-illustration/' || p.id || '.svg' END AS image FROM products p JOIN categories c ON c.name=p.category WHERE p.catalog_preview=1 AND p.price_pending=1 AND c.active=1 ORDER BY CASE WHEN p.image<>'' AND (p.name LIKE '%لانشون%فراخ%بالوزن' OR p.name LIKE '%لانشون%دجاج%بالوزن') THEN 0 WHEN p.image<>'' AND (p.name LIKE '%لانشون%بالوزن' OR p.name LIKE '%سلامي%بالوزن') THEN 1 WHEN p.name IN ('ثوم بلدي طازج','ثوم صيني طازج') THEN 2 ELSE 3 END,(p.image LIKE '/product-photo-%') DESC,c.sort_order,p.category,p.id")
 
@@ -777,8 +787,8 @@ class Handler(BaseHTTPRequestHandler):
                     category = str(data["category"]).strip()
                     price, stock = float(data["price"]), int(data["stock"])
                     if not name or not db.execute('SELECT 1 FROM categories WHERE name=? AND active=1',(category,)).fetchone() or price < 0 or stock < 0: raise ValueError("بيانات المنتج أو القسم غير صحيحة")
-                    merchant_id=int(data.get('merchant_id') or 0)
-                    if not db.execute('SELECT 1 FROM merchants WHERE id=? AND category=? AND active=1',(merchant_id,category)).fetchone(): raise ValueError('حدد محلًا نشطًا من نفس القسم')
+                    merchant_id=int(data.get('merchant_id') or 0) or warehouse_for_category(db,category)
+                    if not db.execute('SELECT 1 FROM merchants WHERE id=? AND category=? AND active=1',(merchant_id,category)).fetchone(): raise ValueError('حدد موقع المخزن مرة واحدة من قسم المحلات، أو اختر محلًا نشطًا من نفس القسم')
                     image=str(data.get('image',''))
                     if image and not valid_image(image,1_500_000): raise ValueError('صورة المنتج يجب أن تكون PNG أو JPEG أو WebP وحجمها صغير')
                     db.execute("INSERT INTO products(name,category,price,stock,image,requires_prescription,merchant_id) VALUES (?,?,?,?,?,?,?)", (name, category, price, stock,image,1 if data.get('requires_prescription') and category=='أدوية' else 0,merchant_id))
@@ -792,8 +802,8 @@ class Handler(BaseHTTPRequestHandler):
                     if price<0 or stock<0: raise ValueError('السعر والكمية يجب أن يكونا غير سالبين')
                     old=db.execute('SELECT category FROM products WHERE id=?',(int(data['id']),)).fetchone()
                     if not old: raise ValueError('المنتج غير موجود')
-                    merchant_id=int(data.get('merchant_id') or 0)
-                    if data.get('active') and not db.execute('SELECT 1 FROM merchants WHERE id=? AND category=? AND active=1',(merchant_id,old['category'])).fetchone(): raise ValueError('حدد محلًا نشطًا من نفس القسم')
+                    merchant_id=int(data.get('merchant_id') or 0) or (warehouse_for_category(db,old['category']) if data.get('active') else None)
+                    if data.get('active') and not db.execute('SELECT 1 FROM merchants WHERE id=? AND category=? AND active=1',(merchant_id,old['category'])).fetchone(): raise ValueError('حدد موقع المخزن مرة واحدة من قسم المحلات، أو اختر محلًا نشطًا من نفس القسم')
                     if data.get('active') and not db.execute('SELECT 1 FROM categories WHERE name=? AND active=1',(old['category'],)).fetchone(): raise ValueError('فعّل القسم أولًا')
                     cur=db.execute('UPDATE products SET price_pending=0,price=?,stock=?,active=?,requires_prescription=?,merchant_id=? WHERE id=?',(price,stock,1 if data.get('active') else 0,1 if data.get('requires_prescription') and old['category']=='أدوية' else 0,merchant_id or None,int(data['id'])))
                     if not cur.rowcount: raise ValueError('المنتج غير موجود')
@@ -815,6 +825,24 @@ class Handler(BaseHTTPRequestHandler):
                     if not (2<=len(name)<=70 and 3<=len(address)<=200 and area in AREAS and -90<=lat<=90 and -180<=lon<=180): raise ValueError('بيانات المحل أو موقعه غير صحيحة')
                     if not db.execute('SELECT 1 FROM categories WHERE name=? AND active=1',(category,)).fetchone(): raise ValueError('قسم غير نشط')
                     db.execute('INSERT INTO merchants(name,category,area,address,lat,lon) VALUES (?,?,?,?,?,?)',(name,category,area,address,lat,lon))
+                elif path == '/api/warehouse/setup':
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    area=str(data.get('area','')).strip();address=str(data.get('address','')).strip()
+                    lat,lon=float(data['lat']),float(data['lon'])
+                    if area not in AREAS or not 3<=len(address)<=200 or not all(math.isfinite(x) for x in (lat,lon)) or not (29.70<=lat<=30.02 and 31.10<=lon<=31.50):
+                        raise ValueError('حدد عنوان وموقع المخزن الحقيقي داخل منطقة الخدمة')
+                    for key,value in [('warehouse_area',area),('warehouse_address',address),('warehouse_lat',str(lat)),('warehouse_lon',str(lon))]:
+                        db.execute('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',(key,value))
+                    for category in db.execute("SELECT name FROM categories WHERE name<>'مطاعم'").fetchall():
+                        name=category['name']
+                        existing=db.execute("SELECT id FROM merchants WHERE name='مخزن ولعه' AND category=? ORDER BY id LIMIT 1",(name,)).fetchone()
+                        if existing:
+                            mid=existing['id']
+                            db.execute('UPDATE merchants SET area=?,address=?,lat=?,lon=?,active=1 WHERE id=?',(area,address,lat,lon,mid))
+                        else:
+                            mid=warehouse_for_category(db,name)
+                        db.execute('UPDATE products SET merchant_id=? WHERE category=? AND merchant_id IS NULL',(mid,name))
+                    db.execute("UPDATE products SET active=1 WHERE catalog_preview=1 AND price_pending=0 AND price>0 AND stock>0 AND merchant_id IN (SELECT id FROM merchants WHERE active=1) AND category IN (SELECT name FROM categories WHERE active=1)")
                 elif path == '/api/merchant/update':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     if not db.execute('UPDATE merchants SET active=? WHERE id=?',(int(bool(data.get('active'))),int(data['id']))).rowcount: raise ValueError('المحل غير موجود')
