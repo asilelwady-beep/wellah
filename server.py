@@ -711,7 +711,7 @@ class Handler(BaseHTTPRequestHandler):
                 if time.monotonic()-GEOCODE_STATE['last'] < 1.2: return self.respond({'error':'انتظر لحظة ثم ابحث مرة أخرى'},429)
                 GEOCODE_STATE['last'] = time.monotonic()
             # Verified Google Maps place listing; keep explicit pin review for moved venues.
-            normalized_query=re.sub(r'[\\s\\W_]+','',query.casefold().replace('أ','ا').replace('إ','ا').replace('آ','ا').replace('ة','ه').replace('ى','ي'))
+            normalized_query=re.sub(r'[\s\W_]+','',query.casefold().replace('أ','ا').replace('إ','ا').replace('آ','ا').replace('ة','ه').replace('ى','ي'))
             if normalized_query in ('مركزشرطهالبدرشين','قسمشرطهالبدرشين','مركزشرطهالبدراشين'):
                 return self.respond({'results':[{
                     'lat':29.8469292,'lon':31.2742704,
@@ -747,7 +747,7 @@ class Handler(BaseHTTPRequestHandler):
                         if not isinstance(lat,(int,float)) or not isinstance(lon,(int,float)) or not (29.70<=lat<=30.02 and 31.10<=lon<=31.50): continue
                         props=feature.get('properties',{})
                         name=str(props.get('name') or '')
-                        normalized=lambda value: re.sub(r'[\\s\\W_]+','',str(value).casefold().replace('أ','ا').replace('إ','ا').replace('آ','ا').replace('ة','ه').replace('ى','ي'))
+                        normalized=lambda value: re.sub(r'[\s\W_]+','',str(value).casefold().replace('أ','ا').replace('إ','ا').replace('آ','ا').replace('ة','ه').replace('ى','ي'))
                         terms=[normalized(word) for word in query.split() if len(normalized(word))>2 and normalized(word) not in ('شارع','طريق','مركز','مدينه')]
                         context=' '.join(str(props.get(k) or '') for k in ('name','district','city','county'))
                         if terms and not all(term in normalized(context) for term in terms): continue
