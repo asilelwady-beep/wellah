@@ -746,7 +746,7 @@ class Handler(BaseHTTPRequestHandler):
             cache_key = query.casefold()
             with GEOCODE_LOCK:
                 entry = GEOCODE_STATE['cache'].get(cache_key)
-                if entry and time.monotonic()-entry[0] < 3600: return self.respond({'results':entry[1]})
+                if entry and time.monotonic()-entry[0] < (3600 if entry[1] else 30): return self.respond({'results':entry[1]})
                 if time.monotonic()-GEOCODE_STATE['last'] < 1.2: return self.respond({'error':'انتظر لحظة ثم ابحث مرة أخرى'},429)
                 GEOCODE_STATE['last'] = time.monotonic()
             # Verified Google Maps place listing; keep explicit pin review for moved venues.
