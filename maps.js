@@ -19,6 +19,13 @@ window.selectMapPinMode=()=>alert('الخريطة لم تُحمّل بعد. تح
 function closeExpandedMap(){
   const el=document.querySelector('.map.map-expanded');
   if(!el)return;
+  if(el._searchPanel){
+    const {panel,form,results}=el._searchPanel;
+    el.before(form);
+    el.after(results);
+    panel.remove();
+    el._searchPanel=null;
+  }
   el.classList.remove('map-expanded');
   document.body.classList.remove('map-open');
   const map=mapViews.find(m=>m.getContainer()===el);
@@ -27,8 +34,32 @@ function closeExpandedMap(){
 window.addEventListener('keydown',e=>{if(e.key==='Escape')closeExpandedMap()});
 function expandMap(map){
   closeExpandedMap();
-  map.getContainer().classList.add('map-expanded');
+  const el=map.getContainer();
+  el.classList.add('map-expanded');
   document.body.classList.add('map-open');
+  if(el.id==='customer-map'){
+    const form=document.querySelector('.map-search:has(#map-search)');
+    const results=document.getElementById('map-search-results');
+    if(form&&results){
+      const panel=document.createElement('section');
+      panel.className='map-search-panel';
+      panel.setAttribute('aria-label','بحث وتحديد نقطة الوصول');
+      const title=document.createElement('h3');
+      title.textContent='حدد نقطة الوصول';
+      const hint=document.createElement('p');
+      hint.textContent='ابحث بالاسم، اختر النتيجة، ثم راجع الدبوس على الخريطة.';
+      const done=document.createElement('button');
+      done.type='button';
+      done.className='map-panel-done';
+      done.textContent='تأكيد الدبوس والعودة';
+      done.addEventListener('click',closeExpandedMap);
+      panel.append(title,hint,form,results,done);
+      L.DomEvent.disableClickPropagation(panel);
+      L.DomEvent.disableScrollPropagation(panel);
+      el.append(panel);
+      el._searchPanel={panel,form,results};
+    }
+  }
   requestAnimationFrame(()=>map.invalidateSize());
 }
 function validMapPoint(lat,lon){
