@@ -37,15 +37,16 @@ function expandMap(map){
   const el=map.getContainer();
   el.classList.add('map-expanded');
   document.body.classList.add('map-open');
-  if(el.id==='customer-map'){
-    const form=document.querySelector('.map-search:has(#map-search)');
-    const results=document.getElementById('map-search-results');
+  if(el.id==='customer-map'||el.id==='pickup-map'){
+    const pickup=el.id==='pickup-map';
+    const form=document.querySelector(pickup?'.map-search:has(#pickup-map-search)':'.map-search:has(#map-search)');
+    const results=document.getElementById(pickup?'pickup-map-search-results':'map-search-results');
     if(form&&results){
       const panel=document.createElement('section');
       panel.className='map-search-panel';
-      panel.setAttribute('aria-label','بحث وتحديد نقطة الوصول');
+      panel.setAttribute('aria-label',pickup?'بحث وتحديد نقطة الاستلام':'بحث وتحديد نقطة الوصول');
       const title=document.createElement('h3');
-      title.textContent='حدد نقطة الوصول';
+      title.textContent=pickup?'حدد نقطة الاستلام':'حدد نقطة الوصول';
       const hint=document.createElement('p');
       hint.textContent='ابحث بالاسم، اختر النتيجة، ثم راجع الدبوس على الخريطة.';
       const done=document.createElement('button');
@@ -86,16 +87,17 @@ function parseMapCoordinates(raw){
   const at=url.href.match(/@(-?\d{1,2}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)/);
   return at?validMapPoint(at[1],at[2]):null;
 }
-window.searchCustomerMapAddress=async()=>{
-  const input=document.getElementById('map-search'),results=document.getElementById('map-search-results');
-  if(!input||!results||!window.setCustomerMapPoint)return;
+async function searchMapAddress(mode='destination'){
+  const pickup=mode==='pickup';
+  const input=document.getElementById(pickup?'pickup-map-search':'map-search'),results=document.getElementById(pickup?'pickup-map-search-results':'map-search-results');
+  const setPoint=pickup?window.setCustomerPickupPoint:window.setCustomerMapPoint;
+  if(!input||!results||!setPoint)return;
   const query=input.value.trim();
   results.replaceChildren();
   const status=document.createElement('p');results.appendChild(status);
-  if(!query){status.textContent='اكتب عنوانًا أو الصق رابط لوكيشن';return}
-  window.clearCustomerMapPoint();
+  if(!query){status.textContent='اكتب اسم مكان أو شارع، أو الصق رابط لوكيشن';return}
   let point=parseMapCoordinates(query);
-  if(point){window.setCustomerMapPoint(point.lat,point.lon,'المكان من رابط اللوكيشن');status.textContent='تم تحديد المكان من اللوكيشن. راجع العلامة على الخريطة.';return}
+  if(point){setPoint(point.lat,point.lon,'المكان من رابط اللوكيشن');status.textContent='تم تحديد المكان من اللوكيشن. راجع العلامة على الخريطة.';return}
   let address=query;
   if(/^https?:\/\//i.test(query)){
     status.textContent='جارٍ قراءة رابط اللوكيشن…';
@@ -104,7 +106,7 @@ window.searchCustomerMapAddress=async()=>{
       const data=await response.json();if(!response.ok)throw Error(data.error||'تعذر قراءة الرابط');
       point=parseMapCoordinates(data.url);
       if(!point)throw Error('الرابط لا يحتوي نقطة دقيقة؛ افتحه وانسخ رابط المكان أو حدد العلامة على الخريطة');
-      window.setCustomerMapPoint(point.lat,point.lon,'المكان من رابط اللوكيشن');
+      setPoint(point.lat,point.lon,'المكان من رابط اللوكيشن');
       status.textContent='تم تحديد المكان من اللوكيشن. راجع العلامة على الخريطة.';
     }catch(error){status.textContent=error.message}
     return;
@@ -114,21 +116,26 @@ window.searchCustomerMapAddress=async()=>{
     const response=await fetch('/api/geocode?q='+encodeURIComponent(query));
     const data=await response.json();if(!response.ok)throw Error(data.error||'تعذر البحث');
     const places=data.results||[];
-    if(!places.length){status.textContent='العنوان غير موجود بدقة. جرّب اسم شارع أو معلم قريب، أو حدد النقطة على الخريطة.';return}
-    status.textContent='النتائج قد تحتوي مواقع قديمة. اختر الاسم والعنوان الصحيحين، ثم ثبّت العلامة على مدخل المكان قبل حساب السعر:';
+    if(!places.length){status.textContent='لم أجد نتيجة مؤكدة. جرّب اسم المكان مع القرية، أو الصق رابط Google Maps.';return}
+    status.textContent='اختار المكان الصحيح من النتائج:';
     for(const place of places.slice(0,5)){
       const button=document.createElement('button');
       button.type='button';
-      button.textContent='📍 '+(place.label||address);
+      button.className='map-place-result';
+      const icon=document.createElement('span');icon.className='map-place-icon';icon.textContent='📍';
+      const label=document.createElement('span');label.textContent=place.label||address;
+      button.append(icon,label);
       button.addEventListener('click',()=>{
-        window.setCustomerMapPoint(place.lat,place.lon,place.label||address);
+        setPoint(place.lat,place.lon,place.label||address);
         status.textContent='تم اختيار '+(place.label||address)+' — تأكد أن العلامة على مدخل المكان الصحيح قبل حساب السعر.';
         for(const item of results.querySelectorAll('button'))item.setAttribute('aria-pressed',String(item===button));
       });
       results.appendChild(button);
     }
   }catch(error){status.textContent=error.message||'تعذر البحث؛ حدد النقطة على الخريطة'}
-};
+}
+window.searchCustomerMapAddress=()=>searchMapAddress('destination');
+window.searchPickupMapAddress=()=>searchMapAddress('pickup');
 
 function clearMaps(){closeExpandedMap();for(const map of mapViews){if(map._gpsWatch!=null)navigator.geolocation?.clearWatch(map._gpsWatch);map.remove()}mapViews=[]}
 function showMyLocationOnMap(id){
@@ -294,6 +301,16 @@ function initMaps(){
         const chosen=document.getElementById('selected-point');
         if(chosen)chosen.textContent='📍 '+label;
         map.flyTo([point.lat,point.lon],17,{duration:0.6});
+      };
+      window.setCustomerPickupPoint=(lat,lon,label)=>{
+        const p=validMapPoint(lat,lon);
+        if(!p||!pickupMap||!mapViews.includes(pickupMap))return;
+        choose({lat:p.lat,lng:p.lon},'pickup');
+        const input=document.getElementById('pickup');
+        if(input)input.value=label;
+        const chosen=document.getElementById('selected-pickup');
+        if(chosen)chosen.textContent='📍 '+label;
+        pickupMap.flyTo([p.lat,p.lon],17,{duration:0.6});
       };
       window.selectMapPinMode=mode=>{mapPinMode=mode;(mode==='pickup'&&pickupMap?pickupMap:map).getContainer().scrollIntoView({behavior:'smooth',block:'center'});const label=document.getElementById(mode==='pickup'?'selected-pickup':'selected-point');if(label)label.textContent=mode==='pickup'?'المس الخريطة لتحديد الاستلام':'المس الخريطة لتحديد الوجهة'};
       map.on('click',e=>{
