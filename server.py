@@ -741,8 +741,9 @@ class Handler(BaseHTTPRequestHandler):
                         props=feature.get('properties',{})
                         name=str(props.get('name') or '')
                         normalized=lambda value: re.sub(r'[\\s\\W_]+','',str(value).casefold().replace('أ','ا').replace('إ','ا').replace('آ','ا').replace('ة','ه').replace('ى','ي'))
-                        terms=[normalized(word) for word in query.split() if len(normalized(word))>2 and normalized(word) not in ('شارع','طريق','مركز','مدينه','البدرشين')]
-                        if terms and not all(term in normalized(name) for term in terms): continue
+                        terms=[normalized(word) for word in query.split() if len(normalized(word))>2 and normalized(word) not in ('شارع','طريق','مركز','مدينه')]
+                        context=' '.join(str(props.get(k) or '') for k in ('name','district','city','county'))
+                        if terms and not all(term in normalized(context) for term in terms): continue
                         if ('شرط' in normalized(query) or 'مستشف' in normalized(query)) and (props.get('osm_key')=='highway' or name.strip().startswith('شارع ')): continue
                         label='، '.join(str(props[k]) for k in ('name','street','housenumber','district','city','county','state') if props.get(k))
                         results.append({'lat':lat,'lon':lon,'label':label or query})
