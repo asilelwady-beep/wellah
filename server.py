@@ -112,6 +112,8 @@ def init():
                 db.execute(f'ALTER TABLE orders ADD COLUMN {column} {definition}')
         if 'username' not in {x['name'] for x in db.execute('PRAGMA table_info(users)')}:
             db.execute('ALTER TABLE users ADD COLUMN username TEXT')
+        if 'break_until' not in {x['name'] for x in db.execute('PRAGMA table_info(drivers)')}:
+            db.execute('ALTER TABLE drivers ADD COLUMN break_until INTEGER NOT NULL DEFAULT 0')
         if 'photo' not in {x['name'] for x in db.execute('PRAGMA table_info(drivers)')}:
             db.execute("ALTER TABLE drivers ADD COLUMN photo TEXT NOT NULL DEFAULT ''")
         if 'vehicle_type' not in {x['name'] for x in db.execute('PRAGMA table_info(drivers)')}:
@@ -463,12 +465,12 @@ def assign(db, oid):
     merchant = db.execute('SELECT area FROM merchants WHERE id=?',(o['merchant_id'],)).fetchone() if o['merchant_id'] else None
     pickup_area = merchant['area'] if merchant and not o['shop_anywhere'] else o['area']
     # Last known location must be recent. Busy and declined drivers are excluded.
-    candidates = db.execute("""SELECT d.id,d.lat,d.lon,d.vehicle_type FROM drivers d WHERE d.available=1 AND (?=1 OR d.area=?)
+    candidates = db.execute("""SELECT d.id,d.lat,d.lon,d.vehicle_type FROM drivers d WHERE d.available=1 AND d.break_until<=? AND (?=1 OR d.area=?)
         AND d.lat IS NOT NULL AND d.lon IS NOT NULL AND d.location_at>=?
         AND NOT EXISTS (SELECT 1 FROM orders x WHERE x.driver_id=d.id AND x.id<>?
             AND x.status IN ('offered','assigned','ready','picked_up','on_way'))
         AND NOT EXISTS (SELECT 1 FROM order_declines x WHERE x.order_id=? AND x.driver_id=d.id)""",
-        (1 if o['kind']!='products' else 0,pickup_area,datetime.fromtimestamp(time.time()-300,timezone.utc).isoformat(timespec='seconds'),oid,oid)).fetchall()
+        (int(time.time()),1 if o['kind']!='products' else 0,pickup_area,datetime.fromtimestamp(time.time()-300,timezone.utc).isoformat(timespec='seconds'),oid,oid)).fetchall()
     if o['kind']=='ride':
         candidates=[d for d in candidates if d['vehicle_type']==o['vehicle']]
     origin=(o['pickup_lat'],o['pickup_lon']) if o['pickup_lat'] is not None else (o['latitude'],o['longitude'])
@@ -756,7 +758,7 @@ class Handler(BaseHTTPRequestHandler):
                     o.pop('proof', None)
                     o.pop('reference', None)
                     o.pop('prescription', None)
-            profile=db.execute('SELECT id,name,phone,photo,area,vehicle_type,available,lat,lon,location_at FROM drivers WHERE user_id=?',(user['id'],)).fetchone() if user['role']=='driver' else None
+            profile=db.execute('SELECT id,name,phone,photo,area,vehicle_type,available,break_until,lat,lon,location_at FROM drivers WHERE user_id=?',(user['id'],)).fetchone() if user['role']=='driver' else None
             wallets={str(d['id']):driver_wallet(db,d['id']) for d in db.execute('SELECT id FROM drivers')} if user['role']=='admin' else {}
             self.respond({"draft_catalog":preview_catalog(db) if user['role'] in ('customer','admin') else [],"driver_profile":dict(profile) if profile else None,"driver_wallet":driver_wallet(db,profile['id']) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}})
 
@@ -824,7 +826,7 @@ class Handler(BaseHTTPRequestHandler):
                 if path == '/api/driver/photo':
                     if user['role']!='driver': return self.respond({'error':'خاص بالطيار فقط'},403)
                     photo=data.get('photo')
-                    if not valid_image(photo,350_000): raise ValueError('اختر صورة PNG أو JPG أو WebP بحجم أقل من 250 كيلوبايت')
+                    if not valid_image(photo,1_500_000): raise ValueError('تعذر حفظ الصورة بعد ضغطها؛ اختر صورة أخرى')
                     db.execute('UPDATE drivers SET photo=? WHERE user_id=?',(photo,user['id']))
                     return self.respond({'ok':True})
                 if path == '/api/driver/reset-password':
@@ -999,6 +1001,19 @@ class Handler(BaseHTTPRequestHandler):
                         if o['commission_percent'] or o['commission_cents']: raise ValueError('الأجر محسوب تلقائيًا من نسبة الخدمة')
                         db.execute('UPDATE orders SET driver_earning_cents=? WHERE id=?',(int(amount*100),o['id']))
                         log(db,o['id'],'حدد المسؤول أجر الطيار: '+str(amount)+' جنيه')
+                elif path == '/api/driver/break':
+                    if user['role']!='driver': return self.respond({'error':'خاص بالطيار فقط'},403)
+                    minutes=data.get('minutes')
+                    if type(minutes) is not int or minutes not in (0,15,30,60): raise ValueError('اختر 15 أو 30 أو 60 دقيقة')
+                    driver=db.execute('SELECT id FROM drivers WHERE user_id=?',(user['id'],)).fetchone()
+                    if not driver: raise ValueError('حساب الطيار غير موجود')
+                    did=driver['id']
+                    db.execute('UPDATE drivers SET break_until=? WHERE id=?',(int(time.time())+minutes*60 if minutes else 0,did))
+                    if minutes:
+                        for offer in db.execute("SELECT id FROM orders WHERE driver_id=? AND status='offered'",(did,)).fetchall():
+                            db.execute('INSERT OR IGNORE INTO order_declines VALUES (?,?)',(offer['id'],did))
+                            assign(db,offer['id'])
+                    else: refresh_offers(db)
                 elif path == '/api/driver/availability':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     did=int(data['id'])
@@ -1013,7 +1028,7 @@ class Handler(BaseHTTPRequestHandler):
                     oid,did=int(data['id']),int(data['driver_id'])
                     o=db.execute('SELECT * FROM orders WHERE id=?',(oid,)).fetchone()
                     d=db.execute('SELECT * FROM drivers WHERE id=?',(did,)).fetchone()
-                    if not o or not d or (o['kind']=='ride' and d['vehicle_type']!=o['vehicle']) or o['area']!=d['area'] or not d['available'] or o['payment_status']!='confirmed' or o['status'] not in ('assigned','awaiting_driver','ready') or (o['kind']!='products' and not o['quote_accepted']):
+                    if not o or not d or (o['kind']=='ride' and d['vehicle_type']!=o['vehicle']) or o['area']!=d['area'] or not d['available'] or d['break_until']>int(time.time()) or o['payment_status']!='confirmed' or o['status'] not in ('assigned','awaiting_driver','ready') or (o['kind']!='products' and not o['quote_accepted']):
                         raise ValueError('تعذر إسناد الطلب لهذا المندوب')
                     if not o['commission_locked']:
                         percent,share,net=commission_split(db,o['kind'],d['vehicle_type'],o['delivery_fee'])
