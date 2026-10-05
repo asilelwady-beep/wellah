@@ -60,6 +60,7 @@ window.searchCustomerMapAddress=async()=>{
   results.replaceChildren();
   const status=document.createElement('p');results.appendChild(status);
   if(!query){status.textContent='اكتب عنوانًا أو الصق رابط لوكيشن';return}
+  window.clearCustomerMapPoint();
   let point=parseMapCoordinates(query);
   if(point){window.setCustomerMapPoint(point.lat,point.lon,'المكان من رابط اللوكيشن');status.textContent='تم تحديد المكان من اللوكيشن. راجع العلامة على الخريطة.';return}
   let address=query;
@@ -81,17 +82,17 @@ window.searchCustomerMapAddress=async()=>{
     const data=await response.json();if(!response.ok)throw Error(data.error||'تعذر البحث');
     const places=data.results||[];
     if(!places.length){status.textContent='العنوان غير موجود بدقة. جرّب اسم شارع أو معلم قريب، أو حدد النقطة على الخريطة.';return}
-    const showPlace=place=>window.setCustomerMapPoint(place.lat,place.lon,place.label||address);
-    showPlace(places[0]);
-    status.textContent='📍 '+(places[0].label||address)+' — راجع العلامة على الخريطة';
-    if(places.length>1){
-      const other=document.createElement('details'),summary=document.createElement('summary');
-      summary.textContent='نتائج أخرى';other.appendChild(summary);
-      for(const place of places.slice(1,4)){
-        const button=document.createElement('button');button.type='button';button.textContent=place.label||address;
-        button.addEventListener('click',()=>{showPlace(place);status.textContent='📍 '+(place.label||address);other.open=false});other.appendChild(button);
-      }
-      results.appendChild(other);
+    status.textContent='اختر النتيجة المطابقة، ثم راجع العلامة على الخريطة قبل تأكيد الطلب:';
+    for(const place of places.slice(0,5)){
+      const button=document.createElement('button');
+      button.type='button';
+      button.textContent='📍 '+(place.label||address);
+      button.addEventListener('click',()=>{
+        window.setCustomerMapPoint(place.lat,place.lon,place.label||address);
+        status.textContent='تم اختيار '+(place.label||address)+' — راجع العلامة على الخريطة.';
+        for(const item of results.querySelectorAll('button'))item.setAttribute('aria-pressed',String(item===button));
+      });
+      results.appendChild(button);
     }
   }catch(error){status.textContent=error.message||'تعذر البحث؛ حدد النقطة على الخريطة'}
 };
@@ -208,6 +209,12 @@ function initMaps(){
           if(label)label.textContent='تم تحديد المكان على الخريطة';if(kind!=='products'){const address=document.getElementById('address'),destination=document.getElementById('destination');if(address&&!address.value.trim())address.value='الوجهة على الخريطة';if(destination&&!destination.value.trim())destination.value='الوجهة على الخريطة'}
         }
       };
+      window.clearCustomerMapPoint=()=>{
+        chosenPoint=null;
+        if(marker){map.removeLayer(marker);marker=null}
+        const selected=document.getElementById('selected-point');
+        if(selected)selected.textContent='اختر نتيجة البحث أو المس الموقع الصحيح على الخريطة';
+      };
       window.setCustomerMapPoint=(lat,lon,label)=>{
         const point=validMapPoint(lat,lon);
         if(!point||!mapViews.includes(map))return;
@@ -226,7 +233,11 @@ function initMaps(){
         map.flyTo([point.lat,point.lon],17,{duration:0.6});
       };
       window.selectMapPinMode=mode=>{mapPinMode=mode;(mode==='pickup'&&pickupMap?pickupMap:map).getContainer().scrollIntoView({behavior:'smooth',block:'center'});const label=document.getElementById(mode==='pickup'?'selected-pickup':'selected-point');if(label)label.textContent=mode==='pickup'?'المس الخريطة لتحديد الاستلام':'المس الخريطة لتحديد الوجهة'};
-      map.on('click',e=>choose(e.latlng,'destination'));
+      map.on('click',e=>{
+        choose(e.latlng,'destination');
+        const selected=document.getElementById('selected-point');
+        if(selected)selected.textContent='📍 النقطة المحددة يدويًا — راجع العنوان المكتوب قبل تأكيد الطلب';
+      });
       if(pickupMap)pickupMap.on('click',e=>choose(e.latlng,'pickup'));
       if(chosenPoint)choose({lat:chosenPoint.latitude,lng:chosenPoint.longitude},'destination')
       if(chosenPickup)choose({lat:chosenPickup.lat,lng:chosenPickup.lon},'pickup')
