@@ -62,6 +62,13 @@ body:has(.customer-app) main>.notice{margin:12px 16px;font-size:12px;border-colo
 .customer-bottom{border-color:var(--w-border);box-shadow:0 -7px 22px #25105815;gap:0}
 .customer-bottom button{color:#777187;background:none}
 .customer-bottom button.active{color:var(--w-purple);background:none;font-weight:800}
+body:has(.customer-app) .customer-bottom button.active{color:#6744c8!important;background:#f1eaff!important;box-shadow:none!important}
+body:has(.customer-app) .customer-app>.notice{background:#f8f5ff;border-color:#e8defa;color:#594e70}
+body:has(.customer-app) .customer-app .category-tile:hover,body:has(.customer-app) .customer-app .category-tile.selected{background:#f5efff;border-color:#c6b4ed}
+body:has(.customer-app) .customer-app .category-chips button.active,body:has(.customer-app) .customer-app .checkout-steps .active,body:has(.customer-app) .customer-app .checkout-submit{background:#6744c8;border-color:#6744c8;color:#fff}
+body:has(.customer-app) .customer-app .price,body:has(.customer-app) .customer-app .cart-dock button{color:#6744c8}
+body:has(.customer-app) .customer-menu>div button{background:#f2eaff;color:#6744c8}
+
 .customer-bottom button b{font-size:25px}
 .customer-app .quick-services button{background:#f7f2ff;color:var(--w-deep);border:1px solid #e7dcff;border-radius:18px}
 .customer-app .category-chips button{background:#f4f0ff;color:var(--w-deep)}
