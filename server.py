@@ -697,13 +697,14 @@ class Handler(BaseHTTPRequestHandler):
             if not user: return self.respond({'error':'سجل الدخول أولًا'}, 401)
             refresh_offers(db)
             clause, args = ('', ()) if user['role']=='admin' else ((' WHERE o.user_id=?', (user['id'],)) if user['role']=='customer' else (' WHERE d.user_id=?', (user['id'],)))
-            orders = rows(db, "SELECT o.*,d.name AS driver_name,d.lat AS driver_lat,d.lon AS driver_lon,d.location_at AS driver_location_at,m.name AS merchant_name,m.address AS merchant_address FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id LEFT JOIN merchants m ON m.id=o.merchant_id"+clause+" ORDER BY o.id DESC", args)
+            orders = rows(db, "SELECT o.*,d.name AS driver_name,d.phone AS driver_phone,d.lat AS driver_lat,d.lon AS driver_lon,d.location_at AS driver_location_at,m.name AS merchant_name,m.address AS merchant_address FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id LEFT JOIN merchants m ON m.id=o.merchant_id"+clause+" ORDER BY o.id DESC", args)
             for o in orders:
                 o["items"] = rows(db, "SELECT oi.product_id,oi.name,oi.quantity,oi.unit_price,oi.unit,COALESCE(NULLIF(p.image,''),CASE WHEN p.catalog_preview=1 THEN '/product-illustration/' || p.id || '.svg' ELSE '/icon.svg' END) AS image FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=?", (o["id"],))
                 o["events"] = rows(db, "SELECT action,at FROM events WHERE order_id=? ORDER BY id", (o["id"],))
                 if user['role']!='admin':
                     if user['role']=='customer' and o['status'] not in ('assigned','ready','picked_up','on_way'):
                         o['driver_lat']=o['driver_lon']=o['driver_location_at']=None
+                        o['driver_phone']=None
                     o['has_proof']=bool(o['proof'])
                     o['has_prescription']=bool(o['prescription'])
                     o.pop('proof', None)
