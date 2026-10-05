@@ -99,6 +99,9 @@ def init():
             db.executemany("INSERT INTO settings VALUES (?,?)", [("wallet", os.environ.get('WALLAHA_WALLET','')), ("whatsapp", os.environ.get('WALLAHA_WHATSAPP','')), ("delivery_fee", "20")])
         db.execute("INSERT OR IGNORE INTO settings VALUES ('per_km_rate','')")
         db.execute("INSERT OR IGNORE INTO settings VALUES ('quote_secret',?)",(secrets.token_hex(32),))
+        for ride_key in RIDE_RATE_KEYS.values():
+            db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(ride_key+'_base',''))
+            db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(ride_key+'_extra',''))
         for table,column,definition in [('orders','route_km','REAL'),('orders','km_rate','REAL'),('products','price_pending','INTEGER NOT NULL DEFAULT 0'),('order_items','unit',"TEXT NOT NULL DEFAULT 'قطعة'"),('order_items','stock_quantity','REAL')]:
             if column not in {x['name'] for x in db.execute(f'PRAGMA table_info({table})')}:
                 db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
@@ -112,7 +115,7 @@ def init():
         db.execute('CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users(username) WHERE username IS NOT NULL')
         if not db.execute("SELECT 1 FROM users WHERE username='owner'").fetchone():
             db.execute("UPDATE users SET username='owner' WHERE role='admin' AND username IS NULL")
-        db.execute("INSERT OR IGNORE INTO services(key,name) VALUES ('products','المنتجات'),('delivery','توصيل أوردر'),('ride_tuktuk','مشوار توك توك'),('ride_motorbike','مشوار موتوسيكل'),('ride_car','مشوار سيارة'),('ride_microbus','مشوار ميكروباص'),('ride_bicycle','مشوار عجلة')")
+        db.execute("INSERT OR IGNORE INTO services(key,name) VALUES ('products','المنتجات'),('delivery','توصيل أوردر'),('ride_tuktuk','مشوار توك توك'),('ride_motorbike','مشوار موتوسيكل'),('ride_car','مشوار سيارة'),('ride_microbus','مشوار ميكروباص'),('ride_bicycle','مشوار عجلة'),('ride_scooter','مشوار سكوتر')")
         db.executemany('INSERT OR IGNORE INTO categories(name,sort_order) VALUES (?,?)', [(name,i) for i,name in enumerate(('سوبر ماركت','مطاعم','خضار','أدوية','مخبوزات وعيش','أخرى'))])
         db.execute('INSERT OR IGNORE INTO categories(name,sort_order) SELECT DISTINCT category,100 FROM products')
         if 'quote_accepted' not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
@@ -372,9 +375,11 @@ def log(db, oid, action):
     db.execute("INSERT INTO events(order_id,action,at) VALUES (?,?,?)", (oid, action, now()))
 
 
+RIDE_RATE_KEYS = {'عجلة':'ride_bicycle', 'سكوتر':'ride_scooter', 'موتوسيكل':'ride_motorbike', 'توك توك':'ride_tuktuk', 'سيارة':'ride_car', 'ميكروباص':'ride_microbus'}
+
 def delivery_points(db,data):
     kind=data.get('kind')
-    if kind not in ('products','delivery'): raise ValueError('تسعير الكيلومتر متاح للمنتجات وتوصيل الشحنات')
+    if kind not in ('products','delivery','ride'): raise ValueError('نوع الخدمة لا يدعم حساب الطريق')
     if kind=='products':
         m=db.execute('SELECT lat,lon FROM merchants WHERE id=? AND active=1',(int(data.get('merchant_id') or 0),)).fetchone()
         if not m: raise ValueError('اختر محلًا متاحًا')
@@ -401,11 +406,31 @@ def road_km(points):
 
 
 def quote_delivery(db,user_id,data):
-    rate=db.execute("SELECT value FROM settings WHERE key='per_km_rate'").fetchone()[0]
-    if not rate: raise ValueError('لم تُفعّل الإدارة تسعير الكيلومتر بعد')
-    points=delivery_points(db,data);km=road_km(points)
-    fee=float((Decimal(str(km))*Decimal(rate)).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP))
-    payload={'user_id':user_id,'kind':data['kind'],'points':points,'km':km,'rate':float(rate),'fee':fee,'expires':int(time.time())+600}
+    kind=data.get('kind')
+    vehicle=str(data.get('vehicle',''))
+    if kind=='ride':
+        key=RIDE_RATE_KEYS.get(vehicle)
+        if not key or not db.execute('SELECT 1 FROM services WHERE key=? AND active=1',(key,)).fetchone():
+            raise ValueError('المركبة غير متاحة')
+        prices={r['key']:r['value'] for r in db.execute("SELECT key,value FROM settings WHERE key IN (?,?)",(key+'_base',key+'_extra'))}
+        if not prices.get(key+'_base') or not prices.get(key+'_extra'):
+            raise ValueError('لم تحدد الإدارة تسعيرة هذه المركبة بعد')
+        base=Decimal(prices[key+'_base'])
+        extra=Decimal(prices[key+'_extra'])
+        rate=extra
+    else:
+        saved=db.execute("SELECT value FROM settings WHERE key='per_km_rate'").fetchone()[0]
+        if not saved: raise ValueError('لم تُفعّل الإدارة تسعير الكيلومتر بعد')
+        rate=Decimal(saved)
+    points=delivery_points(db,data)
+    km=road_km(points)
+    if kind=='ride':
+        additional=max(0,math.ceil(Decimal(str(km))-Decimal('3')))
+        fee=float((base+extra*additional).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP))
+    else:
+        fee=float((Decimal(str(km))*rate).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP))
+    payload={'user_id':user_id,'kind':kind,'points':points,'km':km,'rate':float(rate),'fee':fee,'expires':int(time.time())+600}
+    if kind=='ride': payload.update({'vehicle':vehicle,'base':float(base),'extra':float(extra)})
     body=base64.urlsafe_b64encode(json.dumps(payload,separators=(',',':')).encode()).decode()
     secret=db.execute("SELECT value FROM settings WHERE key='quote_secret'").fetchone()[0]
     signature=hmac.new(secret.encode(),body.encode(),hashlib.sha256).hexdigest()
@@ -418,7 +443,7 @@ def verify_delivery_quote(db,user_id,data):
         secret=db.execute("SELECT value FROM settings WHERE key='quote_secret'").fetchone()[0]
         if not hmac.compare_digest(signature,hmac.new(secret.encode(),body.encode(),hashlib.sha256).hexdigest()): raise ValueError()
         q=json.loads(base64.urlsafe_b64decode(body))
-        if q['user_id']!=user_id or q['kind']!=data['kind'] or q['expires']<int(time.time()) or q['points']!=delivery_points(db,data): raise ValueError()
+        if q['user_id']!=user_id or q['kind']!=data['kind'] or q['expires']<int(time.time()) or q['points']!=delivery_points(db,data) or (q['kind']=='ride' and q.get('vehicle')!=data.get('vehicle')): raise ValueError()
         return q
     except (ValueError,KeyError,TypeError):
         raise ValueError('احسب رسوم التوصيل مجددًا بعد تحديد الموقع؛ عرض السعر غير صالح أو انتهت صلاحيته')
@@ -871,6 +896,23 @@ class Handler(BaseHTTPRequestHandler):
                         rate=str(Decimal(rate).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP))
                         if Decimal(rate)<=0: raise ValueError('سعر الكيلومتر صغير جدًا')
                     db.execute("UPDATE settings SET value=? WHERE key='per_km_rate'",(rate,))
+                elif path == '/api/ride-rates':
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    key=RIDE_RATE_KEYS.get(str(data.get('vehicle','')))
+                    if not key: raise ValueError('المركبة غير معروفة')
+                    base=str(data.get('base','')).strip()
+                    extra=str(data.get('extra','')).strip()
+                    if bool(base)!=bool(extra): raise ValueError('أدخل السعر الأساسي وزيادة الكيلومتر معًا')
+                    values=[]
+                    for value in (base,extra):
+                        if not value:
+                            values.append('')
+                            continue
+                        amount=Decimal(value)
+                        if not amount.is_finite() or amount<=0 or amount>10000: raise ValueError('السعر يجب أن يكون أكبر من صفر وحتى 10000 جنيه')
+                        values.append(str(amount.quantize(Decimal('0.01'),rounding=ROUND_HALF_UP)))
+                    for suffix,value in zip(('_base','_extra'),values):
+                        db.execute('UPDATE settings SET value=? WHERE key=?',(value,key+suffix))
                 elif path == '/api/products/import-names':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     merchant=db.execute("SELECT id FROM merchants WHERE id=? AND category='سوبر ماركت' AND active=1",(int(data.get('merchant_id') or 0),)).fetchone()
@@ -933,7 +975,7 @@ class Handler(BaseHTTPRequestHandler):
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     if data["area"] not in AREAS: raise ValueError("منطقة غير معروفة")
                     vehicle=str(data.get('vehicle_type','موتوسيكل'))
-                    if vehicle not in ('موتوسيكل','عجلة','توك توك','سيارة','ميكروباص'): raise ValueError('نوع المركبة غير معروف')
+                    if vehicle not in ('موتوسيكل','عجلة','توك توك','سيارة','ميكروباص','سكوتر'): raise ValueError('نوع المركبة غير معروف')
                     uid=create_user(db,str(data['name']),str(data['phone']),'driver',str(data['password']),data.get('username'))
                     db.execute("INSERT INTO drivers(user_id,name,phone,area,vehicle_type) VALUES (?,?,?,?,?)", (uid,str(data["name"]).strip(), str(data["phone"]).strip(), data["area"],vehicle))
                 elif path == "/api/order":
@@ -951,7 +993,7 @@ class Handler(BaseHTTPRequestHandler):
                         if parcel['shipment_type']=='أخرى' and not parcel['shipment_other']: raise ValueError('اكتب وصف نوع الشحنة')
                         if any(not parcel[key] or len(parcel[key])>120 for key in ('sender_name','recipient_name')): raise ValueError('اكتب اسم المرسل والمستلم')
                         if any(not re.fullmatch(r'[+0-9٠-٩ ()-]{7,25}',parcel[key]) for key in ('sender_phone','recipient_phone')): raise ValueError('اكتب رقم تليفون صحيح للمرسل والمستلم')
-                    service_key='products' if kind=='products' else 'delivery' if kind=='delivery' else {'توك توك':'ride_tuktuk','موتوسيكل':'ride_motorbike','سيارة':'ride_car','ميكروباص':'ride_microbus','عجلة':'ride_bicycle'}.get(data.get('vehicle'),'') if kind=='ride' else str(data.get('service_key',''))
+                    service_key='products' if kind=='products' else 'delivery' if kind=='delivery' else RIDE_RATE_KEYS.get(data.get('vehicle'),'') if kind=='ride' else str(data.get('service_key',''))
                     if kind=='custom' and not service_key.startswith('custom_'): raise ValueError('الخدمة غير معروفة')
                     if not db.execute('SELECT 1 FROM services WHERE key=? AND active=1',(service_key,)).fetchone(): raise ValueError('الخدمة غير متاحة حاليًا')
                     if data["area"] not in AREAS: raise ValueError("اختر منطقة الخدمة")
@@ -998,7 +1040,7 @@ class Handler(BaseHTTPRequestHandler):
                     if prescription and not valid_image(prescription,2_500_000): raise ValueError('صورة الوصفة غير صالحة')
                     if payment=='wallet' and kind=='products' and not medicine_review and not valid_image(proof,2_500_000): raise ValueError('صورة إثبات التحويل مطلوبة')
                     if medicine_review and proof: raise ValueError('انتظر مراجعة طلب الأدوية قبل التحويل')
-                    if kind == "ride" and data.get("vehicle") not in ("توك توك", "موتوسيكل", "سيارة", "ميكروباص", "عجلة"): raise ValueError("اختر نوع المركبة")
+                    if kind == "ride" and data.get("vehicle") not in ("توك توك", "موتوسيكل", "سيارة", "ميكروباص", "عجلة", "سكوتر"): raise ValueError("اختر نوع المركبة")
                     if kind in ("ride", "delivery") and not data.get("pickup"): raise ValueError("اكتب مكان الاستلام")
                     if kind in ("ride", "delivery") and not data.get("destination"): raise ValueError("اكتب الوجهة")
                     pickup_lat,pickup_lon=None,None
@@ -1010,7 +1052,9 @@ class Handler(BaseHTTPRequestHandler):
                     if kind != "products": fee = 0
                     km_quote=None
                     rate=db.execute("SELECT value FROM settings WHERE key='per_km_rate'").fetchone()[0]
-                    if rate and kind in ('products','delivery') and not (kind=='products' and shop_anywhere):
+                    ride_rate_key=RIDE_RATE_KEYS.get(data.get('vehicle','')) if kind=='ride' else None
+                    ride_priced=bool(ride_rate_key and db.execute("SELECT value FROM settings WHERE key=?",(ride_rate_key+'_base',)).fetchone()[0])
+                    if (rate and kind in ('products','delivery') and not (kind=='products' and shop_anywhere)) or (kind=='ride' and ride_priced):
                         km_quote=verify_delivery_quote(db,user['id'],data)
                         fee=km_quote['fee']
                     ps = "confirmed" if payment == "cash" else "pending"
@@ -1019,8 +1063,8 @@ class Handler(BaseHTTPRequestHandler):
                     oid = cur.lastrowid
                     if km_quote:
                         db.execute('UPDATE orders SET route_km=?,km_rate=? WHERE id=?',(km_quote['km'],km_quote['rate'],oid))
-                        if kind=='delivery': db.execute("UPDATE orders SET status=?,quote_accepted=1 WHERE id=?",('new' if payment=='cash' else 'payment_review',oid))
-                        log(db,oid,f"رسوم الطريق: {km_quote['km']} كم × {km_quote['rate']} ج = {fee} ج")
+                        if kind in ('delivery','ride'): db.execute("UPDATE orders SET status=?,quote_accepted=1 WHERE id=?",('new' if payment=='cash' else 'payment_review',oid))
+                        log(db,oid,f"رسوم الطريق: {km_quote['km']} كم، {km_quote.get('vehicle','توصيل')} = {fee} ج")
                     if parcel:
                         db.execute('UPDATE orders SET shipment_type=?,shipment_other=?,sender_name=?,sender_phone=?,recipient_name=?,recipient_phone=? WHERE id=?',tuple(parcel[key] for key in ('shipment_type','shipment_other','sender_name','sender_phone','recipient_name','recipient_phone'))+(oid,))
                     db.execute('UPDATE orders SET service_key=?,latitude=?,longitude=?,merchant_id=?,pickup_lat=?,pickup_lon=?,shop_anywhere=?,pickup=? WHERE id=?',(service_key,lat,lon,merchant['id'] if merchant else None,None if kind=='products' and shop_anywhere else merchant['lat'] if merchant else pickup_lat,None if kind=='products' and shop_anywhere else merchant['lon'] if merchant else pickup_lon,1 if kind=='products' and shop_anywhere else 0,'أي سوبر ماركت قريب يختاره الطيار' if kind=='products' and shop_anywhere else str(data.get('pickup','')),oid))
@@ -1120,7 +1164,7 @@ class Handler(BaseHTTPRequestHandler):
                     refresh_offers(db)
                 else: return self.respond({"error": "غير موجود"}, 404)
             self.respond({"ok": True})
-        except (ValueError, KeyError, TypeError, sqlite3.Error) as e:
+        except (ValueError, InvalidOperation, KeyError, TypeError, sqlite3.Error) as e:
             self.respond({"error": str(e)}, 400)
 
 
