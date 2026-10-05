@@ -2,6 +2,12 @@ package com.wallah.app;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.hardware.biometrics.BiometricPrompt;
+import android.os.Build;
+import android.os.CancellationSignal;
+import android.provider.Settings;
+import android.view.View;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
@@ -22,6 +28,11 @@ public class MainActivity extends Activity {
     private static final int LOCATION_REQUEST = 41;
     private static final int FILE_REQUEST = 42;
     private WebView web;
+    private boolean driverUnlocked = false;
+    private boolean driverPromptActive = false;
+    private boolean driverPageLoaded = false;
+    private Bundle pendingState;
+    private String pendingDestination;
     private ValueCallback<Uri[]> fileCallback;
     private GeolocationPermissions.Callback locationCallback;
     private String locationOrigin;
@@ -96,10 +107,75 @@ public class MainActivity extends Activity {
                 catch (Exception e) { fileCallback = null; callback.onReceiveValue(null); return false; }
             }
         });
-        String destination = incomingLocation(getIntent());
-        if (destination != null) web.loadUrl(destination);
-        else if (state != null) web.restoreState(state);
+        pendingDestination = incomingLocation(getIntent());
+        pendingState = state;
+        if ("driver".equals(BuildConfig.FLAVOR)) web.setVisibility(View.INVISIBLE);
+        else loadInitialPage();
+    }
+
+    private void loadInitialPage() {
+        if (driverPageLoaded) return;
+        driverPageLoaded = true;
+        if (pendingDestination != null) web.loadUrl(pendingDestination);
+        else if (pendingState != null) web.restoreState(pendingState);
         else web.loadUrl(BuildConfig.HOME_URL);
+        pendingState = null;
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        if ("driver".equals(BuildConfig.FLAVOR) && !driverUnlocked && !driverPromptActive) requireDriverBiometric();
+    }
+
+    @Override protected void onStop() {
+        if ("driver".equals(BuildConfig.FLAVOR)) {
+            driverUnlocked = false;
+            web.setVisibility(View.INVISIBLE);
+        }
+        super.onStop();
+    }
+
+    private void requireDriverBiometric() {
+        if (Build.VERSION.SDK_INT < 28) {
+            biometricUnavailable("التحقق البيومتري يحتاج أندرويد 9 أو أحدث على جهاز الطيار.");
+            return;
+        }
+        driverPromptActive = true;
+        CancellationSignal signal = new CancellationSignal();
+        new BiometricPrompt.Builder(this)
+            .setTitle("تأكيد هوية الطيار")
+            .setSubtitle("استخدم بصمة الوجه أو البصمة المسجلة على هاتفك لفتح الطلبات")
+            .setNegativeButton("إلغاء", getMainExecutor(), (dialog, which) -> {
+                driverPromptActive = false;
+                finish();
+            })
+            .build()
+            .authenticate(signal, getMainExecutor(), new BiometricPrompt.AuthenticationCallback() {
+                @Override public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
+                    driverPromptActive = false;
+                    driverUnlocked = true;
+                    web.setVisibility(View.VISIBLE);
+                    loadInitialPage();
+                }
+                @Override public void onAuthenticationError(int code, CharSequence message) {
+                    driverPromptActive = false;
+                    if (!isFinishing()) biometricUnavailable("لم يكتمل التحقق البيومتري. تأكد من تسجيل بصمتك في إعدادات الهاتف.");
+                }
+            });
+    }
+
+    private void biometricUnavailable(String message) {
+        if (isFinishing()) return;
+        new AlertDialog.Builder(this)
+            .setTitle("التحقق مطلوب")
+            .setMessage(message)
+            .setPositiveButton("إعدادات الهاتف", (dialog, which) -> {
+                try { startActivity(new Intent(Settings.ACTION_SECURITY_SETTINGS)); }
+                catch (Exception ignored) { finish(); }
+            })
+            .setNegativeButton("إغلاق", (dialog, which) -> finish())
+            .setOnCancelListener(dialog -> finish())
+            .show();
     }
 
     @Override protected void onNewIntent(Intent intent) {
