@@ -824,7 +824,7 @@ class Handler(BaseHTTPRequestHandler):
                 if path == '/api/driver/photo':
                     if user['role']!='driver': return self.respond({'error':'خاص بالطيار فقط'},403)
                     photo=data.get('photo')
-                    if not valid_image(photo,350_000): raise ValueError('اختر صورة PNG أو JPG أو WebP بحجم أقل من 250 كيلوبايت')
+                    if not valid_image(photo,1_500_000): raise ValueError('تعذر حفظ الصورة بعد ضغطها؛ اختر صورة أخرى')
                     db.execute('UPDATE drivers SET photo=? WHERE user_id=?',(photo,user['id']))
                     return self.respond({'ok':True})
                 if path == '/api/driver/reset-password':
