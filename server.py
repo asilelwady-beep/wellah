@@ -112,6 +112,8 @@ def init():
                 db.execute(f'ALTER TABLE orders ADD COLUMN {column} {definition}')
         if 'username' not in {x['name'] for x in db.execute('PRAGMA table_info(users)')}:
             db.execute('ALTER TABLE users ADD COLUMN username TEXT')
+        if 'photo' not in {x['name'] for x in db.execute('PRAGMA table_info(drivers)')}:
+            db.execute("ALTER TABLE drivers ADD COLUMN photo TEXT NOT NULL DEFAULT ''")
         if 'vehicle_type' not in {x['name'] for x in db.execute('PRAGMA table_info(drivers)')}:
             db.execute("ALTER TABLE drivers ADD COLUMN vehicle_type TEXT NOT NULL DEFAULT 'موتوسيكل'")
         db.execute('CREATE UNIQUE INDEX IF NOT EXISTS users_username_unique ON users(username) WHERE username IS NOT NULL')
@@ -741,20 +743,20 @@ class Handler(BaseHTTPRequestHandler):
             if not user: return self.respond({'error':'سجل الدخول أولًا'}, 401)
             refresh_offers(db)
             clause, args = ('', ()) if user['role']=='admin' else ((' WHERE o.user_id=?', (user['id'],)) if user['role']=='customer' else (' WHERE d.user_id=?', (user['id'],)))
-            orders = rows(db, "SELECT o.*,d.name AS driver_name,d.phone AS driver_phone,d.lat AS driver_lat,d.lon AS driver_lon,d.location_at AS driver_location_at,m.name AS merchant_name,m.address AS merchant_address FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id LEFT JOIN merchants m ON m.id=o.merchant_id"+clause+" ORDER BY o.id DESC", args)
+            orders = rows(db, "SELECT o.*,d.name AS driver_name,d.phone AS driver_phone,d.photo AS driver_photo,d.lat AS driver_lat,d.lon AS driver_lon,d.location_at AS driver_location_at,m.name AS merchant_name,m.address AS merchant_address FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id LEFT JOIN merchants m ON m.id=o.merchant_id"+clause+" ORDER BY o.id DESC", args)
             for o in orders:
                 o["items"] = rows(db, "SELECT oi.product_id,oi.name,oi.quantity,oi.unit_price,oi.unit,COALESCE(NULLIF(p.image,''),CASE WHEN p.catalog_preview=1 THEN '/product-illustration/' || p.id || '.svg' ELSE '/icon.svg' END) AS image FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=?", (o["id"],))
                 o["events"] = rows(db, "SELECT action,at FROM events WHERE order_id=? ORDER BY id", (o["id"],))
                 if user['role']!='admin':
-                    if user['role']=='customer' and o['status'] not in ('assigned','ready','picked_up','on_way'):
+                    if user['role']=='customer' and o['status'] not in ('assigned','ready','picked_up','on_way','delivered'):
                         o['driver_lat']=o['driver_lon']=o['driver_location_at']=None
-                        o['driver_phone']=None
+                        o['driver_name']=o['driver_phone']=o['driver_photo']=None
                     o['has_proof']=bool(o['proof'])
                     o['has_prescription']=bool(o['prescription'])
                     o.pop('proof', None)
                     o.pop('reference', None)
                     o.pop('prescription', None)
-            profile=db.execute('SELECT id,name,phone,area,vehicle_type,available,lat,lon,location_at FROM drivers WHERE user_id=?',(user['id'],)).fetchone() if user['role']=='driver' else None
+            profile=db.execute('SELECT id,name,phone,photo,area,vehicle_type,available,lat,lon,location_at FROM drivers WHERE user_id=?',(user['id'],)).fetchone() if user['role']=='driver' else None
             wallets={str(d['id']):driver_wallet(db,d['id']) for d in db.execute('SELECT id FROM drivers')} if user['role']=='admin' else {}
             self.respond({"draft_catalog":preview_catalog(db) if user['role'] in ('customer','admin') else [],"driver_profile":dict(profile) if profile else None,"driver_wallet":driver_wallet(db,profile['id']) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}})
 
@@ -819,6 +821,22 @@ class Handler(BaseHTTPRequestHandler):
                 if path == '/api/logout':
                     db.execute('DELETE FROM sessions WHERE token_hash=?',(hashlib.sha256(self.headers['Authorization'][7:].encode()).hexdigest(),))
                     return self.respond({'ok':True})
+                if path == '/api/driver/photo':
+                    if user['role']!='driver': return self.respond({'error':'خاص بالطيار فقط'},403)
+                    photo=data.get('photo')
+                    if not valid_image(photo,350_000): raise ValueError('اختر صورة PNG أو JPG أو WebP بحجم أقل من 250 كيلوبايت')
+                    db.execute('UPDATE drivers SET photo=? WHERE user_id=?',(photo,user['id']))
+                    return self.respond({'ok':True})
+                if path == '/api/driver/reset-password':
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    driver=db.execute('SELECT user_id FROM drivers WHERE id=?',(int(data.get('driver_id',0)),)).fetchone()
+                    if not driver: raise ValueError('الطيار غير موجود')
+                    temporary=secrets.token_urlsafe(15)
+                    salt=secrets.token_hex(16)
+                    digest=hashlib.scrypt(temporary.encode(),salt=bytes.fromhex(salt),n=2**14,r=8,p=1).hex()
+                    db.execute('UPDATE users SET salt=?,password_hash=? WHERE id=?',(salt,digest,driver['user_id']))
+                    db.execute('DELETE FROM sessions WHERE user_id=?',(driver['user_id'],))
+                    return self.respond({'ok':True,'temporary_password':temporary})
                 if path == '/api/change-password':
                     current=str(data.get('current_password',''))
                     replacement=str(data.get('new_password',''))
