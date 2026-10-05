@@ -434,12 +434,12 @@ def assign(db, oid):
     merchant = db.execute('SELECT area FROM merchants WHERE id=?',(o['merchant_id'],)).fetchone() if o['merchant_id'] else None
     pickup_area = merchant['area'] if merchant and not o['shop_anywhere'] else o['area']
     # Last known location must be recent. Busy and declined drivers are excluded.
-    candidates = db.execute("""SELECT d.id,d.lat,d.lon,d.vehicle_type FROM drivers d WHERE d.available=1 AND d.area=?
+    candidates = db.execute("""SELECT d.id,d.lat,d.lon,d.vehicle_type FROM drivers d WHERE d.available=1 AND (?=1 OR d.area=?)
         AND d.lat IS NOT NULL AND d.lon IS NOT NULL AND d.location_at>=?
         AND NOT EXISTS (SELECT 1 FROM orders x WHERE x.driver_id=d.id AND x.id<>?
             AND x.status IN ('offered','assigned','ready','picked_up','on_way'))
         AND NOT EXISTS (SELECT 1 FROM order_declines x WHERE x.order_id=? AND x.driver_id=d.id)""",
-        (pickup_area,datetime.fromtimestamp(time.time()-300,timezone.utc).isoformat(timespec='seconds'),oid,oid)).fetchall()
+        (1 if o['kind']!='products' else 0,pickup_area,datetime.fromtimestamp(time.time()-300,timezone.utc).isoformat(timespec='seconds'),oid,oid)).fetchall()
     if o['kind']=='ride':
         candidates=[d for d in candidates if d['vehicle_type']==o['vehicle']]
     origin=(o['pickup_lat'],o['pickup_lon']) if o['pickup_lat'] is not None else (o['latitude'],o['longitude'])
@@ -454,7 +454,7 @@ def assign(db, oid):
     d=min(candidates,key=lambda x:(distance(x),x['id'])) if candidates else None
     if d:
         db.execute("UPDATE orders SET driver_id=?,status='offered',offer_until=? WHERE id=?", (d['id'],int(time.time())+90,oid))
-        log(db, oid, "عُرض الطلب تلقائيًا على أقرب مندوب متاح في منطقة الاستلام")
+        log(db, oid, "عُرض الطلب تلقائيًا على أقرب مندوب متاح من نقطة الاستلام")
     else:
         db.execute("UPDATE orders SET driver_id=NULL,status='awaiting_driver',offer_until=NULL WHERE id=?", (oid,))
         if o['status']!='awaiting_driver': log(db, oid, "بانتظار مندوب متاح في منطقة الاستلام يشارك موقعًا حديثًا")
