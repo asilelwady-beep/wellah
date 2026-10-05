@@ -188,11 +188,23 @@ function baseMap(id,zoom=13){
   const baseLayer=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
     maxZoom:19,attribution:'&copy; OpenStreetMap contributors'
   }).addTo(map);
+  let vectorLayer=null;
+  try{
+    const canvas=document.createElement('canvas');
+    if(typeof L.maplibreGL==='function'&&(canvas.getContext('webgl2')||canvas.getContext('webgl'))){
+      vectorLayer=L.maplibreGL({
+        style:'https://tiles.openfreemap.org/styles/liberty',
+        interactive:false,
+        attribution:'© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors'
+      }).addTo(map);
+      el.dataset.mapProvider='vector';
+    }
+  }catch(error){if(vectorLayer){map.removeLayer(vectorLayer);vectorLayer=null}console.warn('Vector map unavailable',error)}
   loadGoogleMaps().then(ready=>{
     if(!ready||!mapViews.includes(map))return;
     try{
       const googleLayer=L.gridLayer.googleMutant({type:'roadmap',maxZoom:21});
-      googleLayer.once('load',()=>{if(mapViews.includes(map)){map.removeLayer(baseLayer);el.dataset.mapProvider='google'}});
+      googleLayer.once('load',()=>{if(mapViews.includes(map)){if(vectorLayer)map.removeLayer(vectorLayer);map.removeLayer(baseLayer);el.dataset.mapProvider='google'}});
       googleLayer.addTo(map);
     }catch(error){console.warn('Google Maps layer unavailable',error)}
   });
