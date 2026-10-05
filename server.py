@@ -650,7 +650,7 @@ class Handler(BaseHTTPRequestHandler):
                     lon,lat=feature.get('geometry',{}).get('coordinates',[None,None])[:2]
                     if not isinstance(lat,(int,float)) or not isinstance(lon,(int,float)) or not (29.70<=lat<=30.02 and 31.10<=lon<=31.50): continue
                     props=feature.get('properties',{})
-                    name='، '.join(str(props[k]) for k in ('name','street','housenumber','district','city') if props.get(k))
+                    name='، '.join(str(props[k]) for k in ('name','street','housenumber','district','city','county','state') if props.get(k))
                     results.append({'lat':lat,'lon':lon,'label':name or query})
                 with GEOCODE_LOCK:
                     cache=GEOCODE_STATE['cache']
