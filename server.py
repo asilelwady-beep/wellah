@@ -105,7 +105,7 @@ def init():
         for table,column,definition in [('orders','route_km','REAL'),('orders','km_rate','REAL'),('products','price_pending','INTEGER NOT NULL DEFAULT 0'),('order_items','unit',"TEXT NOT NULL DEFAULT 'قطعة'"),('order_items','stock_quantity','REAL')]:
             if column not in {x['name'] for x in db.execute(f'PRAGMA table_info({table})')}:
                 db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
-        for column,definition in [('driver_earning_cents' ,'INTEGER NOT NULL DEFAULT 0'),('driver_earning_paid','INTEGER NOT NULL DEFAULT 0')]:
+        for column,definition in [('driver_earning_cents' ,'INTEGER NOT NULL DEFAULT 0'),('driver_earning_paid','INTEGER NOT NULL DEFAULT 0'),('commission_percent','REAL NOT NULL DEFAULT 0'),('commission_cents','INTEGER NOT NULL DEFAULT 0')]:
             if column not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
                 db.execute(f'ALTER TABLE orders ADD COLUMN {column} {definition}')
         if 'username' not in {x['name'] for x in db.execute('PRAGMA table_info(users)')}:
@@ -571,10 +571,11 @@ def rows(db, sql, args=()):
 
 
 def driver_wallet(db, driver_id):
-    entries=rows(db,"SELECT id,status,total,payment,cash_collected,cash_settled,driver_earning_cents,driver_earning_paid,created_at FROM orders WHERE driver_id=? AND status='delivered' ORDER BY id DESC",(driver_id,))
+    entries=rows(db,"SELECT id,status,total,payment,cash_collected,cash_settled,driver_earning_cents,driver_earning_paid,commission_percent,commission_cents,created_at FROM orders WHERE driver_id=? AND status='delivered' ORDER BY id DESC",(driver_id,))
     return {'balance':sum(o['driver_earning_cents'] for o in entries if not o['driver_earning_paid'])/100,
             'earned':sum(o['driver_earning_cents'] for o in entries)/100,
             'paid':sum(o['driver_earning_cents'] for o in entries if o['driver_earning_paid'])/100,
+            'commission_due':sum(o['commission_cents'] for o in entries)/100,
             'cash_due':round(sum(o['total'] for o in entries if o['payment']=='cash' and o['cash_collected'] and not o['cash_settled']),2),
             'entries':entries}
 
@@ -1100,9 +1101,15 @@ class Handler(BaseHTTPRequestHandler):
                         log(db,oid,'راجع المسؤول طلب الأدوية')
                         if o['payment']=='cash': assign(db,oid)
                     elif action == "price" and o["kind"] != "products" and o["status"] in ('awaiting_quote','quote_pending'):
-                        amount = float(data["amount"])
-                        if amount < 0: raise ValueError("السعر غير صحيح")
-                        db.execute("UPDATE orders SET total=?,status='quote_pending',quote_accepted=0 WHERE id=?", (amount, oid))
+                        try:
+                            amount=Decimal(str(data.get('amount','')))
+                            percent=Decimal(str(data.get('commission_percent','0')))
+                        except InvalidOperation: raise ValueError('السعر أو النسبة غير صحيحين')
+                        if not amount.is_finite() or amount<0 or amount>100000 or amount!=amount.quantize(Decimal('0.01')): raise ValueError('اكتب سعرًا صحيحًا بحد أقصى منزلتين عشريتين')
+                        if not percent.is_finite() or percent<0 or percent>100 or percent!=percent.quantize(Decimal('0.01')): raise ValueError('النسبة من صفر إلى 100 وبحد أقصى منزلتين عشريتين')
+                        amount_cents=int(amount*100)
+                        commission_cents=int((Decimal(amount_cents)*percent/100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+                        db.execute("UPDATE orders SET total=?,delivery_fee=?,commission_percent=?,commission_cents=?,driver_earning_cents=?,status='quote_pending',quote_accepted=0 WHERE id=?", (float(amount),float(amount),float(percent),commission_cents,amount_cents-commission_cents,oid))
                         log(db, oid, "حدد المسؤول سعر الخدمة وينتظر موافقة العميل")
                     elif action == 'accept_quote' and o['status']=='quote_pending':
                         db.execute("UPDATE orders SET quote_accepted=1,status=? WHERE id=?",('payment_review' if o['payment']=='wallet' else 'new',oid))
