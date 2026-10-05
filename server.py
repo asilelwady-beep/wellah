@@ -27,6 +27,8 @@ AREAS = ["مدينة البدرشين", "أبو رجوان البحري", "أب�
 CAIRO = ZoneInfo('Africa/Cairo')
 GEOCODE_LOCK = Lock()
 GEOCODE_STATE = {'last': 0.0, 'cache': {}}
+ROAD_LOCK = Lock()
+ROAD_STATE = {'last': 0.0, 'cache': {}}
 MAP_LINK_HOSTS = {'maps.app.goo.gl', 'www.google.com', 'google.com', 'maps.google.com'}
 
 class SafeMapsRedirect(HTTPRedirectHandler):
@@ -632,6 +634,51 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond({'ok':True})
             except sqlite3.Error:
                 return self.respond({'ok':False},503)
+        if path == '/api/map-roads':
+            params = parse_qs(urlparse(self.path).query)
+            try:
+                lat = float(params.get('lat', [''])[0])
+                lon = float(params.get('lon', [''])[0])
+            except (ValueError, TypeError):
+                return self.respond({'error':'حدد منطقة على الخريطة أولاً'},400)
+            if not (29.68 <= lat <= 30.04 and 31.08 <= lon <= 31.52):
+                return self.respond({'error':'المكان خارج نطاق خريطة البدرشين'},400)
+            # A small, explicitly requested viewport keeps the public OSM service load bounded.
+            key = (round(lat, 3), round(lon, 3))
+            with ROAD_LOCK:
+                entry = ROAD_STATE['cache'].get(key)
+                if entry and time.monotonic()-entry[0] < 86400:
+                    return self.respond({'roads':entry[1], 'source':'OpenStreetMap'})
+                if time.monotonic()-ROAD_STATE['last'] < 4:
+                    return self.respond({'error':'انتظر ثواني ثم جرّب منطقة أخرى'},429)
+                ROAD_STATE['last'] = time.monotonic()
+            query = ('[out:json][timeout:15];'
+                     '(way(around:900,%.5f,%.5f)[highway~"^(residential|living_street|unclassified|service|pedestrian|footway|tertiary|secondary|primary)$"];);'
+                     'out geom 400;') % key
+            try:
+                request = Request('https://overpass-api.de/api/interpreter',
+                                  data=urlencode({'data':query}).encode(),
+                                  headers={'User-Agent':'Walla3ha/1.0 (+https://walla3ha.com)',
+                                           'Content-Type':'application/x-www-form-urlencoded',
+                                           'Accept':'application/json'})
+                with urlopen(request,timeout=20) as response:
+                    payload=json.load(response)
+                roads=[]
+                for item in payload.get('elements',[])[:400]:
+                    geometry=item.get('geometry') or []
+                    coords=[[node['lat'],node['lon']] for node in geometry
+                            if isinstance(node.get('lat'),(int,float)) and isinstance(node.get('lon'),(int,float))]
+                    if len(coords)<2: continue
+                    tags=item.get('tags') or {}
+                    roads.append({'id':item.get('id'), 'name':tags.get('name:ar') or tags.get('name') or '',
+                                  'points':coords})
+                with ROAD_LOCK:
+                    cache=ROAD_STATE['cache']
+                    if len(cache)>120: cache.clear()
+                    cache[key]=(time.monotonic(),roads)
+                return self.respond({'roads':roads,'source':'OpenStreetMap'})
+            except Exception:
+                return self.respond({'error':'تعذر تحميل شوارع المنطقة الآن؛ كبّر الخريطة وحدد النقطة يدويًا'},502)
         if path == '/api/geocode':
             query = parse_qs(urlparse(self.path).query).get('q', [''])[0].strip()
             if len(query) < 3 or len(query) > 150: return self.respond({'error':'اكتب عنوانًا واضحًا داخل البدرشين'},400)

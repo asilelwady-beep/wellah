@@ -177,6 +177,36 @@ function showMapPoints(map,points){
   if(points.length===1)map.setView(points[0],15);
   else if(points.length>1)map.fitBounds(points,{padding:[30,30],maxZoom:15});
 }
+window.showNearbyMapRoads=async()=>{
+  const map=mapViews.find(view=>view.getContainer().id==='customer-map');
+  const status=document.getElementById('map-roads-status');
+  if(!map||!status)return;
+  if(map.getZoom()<14){status.textContent='كبّر الخريطة على القرية أو الحارة أولاً.';return}
+  status.textContent='جارٍ تحميل الشوارع والحارات حول الجزء الظاهر من الخريطة…';
+  const center=map.getCenter();
+  try{
+    const response=await fetch('/api/map-roads?lat='+center.lat.toFixed(5)+'&lon='+center.lng.toFixed(5));
+    const data=await response.json();
+    if(!response.ok)throw Error(data.error||'تعذر تحميل الشوارع');
+    if(map._roadOverlay)map.removeLayer(map._roadOverlay);
+    const layer=L.layerGroup().addTo(map);
+    map._roadOverlay=layer;
+    for(const road of data.roads){
+      const line=L.polyline(road.points,{color:'#d12e43',weight:5,opacity:0.8}).addTo(layer);
+      const name=road.name||'حارة غير مسماة على الخريطة';
+      line.bindTooltip(name);
+      line.on('click',e=>{
+        L.DomEvent.stopPropagation(e);
+        window.setCustomerMapPoint(e.latlng.lat,e.latlng.lng,
+          road.name?road.name+'، البدرشين':'حارة محددة على الخريطة، البدرشين');
+        status.textContent='تم تحديد '+name+' — راجع العلامة وأضف رقم المنزل أو علامة مميزة.';
+      });
+    }
+    status.textContent=data.roads.length?
+      'ظهر '+data.roads.length+' شارعًا وحارة مسجلة في هذا الجزء. اضغط على الخط لتحديد مكانك الدقيق، وحرّك الخريطة ثم كرر البحث لباقي القرية.':
+      'لا توجد شوارع مسجلة في هذا الجزء؛ حدد المكان يدويًا وأضف علامة مميزة.';
+  }catch(error){status.textContent=error.message||'تعذر تحميل الشوارع'}
+};
 function initMaps(){
   if(!state)return;
   const tripMap=baseMap('trip-map');
