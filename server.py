@@ -29,6 +29,45 @@ GEOCODE_LOCK = Lock()
 GEOCODE_STATE = {'last': 0.0, 'cache': {}}
 ROAD_LOCK = Lock()
 ROAD_STATE = {'last': 0.0, 'cache': {}}
+OSM_SEARCH_LOCK = Lock()
+OSM_SEARCH_STATE = {'last': 0.0}
+def osm_named_places(query):
+    """Fallback for named map features missing from Photon; one bounded user search."""
+    words=re.findall(r'[\\w\\u0600-\\u06ff]+',query.casefold())
+    stop={'شارع','طريق','مركز','قسم','جامع','مسجد','قرية','مدينه','مدينة','البدرشين','البدراشين','الجيزة','صيدلية','سوبر','ماركت','محل','مدرسة'}
+    terms=[w for w in words if len(w)>=3 and w not in stop]
+    if not terms: return []
+    token=max(terms,key=len)
+    with OSM_SEARCH_LOCK:
+        if time.monotonic()-OSM_SEARCH_STATE['last']<5: return []
+        OSM_SEARCH_STATE['last']=time.monotonic()
+    statement='[out:json][timeout:12];nwr[~"^name(:ar)?$"~"%s",i](29.70,31.10,30.02,31.50);out center 60;' % token
+    request=Request('https://overpass-api.de/api/interpreter',
+                    data=urlencode({'data':statement}).encode(),
+                    headers={'User-Agent':'Walla3ha/1.0 (+https://walla3ha.com)',
+                             'Content-Type':'application/x-www-form-urlencoded',
+                             'Accept':'application/json'})
+    with urlopen(request,timeout=16) as response: payload=json.load(response)
+    normalized=lambda value: re.sub(r'[\\s\\W_]+','',str(value).casefold().replace('أ','ا').replace('إ','ا').replace('آ','ا').replace('ة','ه').replace('ى','ي'))
+    required=[normalized(w) for w in terms]
+    results=[]
+    seen=set()
+    for item in payload.get('elements',[])[:60]:
+        tags=item.get('tags') or {}
+        names=[str(tags.get(k) or '') for k in ('name:ar','name')]
+        if not any(all(term in normalized(name) for term in required) for name in names): continue
+        location=item.get('center') or item
+        lat,lon=location.get('lat'),location.get('lon')
+        if not isinstance(lat,(int,float)) or not isinstance(lon,(int,float)) or not (29.70<=lat<=30.02 and 31.10<=lon<=31.50): continue
+        name=names[0] or names[1]
+        key=(round(lat,5),round(lon,5),normalized(name))
+        if key in seen: continue
+        seen.add(key)
+        locality=tags.get('addr:city') or tags.get('addr:suburb') or tags.get('addr:place') or 'البدرشين'
+        results.append({'lat':lat,'lon':lon,'label':name+'، '+str(locality)+' — راجع الدبوس عند المدخل'})
+        if len(results)>=5: break
+    return results
+
 MAP_LINK_HOSTS = {'maps.app.goo.gl', 'www.google.com', 'google.com', 'maps.google.com'}
 
 class SafeMapsRedirect(HTTPRedirectHandler):
@@ -755,6 +794,9 @@ class Handler(BaseHTTPRequestHandler):
                         label='، '.join(str(props[k]) for k in ('name','street','housenumber','district','city','county','state') if props.get(k))
                         results.append({'lat':lat,'lon':lon,'label':label or query})
                     results=results[:5]
+                    if not results:
+                        try: results=osm_named_places(query)
+                        except Exception: results=[]
                 with GEOCODE_LOCK:
                     cache=GEOCODE_STATE['cache']
                     if len(cache)>400: cache.clear()
