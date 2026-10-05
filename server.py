@@ -710,6 +710,13 @@ class Handler(BaseHTTPRequestHandler):
                 if entry and time.monotonic()-entry[0] < 3600: return self.respond({'results':entry[1]})
                 if time.monotonic()-GEOCODE_STATE['last'] < 1.2: return self.respond({'error':'انتظر لحظة ثم ابحث مرة أخرى'},429)
                 GEOCODE_STATE['last'] = time.monotonic()
+            # Verified Google Maps place listing; keep explicit pin review for moved venues.
+            normalized_query=re.sub(r'[\\s\\W_]+','',query.casefold().replace('أ','ا').replace('إ','ا').replace('آ','ا').replace('ة','ه').replace('ى','ي'))
+            if normalized_query in ('مركزشرطهالبدرشين','قسمشرطهالبدرشين','مركزشرطهالبدراشين'):
+                return self.respond({'results':[{
+                    'lat':29.8469292,'lon':31.2742704,
+                    'label':'مركز شرطة البدرشين، مدينة البدراشين، الجيزة — راجع الدبوس عند المدخل',
+                }],'source':'Google Maps place listing'})
             google_key=os.environ.get('WALLAHA_GOOGLE_MAPS_SERVER_KEY','').strip()
             try:
                 if google_key:
