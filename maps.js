@@ -82,14 +82,14 @@ window.searchCustomerMapAddress=async()=>{
     const data=await response.json();if(!response.ok)throw Error(data.error||'تعذر البحث');
     const places=data.results||[];
     if(!places.length){status.textContent='العنوان غير موجود بدقة. جرّب اسم شارع أو معلم قريب، أو حدد النقطة على الخريطة.';return}
-    status.textContent='اختر النتيجة المطابقة، ثم راجع العلامة على الخريطة قبل تأكيد الطلب:';
+    status.textContent='النتائج قد تحتوي مواقع قديمة. اختر الاسم والعنوان الصحيحين، ثم ثبّت العلامة على مدخل المكان قبل حساب السعر:';
     for(const place of places.slice(0,5)){
       const button=document.createElement('button');
       button.type='button';
       button.textContent='📍 '+(place.label||address);
       button.addEventListener('click',()=>{
         window.setCustomerMapPoint(place.lat,place.lon,place.label||address);
-        status.textContent='تم اختيار '+(place.label||address)+' — راجع العلامة على الخريطة.';
+        status.textContent='تم اختيار '+(place.label||address)+' — تأكد أن العلامة على مدخل المكان الصحيح قبل حساب السعر.';
         for(const item of results.querySelectorAll('button'))item.setAttribute('aria-pressed',String(item===button));
       });
       results.appendChild(button);
