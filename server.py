@@ -99,6 +99,8 @@ def init():
             db.executemany("INSERT INTO settings VALUES (?,?)", [("wallet", os.environ.get('WALLAHA_WALLET','')), ("whatsapp", os.environ.get('WALLAHA_WHATSAPP','')), ("delivery_fee", "20")])
         db.execute("INSERT OR IGNORE INTO settings VALUES ('per_km_rate','')")
         db.execute("INSERT OR IGNORE INTO settings VALUES ('quote_secret',?)",(secrets.token_hex(32),))
+        for commission_key in ('products','delivery','custom',*RIDE_RATE_KEYS.values()):
+            db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",('commission_'+commission_key,'0'))
         for ride_key in RIDE_RATE_KEYS.values():
             db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(ride_key+'_base',''))
             db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(ride_key+'_extra',''))
@@ -570,6 +572,19 @@ def rows(db, sql, args=()):
     return [dict(x) for x in db.execute(sql, args)]
 
 
+def commission_key(kind, vehicle=''):
+    return RIDE_RATE_KEYS.get(vehicle,kind)
+
+
+def commission_split(db, kind, vehicle, amount):
+    key='commission_'+commission_key(kind,vehicle)
+    row=db.execute('SELECT value FROM settings WHERE key=?',(key,)).fetchone()
+    percent=Decimal(row['value'] if row else '0')
+    cents=int((Decimal(str(amount))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+    share=int((Decimal(cents)*percent/100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+    return float(percent),share,cents-share
+
+
 def driver_wallet(db, driver_id):
     entries=rows(db,"SELECT id,status,total,payment,cash_collected,cash_settled,driver_earning_cents,driver_earning_paid,commission_percent,commission_cents,created_at FROM orders WHERE driver_id=? AND status='delivered' ORDER BY id DESC",(driver_id,))
     return {'balance':sum(o['driver_earning_cents'] for o in entries if not o['driver_earning_paid'])/100,
@@ -934,6 +949,14 @@ class Handler(BaseHTTPRequestHandler):
                     for k,v in [('wallet',str(data['wallet']).strip()),('whatsapp',str(data['whatsapp']).strip()),('delivery_fee',str(fee))]:
                         if not v: raise ValueError('الإعدادات مطلوبة')
                         db.execute('UPDATE settings SET value=? WHERE key=?',(v,k))
+                elif path == '/api/commission-rate':
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    key=str(data.get('key',''))
+                    if key not in ('products','delivery','custom',*RIDE_RATE_KEYS.values()): raise ValueError('نوع الخدمة غير معروف')
+                    try: percent=Decimal(str(data.get('percent','')))
+                    except InvalidOperation: raise ValueError('النسبة غير صحيحة')
+                    if not percent.is_finite() or percent<0 or percent>100 or percent!=percent.quantize(Decimal('0.01')): raise ValueError('النسبة من صفر إلى 100 وبحد أقصى منزلتين عشريتين')
+                    db.execute('UPDATE settings SET value=? WHERE key=?',(str(percent),'commission_'+key))
                 elif path == '/api/area-fee':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     area,fee=data['area'],float(data['fee'])
@@ -952,6 +975,7 @@ class Handler(BaseHTTPRequestHandler):
                         try: amount=Decimal(str(data.get('amount','')))
                         except InvalidOperation: raise ValueError('أجر غير صالح')
                         if not amount.is_finite() or amount<0 or amount>100000 or amount!=amount.quantize(Decimal('0.01')): raise ValueError('اكتب مبلغًا صحيحًا بحد أقصى منزلتين عشريتين')
+                        if o['commission_percent'] or o['commission_cents']: raise ValueError('الأجر محسوب تلقائيًا من نسبة الخدمة')
                         db.execute('UPDATE orders SET driver_earning_cents=? WHERE id=?',(int(amount*100),o['id']))
                         log(db,o['id'],'حدد المسؤول أجر الطيار: '+str(amount)+' جنيه')
                 elif path == '/api/driver/availability':
@@ -1103,13 +1127,9 @@ class Handler(BaseHTTPRequestHandler):
                     elif action == "price" and o["kind"] != "products" and o["status"] in ('awaiting_quote','quote_pending'):
                         try:
                             amount=Decimal(str(data.get('amount','')))
-                            percent=Decimal(str(data.get('commission_percent','0')))
-                        except InvalidOperation: raise ValueError('السعر أو النسبة غير صحيحين')
+                        except InvalidOperation: raise ValueError('السعر غير صحيح')
                         if not amount.is_finite() or amount<0 or amount>100000 or amount!=amount.quantize(Decimal('0.01')): raise ValueError('اكتب سعرًا صحيحًا بحد أقصى منزلتين عشريتين')
-                        if not percent.is_finite() or percent<0 or percent>100 or percent!=percent.quantize(Decimal('0.01')): raise ValueError('النسبة من صفر إلى 100 وبحد أقصى منزلتين عشريتين')
-                        amount_cents=int(amount*100)
-                        commission_cents=int((Decimal(amount_cents)*percent/100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
-                        db.execute("UPDATE orders SET total=?,delivery_fee=?,commission_percent=?,commission_cents=?,driver_earning_cents=?,status='quote_pending',quote_accepted=0 WHERE id=?", (float(amount),float(amount),float(percent),commission_cents,amount_cents-commission_cents,oid))
+                        db.execute("UPDATE orders SET total=?,delivery_fee=?,status='quote_pending',quote_accepted=0 WHERE id=?", (float(amount),float(amount),oid))
                         log(db, oid, "حدد المسؤول سعر الخدمة وينتظر موافقة العميل")
                     elif action == 'accept_quote' and o['status']=='quote_pending':
                         db.execute("UPDATE orders SET quote_accepted=1,status=? WHERE id=?",('payment_review' if o['payment']=='wallet' else 'new',oid))
@@ -1137,6 +1157,10 @@ class Handler(BaseHTTPRequestHandler):
                         assign(db,oid)
                     elif action in ("picked_up", "on_way", "delivered") and o["driver_id"] and o["status"] in ({'picked_up': ('assigned','ready'),'on_way':('picked_up',),'delivered':('on_way',)}[action]):
                         if action=='delivered' and o['payment']=='cash' and data.get('cash_collected') is not True: raise ValueError('أكد تحصيل المبلغ النقدي أولًا')
+                        if action=='delivered':
+                            driver=db.execute('SELECT vehicle_type FROM drivers WHERE id=?',(o['driver_id'],)).fetchone()
+                            percent,share,net=commission_split(db,o['kind'],driver['vehicle_type'] if driver else o['vehicle'],o['delivery_fee'])
+                            db.execute('UPDATE orders SET commission_percent=?,commission_cents=?,driver_earning_cents=? WHERE id=?',(percent,share,net,oid))
                         if action=='picked_up' and o['shop_anywhere']:
                             shop=str(data.get('purchase_shop','')).strip()
                             if not 3<=len(shop)<=120: raise ValueError('اكتب اسم أو عنوان السوبر ماركت الذي اشتريت منه')
