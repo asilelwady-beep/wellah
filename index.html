@@ -21,6 +21,11 @@ body.map-open{overflow:hidden}.map.map-expanded{position:fixed!important;inset:0
 .checkout-location-map{height:min(48dvh,420px)!important;margin:8px 0 6px!important}.checkout-customer{font-size:13px;padding:7px 10px}.checkout-area,.checkout-extra{margin:10px 0;color:#56675e}.checkout-area summary,.checkout-extra summary{cursor:pointer;font-size:13px}.map-retry{background:#fff0e1;color:#a34116;padding:9px 12px;margin:7px 0}.checkout-location-map.map-expanded{height:100dvh!important}
 
 .map-search{display:flex;gap:7px;margin:8px 0}.map-search input{min-width:0;flex:1}.map-search button{flex:none}.map-search-results{font-size:13px;color:#50675e}.map-search-results details{margin:6px 0}.map-search-results summary{cursor:pointer;color:#a34116}.map-search-results:empty{display:none}.map-search-results button{display:block;width:100%;text-align:right;background:#f1f8f3;color:#244535;margin:5px 0;padding:9px 12px}.checkout-location-map{min-height:270px}
+/* Full-screen destination map with a persistent search panel. */
+.map-expanded .map-search-panel{position:absolute;top:20px;left:20px;z-index:1100;width:min(370px,calc(100vw - 40px));max-height:calc(100dvh - 40px);overflow:auto;padding:18px;border-radius:20px;background:#fffdf9;box-shadow:0 15px 45px #1a2b3150;direction:rtl;text-align:right}
+.map-search-panel h3{margin:0 0 4px;color:#342820}.map-search-panel p{font-size:13px;color:#695d55;margin:0 0 12px}.map-search-panel .map-search{margin:0 0 8px}.map-search-panel .map-search-results{max-height:40dvh;overflow:auto}.map-search-panel .map-panel-done{width:100%;margin-top:12px;background:#e53342;color:#fff;border-radius:12px}
+@media(max-width:650px){.map-expanded .map-search-panel{top:auto;bottom:12px;left:12px;width:calc(100vw - 24px);max-height:55dvh;padding:12px;border-radius:18px}.map-search-panel .map-search-results{max-height:22dvh}.map-expanded .map-close{top:max(12px,env(safe-area-inset-top))}}
+
 </style><style>
 :root{--w-ink:#322724;--w-purple:#e53342;--w-deep:#b92332;--w-lilac:#fff5d8;--w-border:#f3dfd9}
 body{background:#fffcf5;color:var(--w-ink)}
