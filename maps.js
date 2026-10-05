@@ -189,14 +189,15 @@ function initMaps(){
   }
   if(tab==='customer'){
     const map=baseMap('customer-map');
+    const pickupMap=kind==='products'?null:baseMap('pickup-map');
     if(map){
       let marker=null;
       let pickupMarker=null;
-      const choose=latlng=>{
-        if(mapPinMode==='pickup'&&kind!=='products'){
+      const choose=(latlng,mode='destination')=>{
+        if(mode==='pickup'&&pickupMap){
           chosenPickup={lat:latlng.lat,lon:latlng.lng};
           if(pickupMarker)pickupMarker.setLatLng(latlng);
-          else pickupMarker=point(map,latlng.lat,latlng.lng,'مكان الاستلام','#2864c5');
+          else pickupMarker=point(pickupMap,latlng.lat,latlng.lng,'مكان الاستلام','#2864c5');
           const label=document.getElementById('selected-pickup');
           if(label)label.textContent='تم تحديد مكان الانطلاق';const pickup=document.getElementById('pickup');if(pickup&&!pickup.value.trim())pickup.value='نقطة الانطلاق على الخريطة';
         }else{
@@ -210,27 +211,27 @@ function initMaps(){
       window.setCustomerMapPoint=(lat,lon,label)=>{
         const point=validMapPoint(lat,lon);
         if(!point||!mapViews.includes(map))return;
-        mapPinMode='destination';choose({lat:point.lat,lng:point.lon});
+        choose({lat:point.lat,lng:point.lon},'destination');
         const address=document.getElementById('address'),destination=document.getElementById('destination');
         if(address)address.value=label;
         if(destination)destination.value=label;
         const area=document.getElementById('area');
         if(area){
           const name=String(label||'');
-          const village=[...area.options].find(option=>option.value!=='مدينة البدرشين'&&name.includes(option.value));
-          const match=village||([...area.options].find(option=>option.value==='مدينة البدرشين'&&name.includes('البدرشين')));
-          if(match){area.value=match.value;area.dispatchEvent(new Event('change'))}
+          const match=(state.areas||[]).find(v=>v!=='مدينة البدرشين'&&name.includes(v))||(name.includes('البدرشين')?'مدينة البدرشين':null);
+          if(match){area.value=match;area.dispatchEvent(new Event('change'))}
         }
         const chosen=document.getElementById('selected-point');
         if(chosen)chosen.textContent='📍 '+label;
         map.flyTo([point.lat,point.lon],17,{duration:0.6});
       };
-      window.selectMapPinMode=mode=>{mapPinMode=mode;map.getContainer().scrollIntoView({behavior:'smooth',block:'center'});const label=document.getElementById(mode==='pickup'?'selected-pickup':'selected-point');if(label)label.textContent=mode==='pickup'?'المس الخريطة لتحديد الاستلام':'المس الخريطة لتحديد الوجهة'};
-      map.on('click',e=>choose(e.latlng));
-      if(chosenPoint){let mode=mapPinMode;mapPinMode='destination';choose({lat:chosenPoint.latitude,lng:chosenPoint.longitude});mapPinMode=mode}
-      if(chosenPickup){let mode=mapPinMode;mapPinMode='pickup';choose({lat:chosenPickup.lat,lng:chosenPickup.lon});mapPinMode=mode}
-      if(chosenPoint&&chosenPickup)map.fitBounds([[chosenPoint.latitude,chosenPoint.longitude],[chosenPickup.lat,chosenPickup.lon]],{padding:[30,30],maxZoom:16});
-      else if(chosenPoint)map.setView([chosenPoint.latitude,chosenPoint.longitude],16);
+      window.selectMapPinMode=mode=>{mapPinMode=mode;(mode==='pickup'&&pickupMap?pickupMap:map).getContainer().scrollIntoView({behavior:'smooth',block:'center'});const label=document.getElementById(mode==='pickup'?'selected-pickup':'selected-point');if(label)label.textContent=mode==='pickup'?'المس الخريطة لتحديد الاستلام':'المس الخريطة لتحديد الوجهة'};
+      map.on('click',e=>choose(e.latlng,'destination'));
+      if(pickupMap)pickupMap.on('click',e=>choose(e.latlng,'pickup'));
+      if(chosenPoint)choose({lat:chosenPoint.latitude,lng:chosenPoint.longitude},'destination')
+      if(chosenPickup)choose({lat:chosenPickup.lat,lng:chosenPickup.lon},'pickup')
+      if(chosenPoint)map.setView([chosenPoint.latitude,chosenPoint.longitude],16);
+      if(chosenPickup&&pickupMap)pickupMap.setView([chosenPickup.lat,chosenPickup.lon],16);
       window.pickCurrentLocation=()=>{
         mapPinMode='destination';
         if(!navigator.geolocation)return alert('تحديد الموقع غير مدعوم');
@@ -245,9 +246,8 @@ function initMaps(){
         else navigator.geolocation.getCurrentPosition(p=>{
           if(!mapViews.includes(map))return;
           const pos={lat:p.coords.latitude,lng:p.coords.longitude};
-          if(kind==='products'){if(chosenPoint)return;mapPinMode='destination';choose(pos)}
-          else{if(chosenPickup)return;mapPinMode='pickup';choose(pos);mapPinMode='destination'}
-          map.flyTo(pos,17,{duration:0.7});
+          if(kind==='products'){if(chosenPoint)return;choose(pos,'destination');map.flyTo(pos,17,{duration:0.7})}
+          else{if(chosenPickup)return;choose(pos,'pickup');pickupMap?.flyTo(pos,17,{duration:0.7})}
         },()=>{const label=document.getElementById(kind==='products'?'selected-point':'selected-pickup');if(label)label.textContent='اسمح بالوصول إلى الموقع أو المس مكانك على الخريطة'}, {enableHighAccuracy:true,maximumAge:0,timeout:15000});
       }
     }
