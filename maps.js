@@ -60,7 +60,9 @@ function expandMap(map){
       el._searchPanel={panel,form,results};
     }
   }
-  requestAnimationFrame(()=>map.invalidateSize());
+  requestAnimationFrame(()=>map.invalidateSize({pan:false}));
+  setTimeout(()=>map.invalidateSize({pan:false}),250);
+  setTimeout(()=>map.invalidateSize({pan:false}),650);
 }
 function validMapPoint(lat,lon){
   lat=Number(lat);lon=Number(lon);
