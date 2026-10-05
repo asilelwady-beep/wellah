@@ -401,8 +401,30 @@ def delivery_points(db,data):
     return points
 
 
+def google_maps_request(url, body, field_mask):
+    key = os.environ.get('WALLAHA_GOOGLE_MAPS_SERVER_KEY', '').strip()
+    request = Request(url, data=json.dumps(body).encode('utf-8'), headers={
+        'Content-Type': 'application/json', 'X-Goog-Api-Key': key,
+        'X-Goog-FieldMask': field_mask,
+    }, method='POST')
+    with urlopen(request, timeout=12) as response:
+        return json.loads(response.read(1_000_000))
+
+
 def road_km(points):
     lat,lon,dlat,dlon=points
+    if os.environ.get('WALLAHA_GOOGLE_MAPS_SERVER_KEY', '').strip():
+        try:
+            result=google_maps_request('https://routes.googleapis.com/directions/v2:computeRoutes', {
+                'origin': {'location': {'latLng': {'latitude': lat, 'longitude': lon}}},
+                'destination': {'location': {'latLng': {'latitude': dlat, 'longitude': dlon}}},
+                'travelMode': 'DRIVE', 'routingPreference': 'TRAFFIC_UNAWARE',
+            }, 'routes.distanceMeters')
+            meters=float(result['routes'][0]['distanceMeters'])
+            if not math.isfinite(meters) or not 0<=meters<=500_000: raise ValueError()
+            return round(meters/1000,3)
+        except Exception:
+            raise ValueError('تعذر حساب الطريق عبر خرائط جوجل. راجع النقطتين وحاول مرة أخرى')
     url=f'https://router.project-osrm.org/route/v1/driving/{lon},{lat};{dlon},{dlat}?overview=false'
     try:
         with urlopen(url,timeout=12) as response: result=json.loads(response.read(1_000_000))
@@ -688,22 +710,48 @@ class Handler(BaseHTTPRequestHandler):
                 if entry and time.monotonic()-entry[0] < 3600: return self.respond({'results':entry[1]})
                 if time.monotonic()-GEOCODE_STATE['last'] < 1.2: return self.respond({'error':'انتظر لحظة ثم ابحث مرة أخرى'},429)
                 GEOCODE_STATE['last'] = time.monotonic()
-            url = 'https://photon.komoot.io/api/?' + urlencode({'q':query,'limit':5,'lang':'default','countrycode':'EG','bbox':'31.10,29.70,31.50,30.02','lat':'29.8513','lon':'31.2744'})
+            google_key=os.environ.get('WALLAHA_GOOGLE_MAPS_SERVER_KEY','').strip()
             try:
-                request = Request(url,headers={'User-Agent':'Walla3ha/1.0 (+https://walla3ha.com)','Accept':'application/json'})
-                with urlopen(request,timeout=8) as response: payload=json.load(response)
-                results=[]
-                for feature in payload.get('features',[])[:5]:
-                    lon,lat=feature.get('geometry',{}).get('coordinates',[None,None])[:2]
-                    if not isinstance(lat,(int,float)) or not isinstance(lon,(int,float)) or not (29.70<=lat<=30.02 and 31.10<=lon<=31.50): continue
-                    props=feature.get('properties',{})
-                    name='، '.join(str(props[k]) for k in ('name','street','housenumber','district','city','county','state') if props.get(k))
-                    results.append({'lat':lat,'lon':lon,'label':name or query})
+                if google_key:
+                    payload=google_maps_request('https://places.googleapis.com/v1/places:searchText', {
+                        'textQuery':query, 'languageCode':'ar', 'regionCode':'EG',
+                        'pageSize':8,
+                        'locationRestriction': {'rectangle': {
+                            'low': {'latitude':29.70,'longitude':31.10},
+                            'high': {'latitude':30.02,'longitude':31.50},
+                        }},
+                    }, 'places.id,places.displayName,places.formattedAddress,places.location,places.types')
+                    results=[]
+                    for place in payload.get('places',[]):
+                        location=place.get('location') or {}
+                        lat,lon=location.get('latitude'),location.get('longitude')
+                        if not isinstance(lat,(int,float)) or not isinstance(lon,(int,float)) or not (29.70<=lat<=30.02 and 31.10<=lon<=31.50): continue
+                        title=(place.get('displayName') or {}).get('text','')
+                        address=place.get('formattedAddress','')
+                        results.append({'lat':lat,'lon':lon,'label':(title+'، '+address).strip('، '),'place_id':place.get('id')})
+                else:
+                    # A street with a similar name is not a trustworthy match for a named place.
+                    url = 'https://photon.komoot.io/api/?' + urlencode({'q':query,'limit':8,'lang':'default','countrycode':'EG','bbox':'31.10,29.70,31.50,30.02','lat':'29.8513','lon':'31.2744'})
+                    request = Request(url,headers={'User-Agent':'Walla3ha/1.0 (+https://walla3ha.com)','Accept':'application/json'})
+                    with urlopen(request,timeout=8) as response: payload=json.load(response)
+                    results=[]
+                    for feature in payload.get('features',[])[:8]:
+                        lon,lat=feature.get('geometry',{}).get('coordinates',[None,None])[:2]
+                        if not isinstance(lat,(int,float)) or not isinstance(lon,(int,float)) or not (29.70<=lat<=30.02 and 31.10<=lon<=31.50): continue
+                        props=feature.get('properties',{})
+                        name=str(props.get('name') or '')
+                        normalized=lambda value: re.sub(r'[\\s\\W_]+','',str(value).casefold().replace('أ','ا').replace('إ','ا').replace('آ','ا').replace('ة','ه').replace('ى','ي'))
+                        terms=[normalized(word) for word in query.split() if len(normalized(word))>2 and normalized(word) not in ('شارع','طريق','مركز','مدينه','البدرشين')]
+                        if terms and not all(term in normalized(name) for term in terms): continue
+                        if ('شرط' in normalized(query) or 'مستشف' in normalized(query)) and (props.get('osm_key')=='highway' or name.strip().startswith('شارع ')): continue
+                        label='، '.join(str(props[k]) for k in ('name','street','housenumber','district','city','county','state') if props.get(k))
+                        results.append({'lat':lat,'lon':lon,'label':label or query})
+                    results=results[:5]
                 with GEOCODE_LOCK:
                     cache=GEOCODE_STATE['cache']
                     if len(cache)>400: cache.clear()
                     cache[cache_key]=(time.monotonic(),results)
-                return self.respond({'results':results})
+                return self.respond({'results':results,'source':'Google Maps' if google_key else 'OpenStreetMap'})
             except Exception:
                 return self.respond({'error':'البحث غير متاح الآن؛ حدد المكان بلمسة على الخريطة أو الصق رابط اللوكيشن'},502)
         if path == '/api/resolve-map-link':
