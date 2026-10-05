@@ -685,7 +685,7 @@ class Handler(BaseHTTPRequestHandler):
                     'products': rows(db, 'SELECT p.* FROM products p JOIN merchants m ON m.id=p.merchant_id JOIN categories c ON c.name=p.category WHERE p.active=1 AND p.stock>0 AND m.active=1 AND c.active=1 ORDER BY p.id DESC'),
                     'services': rows(db, 'SELECT * FROM services WHERE active=1 ORDER BY rowid'),
                 })
-        if path in ('/', '/customer', '/driver', '/admin'):
+        if path in ('/', '/customer', '/driver', '/driver/settings', '/admin'):
             data = (ROOT / "index.html").read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
