@@ -107,7 +107,7 @@ def init():
         for table,column,definition in [('orders','route_km','REAL'),('orders','km_rate','REAL'),('products','price_pending','INTEGER NOT NULL DEFAULT 0'),('order_items','unit',"TEXT NOT NULL DEFAULT 'قطعة'"),('order_items','stock_quantity','REAL')]:
             if column not in {x['name'] for x in db.execute(f'PRAGMA table_info({table})')}:
                 db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
-        for column,definition in [('driver_earning_cents' ,'INTEGER NOT NULL DEFAULT 0'),('driver_earning_paid','INTEGER NOT NULL DEFAULT 0'),('commission_percent','REAL NOT NULL DEFAULT 0'),('commission_cents','INTEGER NOT NULL DEFAULT 0')]:
+        for column,definition in [('driver_earning_cents' ,'INTEGER NOT NULL DEFAULT 0'),('driver_earning_paid','INTEGER NOT NULL DEFAULT 0'),('commission_percent','REAL NOT NULL DEFAULT 0'),('commission_cents','INTEGER NOT NULL DEFAULT 0'),('commission_locked','INTEGER NOT NULL DEFAULT 0')]:
             if column not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
                 db.execute(f'ALTER TABLE orders ADD COLUMN {column} {definition}')
         if 'username' not in {x['name'] for x in db.execute('PRAGMA table_info(users)')}:
@@ -480,6 +480,9 @@ def assign(db, oid):
         return 6371*2*math.asin(min(1,math.sqrt(math.sin(da/2)**2+math.cos(a)*math.cos(b)*math.sin(dl/2)**2)))
     d=min(candidates,key=lambda x:(distance(x),x['id'])) if candidates else None
     if d:
+        if not o['commission_locked']:
+            percent,share,net=commission_split(db,o['kind'],d['vehicle_type'],o['delivery_fee'])
+            db.execute('UPDATE orders SET commission_percent=?,commission_cents=?,driver_earning_cents=?,commission_locked=1 WHERE id=?',(percent,share,net,oid))
         db.execute("UPDATE orders SET driver_id=?,status='offered',offer_until=? WHERE id=?", (d['id'],int(time.time())+90,oid))
         log(db, oid, "عُرض الطلب تلقائيًا على أقرب مندوب متاح من نقطة الاستلام")
     else:
@@ -994,6 +997,9 @@ class Handler(BaseHTTPRequestHandler):
                     d=db.execute('SELECT * FROM drivers WHERE id=?',(did,)).fetchone()
                     if not o or not d or (o['kind']=='ride' and d['vehicle_type']!=o['vehicle']) or o['area']!=d['area'] or not d['available'] or o['payment_status']!='confirmed' or o['status'] not in ('assigned','awaiting_driver','ready') or (o['kind']!='products' and not o['quote_accepted']):
                         raise ValueError('تعذر إسناد الطلب لهذا المندوب')
+                    if not o['commission_locked']:
+                        percent,share,net=commission_split(db,o['kind'],d['vehicle_type'],o['delivery_fee'])
+                        db.execute('UPDATE orders SET commission_percent=?,commission_cents=?,driver_earning_cents=?,commission_locked=1 WHERE id=?',(percent,share,net,oid))
                     db.execute('UPDATE orders SET driver_id=?,status=? WHERE id=?',(did,'ready' if o['status']=='ready' else 'assigned',oid))
                     log(db,oid,'أعاد المسؤول إسناد الطلب إلى مندوب آخر')
                 elif path == "/api/driver":
@@ -1157,10 +1163,10 @@ class Handler(BaseHTTPRequestHandler):
                         assign(db,oid)
                     elif action in ("picked_up", "on_way", "delivered") and o["driver_id"] and o["status"] in ({'picked_up': ('assigned','ready'),'on_way':('picked_up',),'delivered':('on_way',)}[action]):
                         if action=='delivered' and o['payment']=='cash' and data.get('cash_collected') is not True: raise ValueError('أكد تحصيل المبلغ النقدي أولًا')
-                        if action=='delivered':
+                        if action=='delivered' and not o['commission_locked']:
                             driver=db.execute('SELECT vehicle_type FROM drivers WHERE id=?',(o['driver_id'],)).fetchone()
                             percent,share,net=commission_split(db,o['kind'],driver['vehicle_type'] if driver else o['vehicle'],o['delivery_fee'])
-                            db.execute('UPDATE orders SET commission_percent=?,commission_cents=?,driver_earning_cents=? WHERE id=?',(percent,share,net,oid))
+                            db.execute('UPDATE orders SET commission_percent=?,commission_cents=?,driver_earning_cents=?,commission_locked=1 WHERE id=?',(percent,share,net,oid))
                         if action=='picked_up' and o['shop_anywhere']:
                             shop=str(data.get('purchase_shop','')).strip()
                             if not 3<=len(shop)<=120: raise ValueError('اكتب اسم أو عنوان السوبر ماركت الذي اشتريت منه')
