@@ -941,6 +941,13 @@ class Handler(BaseHTTPRequestHandler):
                         return self.respond({'error':'بيانات الدخول غير صحيحة'},401)
                     if path == '/api/admin/login' and u['role'] != 'admin':
                         return self.respond({'error':'لوحة التحكم خاصة بالمسؤول فقط'},403)
+                    expected_role=data.get('expected_role')
+                    if expected_role is not None:
+                        if expected_role not in ('customer','driver','admin'):
+                            return self.respond({'error':'نوع التطبيق غير صحيح'},400)
+                        if u['role'] != expected_role:
+                            label={'customer':'عميل','driver':'طيار','admin':'مسؤول'}[expected_role]
+                            return self.respond({'error':'هذا التطبيق يحتاج حساب '+label+'؛ الحساب الذي أدخلته من نوع مختلف'},403)
                     db.execute('DELETE FROM login_attempts WHERE phone=? AND remote=?',(phone,remote))
                     token=secrets.token_urlsafe(32)
                     db.execute('INSERT INTO sessions VALUES (?,?,?)',(hashlib.sha256(token.encode()).hexdigest(),u['id'],int(time.time())+86400*7))

@@ -77,6 +77,21 @@ class AccountSupportTests(unittest.TestCase):
     def state_for(cls, token):
         with urlopen(Request(cls.base+'/api/state',headers={'Authorization':'Bearer '+token})) as response: return json.load(response)
 
+    def test_app_login_role_separation(self):
+        accounts=[('01000000001','customer-password-123','customer'),('01000000003','driver-password-123','driver'),('01000000000','test-owner-password-123','admin')]
+        with server.connect() as db:
+            before=db.execute('SELECT COUNT(*) FROM sessions').fetchone()[0]
+        for phone,password,role in accounts:
+            for expected in ('customer','driver','admin'):
+                if expected == role: continue
+                status,body=self.post('login',{'phone':phone,'password':password,'expected_role':expected})
+                self.assertEqual(status,403);self.assertNotIn('token',body)
+        with server.connect() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM sessions').fetchone()[0],before)
+        for phone,password,role in accounts:
+            status,body=self.post('login',{'phone':phone,'password':password,'expected_role':role})
+            self.assertEqual(status,200);self.assertEqual(body['role'],role)
+
     def wallet_order(self, status='delivered'):
         with server.connect() as db:
             return db.execute("INSERT INTO orders(user_id,kind,customer,phone,area,address,payment,payment_status,status,total,delivery_fee,driver_id,created_at,driver_earning_cents,commission_percent,commission_cents,commission_locked,cash_collected) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(self.customer,'delivery','اختبار محفظة','01000000001',server.AREAS[0],'عنوان','cash','confirmed',status,100,100,self.did,server.now(),9000,10,1000,1,1)).lastrowid
