@@ -178,6 +178,9 @@ def feature_post(handler, db, path, data, user, create_user, areas, now):
         purpose = str(data.get('purpose', 'register'))
         if purpose not in ('register', 'reset', 'link'):
             raise ValueError('طلب غير صالح')
+        if purpose=='link' and user and user['role']=='driver':
+            handler.respond({'error':'إيميل الطيار يحدده المسؤول من الداشبورد فقط'},403)
+            return True
         if not mobile and (len(email) > 254 or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email)):
             raise ValueError('أدخل بريدًا إلكترونيًا صحيحًا')
         limit(db, 'otp-ip', handler.client_address[0], 600, 10)
@@ -206,6 +209,9 @@ def feature_post(handler, db, path, data, user, create_user, areas, now):
         handler.respond({'ok': True, 'challenge_id': ident, 'message': ('إذا كان رقم الموبايل مسجلًا فسيصلك رمز التأكيد' if mobile else 'إذا كان البريد مسجلًا فسيصلك رمز التأكيد') if purpose == 'reset' else ('تم طلب إرسال رمز التأكيد برسالة SMS إلى موبايلك' if mobile else 'تم إرسال رمز التأكيد إلى بريدك')})
         return True
     if path == '/api/auth/link-email':
+        if user and user['role']=='driver':
+            handler.respond({'error':'إيميل الطيار يحدده المسؤول من الداشبورد فقط'},403)
+            return True
         if not user:
             handler.respond({'error':'سجل الدخول أولًا'},401)
             return True
@@ -255,6 +261,11 @@ def feature_post(handler, db, path, data, user, create_user, areas, now):
             username = normalized_username(data.get('username', ''))
             if not name or len(name) > 100 or not re.fullmatch(r'[+0-9٠-٩ ()-]{7,25}', phone) or data.get('area') not in areas:
                 raise ValueError('راجع اسم الطيار وهاتفه ومنطقته')
+            if 'email' in data:
+                email=str(data.get('email','')).strip().lower()
+                if email and (len(email)>254 or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',email)): raise ValueError('أدخل إيميل الطيار الصحيح')
+                if email and db.execute('SELECT 1 FROM users WHERE email=? AND id<>?',(email,driver['user_id'])).fetchone(): raise ValueError('الإيميل مستخدم بحساب آخر')
+                db.execute('UPDATE users SET email=? WHERE id=?',(email or None,driver['user_id']))
             db.execute('UPDATE users SET name=?,phone=?,username=? WHERE id=?', (name, phone, username, driver['user_id']))
             db.execute('UPDATE drivers SET name=?,phone=?,area=? WHERE id=?', (name, phone, data['area'], driver['id']))
         else:

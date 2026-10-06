@@ -1175,7 +1175,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif path == '/api/driver/break':
                     if user['role']!='driver': return self.respond({'error':'خاص بالطيار فقط'},403)
                     minutes=data.get('minutes')
-                    if type(minutes) is not int or minutes not in (0,15,30,60): raise ValueError('اختر 15 أو 30 أو 60 دقيقة')
+                    if type(minutes) is not int or minutes not in (0,15,30,45): raise ValueError('اختر 15 أو 30 أو 45 دقيقة؛ أقصى راحة 45 دقيقة')
                     driver=db.execute('SELECT id FROM drivers WHERE user_id=?',(user['id'],)).fetchone()
                     if not driver: raise ValueError('حساب الطيار غير موجود')
                     did=driver['id']
@@ -1216,7 +1216,11 @@ class Handler(BaseHTTPRequestHandler):
                     if vehicle not in ('موتوسيكل','عجلة','توك توك','سيارة','ميكروباص','سكوتر'): raise ValueError('نوع المركبة غير معروف')
                     if data.get('password') != data.get('confirm_password'): raise ValueError('كلمتا المرور غير متطابقتين')
                     if not data.get('username'): raise ValueError('اسم المستخدم مطلوب')
+                    email=str(data.get('email','')).strip().lower()
+                    if email and (len(email)>254 or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',email)): raise ValueError('أدخل إيميل الطيار الصحيح')
+                    if email and db.execute('SELECT 1 FROM users WHERE email=?',(email,)).fetchone(): raise ValueError('الإيميل مستخدم بحساب آخر')
                     uid=create_user(db,str(data['name']),str(data['phone']),'driver',str(data['password']),data.get('username'))
+                    if email: db.execute('UPDATE users SET email=? WHERE id=?',(email,uid))
                     db.execute("INSERT INTO drivers(user_id,name,phone,area,vehicle_type) VALUES (?,?,?,?,?)", (uid,str(data["name"]).strip(), str(data["phone"]).strip(), data["area"],vehicle))
                 elif path == "/api/order":
                     if user['role']!='customer': return self.respond({'error':'غير مصرح'},403)

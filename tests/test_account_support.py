@@ -92,6 +92,34 @@ class AccountSupportTests(unittest.TestCase):
             status,body=self.post('login',{'phone':phone,'password':password,'expected_role':role})
             self.assertEqual(status,200);self.assertEqual(body['role'],role)
 
+    def test_driver_break_maximum_45_minutes(self):
+        import time
+        token=self.post('login',{'phone':'01000000003','password':'driver-password-123','expected_role':'driver'})[1]['token']
+        for minutes in (60,46,-1,True):
+            self.assertEqual(self.post('driver/break',{'minutes':minutes},token)[0],400)
+        started=int(time.time())
+        self.assertEqual(self.post('driver/break',{'minutes':45},token)[0],200)
+        until=self.state_for(token)['driver_profile']['break_until']
+        self.assertGreaterEqual(until,started+2700);self.assertLessEqual(until,int(time.time())+2700)
+        self.assertEqual(self.post('driver/break',{'minutes':0},token)[0],200)
+        self.assertEqual(self.post('driver/break',{'minutes':45},self.ct)[0],403)
+
+    def test_owner_sets_driver_email_and_role_restricted_login(self):
+        with server.connect() as db:
+            profile=dict(db.execute('SELECT d.*,u.username,u.email FROM drivers d JOIN users u ON u.id=d.user_id WHERE d.id=?',(self.did,)).fetchone())
+        data={'id':self.did,'name':profile['name'],'phone':profile['phone'],'username':profile['username'],'area':profile['area'],'email':'courier-test@example.test'}
+        try:
+            self.assertEqual(self.post('driver/update',data,self.ct)[0],403)
+            self.assertEqual(self.post('driver/update',data,self.at)[0],200)
+            status,body=self.post('login',{'phone':'COURIER-TEST@EXAMPLE.TEST','password':'driver-password-123','expected_role':'driver'})
+            self.assertEqual(status,200);self.assertEqual(body['role'],'driver')
+            self.assertEqual(self.post('login',{'phone':data['email'],'password':'driver-password-123','expected_role':'customer'})[0],403)
+            self.assertEqual(self.post('auth/link-email',{},body['token'])[0],403)
+            self.assertEqual(self.post('auth/send-code',{'email':'other@example.test','purpose':'link'},body['token'])[0],403)
+        finally:
+            data['email']=profile['email'] or ''
+            self.post('driver/update',data,self.at)
+
     def wallet_order(self, status='delivered'):
         with server.connect() as db:
             return db.execute("INSERT INTO orders(user_id,kind,customer,phone,area,address,payment,payment_status,status,total,delivery_fee,driver_id,created_at,driver_earning_cents,commission_percent,commission_cents,commission_locked,cash_collected) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(self.customer,'delivery','اختبار محفظة','01000000001',server.AREAS[0],'عنوان','cash','confirmed',status,100,100,self.did,server.now(),9000,10,1000,1,1)).lastrowid
