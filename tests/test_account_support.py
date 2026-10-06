@@ -258,6 +258,30 @@ class AccountSupportTests(unittest.TestCase):
         code,result=self.post('order',data,self.ct);self.assertEqual(code,200,result)
         with server.connect() as db:self.assertEqual(db.execute('SELECT status FROM orders WHERE id=?',(result['id'],)).fetchone()['status'],'medicine_review')
 
+    def test_prescription_only_requires_review_quote_and_consent(self):
+        data={'client_request_id':'rx-only-test','kind':'products','prescription_only':True,'area':server.AREAS[0],'payment':'cash','address':'عنوان العميل','latitude':29.85,'longitude':31.27,'merchant_id':self.mid,'items':[]}
+        self.assertEqual(self.post('order',data,self.ct)[0],400)
+        data['prescription']='data:image/png;base64,'+base64.b64encode(b'\x89PNG\r\n\x1a\n'+b'x'*60).decode()
+        code,result=self.post('order',data,self.ct);self.assertEqual(code,200,result)
+        oid=result['id']
+        self.assertEqual(self.post('order/action',{'id':oid,'action':'price','amount':'140','delivery_amount':'40'},self.at)[0],400)
+        self.assertEqual(self.post('order/action',{'id':oid,'action':'approve_medicine'},self.at)[0],200)
+        with server.connect() as db:
+            self.assertEqual(db.execute('SELECT status FROM orders WHERE id=?',(oid,)).fetchone()['status'],'awaiting_quote')
+        self.assertEqual(self.post('order/action',{'id':oid,'action':'price','amount':'140','delivery_amount':'150'},self.at)[0],400)
+        self.assertEqual(self.post('order/action',{'id':oid,'action':'price','amount':'140','delivery_amount':'40'},self.at)[0],200)
+        self.assertEqual(self.post('order/action',{'id':oid,'action':'accept_quote'},self.ot)[0],403)
+        self.assertEqual(self.post('order/action',{'id':oid,'action':'accept_quote'},self.ct)[0],200)
+        with server.connect() as db:
+            order=db.execute('SELECT * FROM orders WHERE id=?',(oid,)).fetchone()
+            self.assertEqual(order['total'],140);self.assertEqual(order['delivery_fee'],40)
+            self.assertEqual(order['quote_accepted'],1)
+            db.execute("UPDATE orders SET driver_id=?,status='assigned' WHERE id=?",(self.did,oid))
+        dt=self.post('login',{'phone':'01000000003','password':'driver-password-123'})[1]['token']
+        driver_order=next(o for o in self.state_for(dt)['orders'] if o['id']==oid)
+        self.assertEqual(driver_order['prescription'],data['prescription'])
+        self.assertNotIn('prescription',next(o for o in self.state_for(self.ct)['orders'] if o['id']==oid))
+
     def test_driver_permissions_edit_delete_restore(self):
         self.assertEqual(self.post('driver/update',{'id':self.did},self.ct)[0],403)
         data={'id':self.did,'name':'اسم جديد','phone':'01000000003','username':'اسم_جديد','area':server.AREAS[0]}

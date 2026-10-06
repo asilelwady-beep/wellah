@@ -174,7 +174,7 @@ def init():
         if 'quote_accepted' not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
             db.execute('ALTER TABLE orders ADD COLUMN quote_accepted INTEGER DEFAULT 0')
             db.execute("UPDATE orders SET quote_accepted=1 WHERE kind='products' OR status NOT IN ('awaiting_quote','payment_review')")
-        for table,column,definition in [('products','requires_prescription','INTEGER DEFAULT 0'),('orders','client_request_id','TEXT'),('orders','prescription',"TEXT DEFAULT ''"),('orders','medicine_review','INTEGER DEFAULT 0'),('orders','cash_collected','INTEGER DEFAULT 0'),('orders','cash_settled','INTEGER DEFAULT 0')]:
+        for table,column,definition in [('products','requires_prescription','INTEGER DEFAULT 0'),('orders','client_request_id','TEXT'),('orders','prescription',"TEXT DEFAULT ''"),('orders','prescription_only','INTEGER NOT NULL DEFAULT 0'),('orders','medicine_review','INTEGER DEFAULT 0'),('orders','cash_collected','INTEGER DEFAULT 0'),('orders','cash_settled','INTEGER DEFAULT 0')]:
             if column not in {x['name'] for x in db.execute(f'PRAGMA table_info({table})')}:
                 db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
         if 'service_key' not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
@@ -913,7 +913,7 @@ class Handler(BaseHTTPRequestHandler):
                     o['has_prescription']=bool(o['prescription'])
                     o.pop('proof', None)
                     o.pop('reference', None)
-                    o.pop('prescription', None)
+                    if user['role']!='driver' or o['status'] not in ('assigned','ready','picked_up','on_way'): o.pop('prescription', None)
                     for key in list(o):
                         if key.startswith('commission_'): o.pop(key)
                     if user['role']=='customer':
@@ -1288,10 +1288,15 @@ class Handler(BaseHTTPRequestHandler):
                     items = []
                     medicine_review = False
                     requires_prescription = False
+                    prescription_only = data.get('prescription_only') is True
+                    if prescription_only and kind!='products': raise ValueError('طلب الروشتة خاص بالأدوية')
                     merchant=None
                     if kind == "products":
                         merchant=db.execute('SELECT * FROM merchants WHERE id=? AND active=1',(int(data.get('merchant_id') or 0),)).fetchone()
                         if not merchant: raise ValueError('اختر محلًا أو صيدلية متاحة')
+                        if prescription_only:
+                            if merchant['category']!='أدوية' or data.get('items'): raise ValueError('اختر صيدلية لطلب الروشتة دون منتجات')
+                            medicine_review = requires_prescription = True
                         shop_anywhere=bool(data.get('shop_anywhere'))
                         if shop_anywhere and merchant['category']!='سوبر ماركت': raise ValueError('الشراء من أي متجر متاح للسوبر ماركت فقط')
                         for it in data.get("items", []):
@@ -1306,7 +1311,7 @@ class Handler(BaseHTTPRequestHandler):
                             medicine_review |= p['category']=='أدوية'
                             requires_prescription |= p['category']=='أدوية' or bool(p['requires_prescription'])
                             subtotal += (p["price"] / weight_basis(p) if sold_by_weight(p) else p["price"]) * qty
-                        if not items: raise ValueError("السلة فارغة")
+                        if not items and not prescription_only: raise ValueError("السلة فارغة")
                     prescription=str(data.get('prescription',''))
                     if requires_prescription and not valid_image(prescription,2_500_000): raise ValueError('صورة الوصفة مطلوبة لهذا المنتج')
                     if prescription and not valid_image(prescription,2_500_000): raise ValueError('صورة الوصفة غير صالحة')
@@ -1326,13 +1331,14 @@ class Handler(BaseHTTPRequestHandler):
                     rate=db.execute("SELECT value FROM settings WHERE key='per_km_rate'").fetchone()[0]
                     ride_rate_key=RIDE_RATE_KEYS.get(data.get('vehicle','')) if kind=='ride' else None
                     ride_priced=bool(ride_rate_key and db.execute("SELECT value FROM settings WHERE key=?",(ride_rate_key+'_base',)).fetchone()[0])
-                    if (rate and kind in ('products','delivery') and not (kind=='products' and shop_anywhere)) or (kind=='ride' and ride_priced):
+                    if (rate and not prescription_only and kind in ('products','delivery') and not (kind=='products' and shop_anywhere)) or (kind=='ride' and ride_priced):
                         km_quote=verify_delivery_quote(db,user['id'],data)
                         fee=km_quote['fee']
                     ps = "confirmed" if payment == "cash" else "pending"
                     status = "awaiting_quote" if kind != "products" else ("medicine_review" if medicine_review else ("new" if payment == "cash" else "payment_review"))
                     cur = db.execute("INSERT INTO orders(user_id,client_request_id,kind,customer,phone,area,address,details,vehicle,pickup,destination,payment,proof,reference,prescription,medicine_review,payment_status,status,total,delivery_fee,quote_accepted,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (user['id'],request_id,kind, customer, phone, data["area"], address, str(data.get("details", "")), str(data.get("vehicle", "")), str(data.get("pickup", "")), str(data.get("destination", "")), payment, proof, str(data.get("reference", "")), prescription,1 if medicine_review else 0, ps, status, subtotal+fee, fee,1 if kind=='products' else 0, now()))
                     oid = cur.lastrowid
+                    if prescription_only: db.execute('UPDATE orders SET prescription_only=1,total=0,delivery_fee=0,quote_accepted=0 WHERE id=?',(oid,))
                     if km_quote:
                         db.execute('UPDATE orders SET route_km=?,km_rate=? WHERE id=?',(km_quote['km'],km_quote['rate'],oid))
                         if kind in ('delivery','ride'): db.execute("UPDATE orders SET status=?,quote_accepted=1 WHERE id=?",('new' if payment=='cash' else 'payment_review',oid))
@@ -1371,15 +1377,20 @@ class Handler(BaseHTTPRequestHandler):
                         log(db,oid,'راجع المسؤول الطلب ووافق على توزيعه')
                         assign(db,oid)
                     elif action == 'approve_medicine' and o['status']=='medicine_review' and o['medicine_review']:
-                        db.execute("UPDATE orders SET medicine_review=0,status=? WHERE id=?",('payment_review' if o['payment']=='wallet' else 'new',oid))
+                        db.execute("UPDATE orders SET medicine_review=0,status=? WHERE id=?",('awaiting_quote' if o['prescription_only'] else 'payment_review' if o['payment']=='wallet' else 'new',oid))
                         log(db,oid,'راجع المسؤول طلب الأدوية')
-                        if o['payment']=='cash': assign(db,oid)
-                    elif action == "price" and o["kind"] != "products" and o["status"] in ('awaiting_quote','quote_pending'):
+                        if o['payment']=='cash' and not o['prescription_only']: assign(db,oid)
+                    elif action == "price" and (o["kind"] != "products" or o['prescription_only']) and o["status"] in ('awaiting_quote','quote_pending'):
                         try:
                             amount=Decimal(str(data.get('amount','')))
                         except InvalidOperation: raise ValueError('السعر غير صحيح')
                         if not amount.is_finite() or amount<0 or amount>100000 or amount!=amount.quantize(Decimal('0.01')): raise ValueError('اكتب سعرًا صحيحًا بحد أقصى منزلتين عشريتين')
-                        db.execute("UPDATE orders SET total=?,delivery_fee=?,status='quote_pending',quote_accepted=0 WHERE id=?", (float(amount),float(amount),oid))
+                        delivery_amount=amount
+                        if o['prescription_only']:
+                            try: delivery_amount=Decimal(str(data.get('delivery_amount','')))
+                            except InvalidOperation: raise ValueError('حدد مبلغ التوصيل')
+                            if not delivery_amount.is_finite() or delivery_amount<0 or delivery_amount>amount or delivery_amount!=delivery_amount.quantize(Decimal('0.01')): raise ValueError('التوصيل يجب أن يكون مبلغًا صحيحًا لا يتجاوز الإجمالي')
+                        db.execute("UPDATE orders SET total=?,delivery_fee=?,status='quote_pending',quote_accepted=0 WHERE id=?", (float(amount),float(delivery_amount),oid))
                         log(db, oid, "حدد المسؤول سعر الخدمة وينتظر موافقة العميل")
                     elif action == 'accept_quote' and o['status']=='quote_pending':
                         db.execute("UPDATE orders SET quote_accepted=1,status=? WHERE id=?",('payment_review' if o['payment']=='wallet' else 'new',oid))
