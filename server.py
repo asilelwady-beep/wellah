@@ -20,6 +20,7 @@ from urllib.parse import urlparse, parse_qs, urlencode
 from urllib.request import urlopen, Request, build_opener, HTTPRedirectHandler
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from threading import Lock
+from wallet_controls import init_wallet_controls, wallet_post, unlocked, verify_owner, redact_wallet
 from account_support import init_features, feature_post, feature_state, normalized_username, complete_registration
 
 ROOT = Path(__file__).parent
@@ -138,6 +139,7 @@ def init():
         CREATE TABLE IF NOT EXISTS driver_distance_daily (driver_id INTEGER NOT NULL, day TEXT NOT NULL, meters REAL NOT NULL DEFAULT 0, PRIMARY KEY(driver_id,day));
         """)
         init_features(db)
+        init_wallet_controls(db)
         if not db.execute("SELECT 1 FROM settings WHERE key='wallet'").fetchone():
             db.executemany("INSERT INTO settings VALUES (?,?)", [("wallet", os.environ.get('WALLAHA_WALLET','')), ("whatsapp", os.environ.get('WALLAHA_WHATSAPP','')), ("delivery_fee", "20")])
         db.execute("INSERT OR IGNORE INTO settings VALUES ('per_km_rate','')")
@@ -656,13 +658,15 @@ def commission_split(db, kind, vehicle, amount):
 
 
 def driver_wallet(db, driver_id):
-    entries=rows(db,"SELECT id,status,total,payment,cash_collected,cash_settled,driver_earning_cents,driver_earning_paid,commission_percent,commission_cents,created_at FROM orders WHERE driver_id=? AND status='delivered' ORDER BY id DESC",(driver_id,))
-    return {'balance':sum(o['driver_earning_cents'] for o in entries if not o['driver_earning_paid'])/100,
-            'earned':sum(o['driver_earning_cents'] for o in entries)/100,
-            'paid':sum(o['driver_earning_cents'] for o in entries if o['driver_earning_paid'])/100,
-            'commission_due':sum(o['commission_cents'] for o in entries)/100,
+    entries=rows(db,"SELECT id,status,total,payment,cash_collected,cash_settled,driver_earning_cents,driver_earning_paid,commission_percent,commission_cents,commission_settled,created_at FROM orders WHERE driver_id=? AND status='delivered' ORDER BY id DESC",(driver_id,))
+    adjustments=rows(db,'SELECT id,amount_cents,reason,at,settled FROM wallet_adjustments WHERE driver_id=? ORDER BY id DESC',(driver_id,))
+    audit=rows(db,'SELECT action,details,at FROM wallet_audit WHERE driver_id=? ORDER BY id DESC LIMIT 100',(driver_id,))
+    return {'balance':(sum(o['driver_earning_cents'] for o in entries if not o['driver_earning_paid'])+sum(a['amount_cents'] for a in adjustments if not a['settled']))/100,
+            'earned':(sum(o['driver_earning_cents'] for o in entries)+sum(a['amount_cents'] for a in adjustments))/100,
+            'paid':(sum(o['driver_earning_cents'] for o in entries if o['driver_earning_paid'])+sum(a['amount_cents'] for a in adjustments if a['settled']))/100,
+            'commission_due':sum(o['commission_cents'] for o in entries if not o['commission_settled'])/100,
             'cash_due':round(sum(o['total'] for o in entries if o['payment']=='cash' and o['cash_collected'] and not o['cash_settled']),2),
-            'entries':entries}
+            'entries':entries,'adjustments':adjustments,'audit':audit}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -894,7 +898,7 @@ class Handler(BaseHTTPRequestHandler):
             user = self.user(db)
             if not user: return self.respond({'error':'سجل الدخول أولًا'}, 401)
             refresh_offers(db)
-            clause, args = ('', ()) if user['role']=='admin' else ((' WHERE o.user_id=?', (user['id'],)) if user['role']=='customer' else (' WHERE d.user_id=?', (user['id'],)))
+            clause, args = ('', ()) if user['role']=='admin' else ((" WHERE o.user_id=? AND o.status NOT IN ('delivered','cancelled')", (user['id'],)) if user['role']=='customer' else (' WHERE d.user_id=?', (user['id'],)))
             orders = rows(db, "SELECT o.*,d.name AS driver_name,d.phone AS driver_phone,d.photo AS driver_photo,d.lat AS driver_lat,d.lon AS driver_lon,d.location_at AS driver_location_at,m.name AS merchant_name,m.address AS merchant_address FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id LEFT JOIN merchants m ON m.id=o.merchant_id"+clause+" ORDER BY o.id DESC", args)
             for o in orders:
                 o["items"] = rows(db, "SELECT oi.product_id,oi.name,oi.quantity,oi.unit_price,oi.unit,COALESCE(NULLIF(p.image,''),CASE WHEN p.catalog_preview=1 THEN '/product-illustration/' || p.id || '.svg' ELSE '/icon.svg' END) AS image FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=?", (o["id"],))
@@ -908,15 +912,20 @@ class Handler(BaseHTTPRequestHandler):
                     o.pop('proof', None)
                     o.pop('reference', None)
                     o.pop('prescription', None)
+                    for key in list(o):
+                        if key.startswith('commission_'): o.pop(key)
+                    if user['role']=='customer':
+                        o.pop('driver_earning_cents',None);o.pop('driver_earning_paid',None)
             profile=db.execute('SELECT id,name,phone,photo,area,vehicle_type,available,break_until,lat,lon,location_at FROM drivers WHERE user_id=?',(user['id'],)).fetchone() if user['role']=='driver' else None
-            wallets={str(d['id']):driver_wallet(db,d['id']) for d in db.execute('SELECT id FROM drivers')} if user['role']=='admin' else {}
-            self.respond({**feature_state(db,user),"draft_catalog":preview_catalog(db) if user['role'] in ('customer','admin') else [],"driver_profile":dict(profile) if profile else None,"driver_wallet":driver_wallet(db,profile['id']) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username,u.disabled FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}})
+            wallets={str(d['id']):driver_wallet(db,d['id']) for d in db.execute('SELECT id FROM drivers')} if user['role']=='admin' and unlocked(self,db) else {}
+            self.respond({**feature_state(db,user),"draft_catalog":preview_catalog(db) if user['role'] in ('customer','admin') else [],"driver_profile":dict(profile) if profile else None,"wallet_unlocked":unlocked(self,db) if user['role']=='admin' else False,"driver_wallet":redact_wallet(driver_wallet(db,profile['id'])) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username,u.disabled,u.email FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}})
 
     def do_POST(self):
         try:
             data = self.body()
             with connect() as db:
                 path = urlparse(self.path).path
+                if wallet_post(self,db,path,data,self.user(db),now,driver_wallet): return
                 if feature_post(self, db, path, data, self.user(db), create_user, AREAS, now): return
                 if path == '/api/register':
                     uid=complete_registration(db,data,create_user)
@@ -944,6 +953,7 @@ class Handler(BaseHTTPRequestHandler):
                     d=db.execute('SELECT user_id FROM drivers WHERE id=?',(o['driver_id'],)).fetchone() if o and o['driver_id'] else None
                     is_customer=bool(o and user['role']=='customer' and o['user_id']==user['id'])
                     is_driver=bool(d and user['role']=='driver' and d['user_id']==user['id'])
+                    if is_customer and o['status'] in ('delivered','cancelled'): return self.respond({'error':'انتهى الطلب وأُرشف لدى الإدارة'},403)
                     if not o or not d or not (is_customer or is_driver) or o['status'] not in ('assigned','ready','picked_up','on_way','delivered','cancelled'):
                         return self.respond({'error':'الدردشة متاحة لصاحب الطلب والمندوب الذي قبله فقط'},403)
                     mode=data.get('mode','list')
@@ -972,6 +982,7 @@ class Handler(BaseHTTPRequestHandler):
                     if user['role']!='customer': return self.respond({'error':'غير مصرح'},403)
                     return self.respond(quote_delivery(db,user['id'],data))
                 if path == '/api/logout':
+                    db.execute('DELETE FROM wallet_unlocks WHERE session_hash=?',(hashlib.sha256(self.headers['Authorization'][7:].encode()).hexdigest(),))
                     db.execute('DELETE FROM sessions WHERE token_hash=?',(hashlib.sha256(self.headers['Authorization'][7:].encode()).hexdigest(),))
                     return self.respond({'ok':True})
                 if path == '/api/driver/photo':
@@ -1138,6 +1149,8 @@ class Handler(BaseHTTPRequestHandler):
                     db.execute('UPDATE area_fees SET fee=? WHERE area=?',(fee,area))
                 elif path == '/api/driver/earning':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    if not unlocked(self,db): raise ValueError('افتح المحفظة بكلمة السر أولًا')
+                    verify_owner(self,db,user,data.get('wallet_password'))
                     o=db.execute("SELECT * FROM orders WHERE id=? AND status='delivered' AND driver_id IS NOT NULL",(int(data['id']),)).fetchone()
                     if not o: raise ValueError('حدد مشوارًا تم تسليمه')
                     if o['driver_earning_paid']: raise ValueError('تم صرف المستحق بالفعل')
@@ -1370,7 +1383,9 @@ class Handler(BaseHTTPRequestHandler):
                         if action=='delivered' and o['payment']=='cash': db.execute('UPDATE orders SET cash_collected=1 WHERE id=?',(oid,))
                         log(db, oid, {"picked_up": "استلم المندوب الطلب", "on_way": "المندوب في الطريق", "delivered": "تم التسليم"}[action])
                     elif action=='settle_cash' and o['payment']=='cash' and o['status']=='delivered' and o['cash_collected'] and not o['cash_settled']:
-                        db.execute('UPDATE orders SET cash_settled=1 WHERE id=?',(oid,))
+                        if not unlocked(self,db): raise ValueError('افتح المحفظة بكلمة السر أولًا')
+                        verify_owner(self,db,user,data.get('wallet_password'))
+                        db.execute('UPDATE orders SET cash_settled=1,commission_settled=1 WHERE id=?',(oid,))
                         log(db,oid,'أكد المسؤول استلام الكاش من المندوب')
                     elif action in ('cancel','reject_medicine','customer_cancel') and o["status"] not in ("delivered", "cancelled") and (action!='reject_medicine' or o['status']=='medicine_review') and (action!='customer_cancel' or (o['status'] in ('awaiting_quote','quote_pending','medicine_review','payment_review','new','awaiting_driver','offered','assigned') and not (o['payment']=='wallet' and (o['payment_status']=='confirmed' or bool(o['proof']))))):
                         db.execute("UPDATE orders SET status='cancelled' WHERE id=?", (oid,))

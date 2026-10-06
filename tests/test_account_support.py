@@ -73,6 +73,64 @@ class AccountSupportTests(unittest.TestCase):
             self.assertEqual(self.post('auth/send-code',{'phone':'01000000123','purpose':'register'})[0],400)
         self.assertEqual(features.normalized_mobile('٠١٠٠٠٠٠٠١٢٣'),'01000000123')
 
+    @classmethod
+    def state_for(cls, token):
+        with urlopen(Request(cls.base+'/api/state',headers={'Authorization':'Bearer '+token})) as response: return json.load(response)
+
+    def wallet_order(self, status='delivered'):
+        with server.connect() as db:
+            return db.execute("INSERT INTO orders(user_id,kind,customer,phone,area,address,payment,payment_status,status,total,delivery_fee,driver_id,created_at,driver_earning_cents,commission_percent,commission_cents,commission_locked,cash_collected) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(self.customer,'delivery','اختبار محفظة','01000000001',server.AREAS[0],'عنوان','cash','confirmed',status,100,100,self.did,server.now(),9000,10,1000,1,1)).lastrowid
+
+    def test_wallet_reauthentication_settlement_and_redaction(self):
+        self.dt=self.post('login',{'phone':'01000000003','password':'driver-password-123'})[1]['token']
+        oid=self.wallet_order()
+        owner=self.state_for(self.at)
+        self.assertFalse(owner['wallet_unlocked']);self.assertEqual(owner['driver_wallets'],{})
+        for tok in (self.ct,self.dt):
+            self.assertEqual(self.post('admin/wallet/unlock',{'wallet_password':'test-owner-password-123'},tok)[0],403)
+        self.assertEqual(self.post('admin/wallet/unlock',{'wallet_password':'wrong'},self.at)[0],400)
+        self.assertEqual(self.post('admin/wallet/unlock',{'wallet_password':'test-owner-password-123'},self.at)[0],200)
+        driver=self.state_for(self.dt)
+        self.assertNotIn('commission_due',driver['driver_wallet']);self.assertNotIn('audit',driver['driver_wallet'])
+        order=next(o for o in driver['orders'] if o['id']==oid)
+        self.assertFalse(any(k.startswith('commission_') for k in order))
+        self.assertEqual(order['driver_earning_cents'],9000)
+        before=self.state_for(self.at)['driver_wallets'][str(self.did)]['balance']
+        change={'driver_id':self.did,'action':'adjust','amount':'25','reason':'تعديل موثق','wallet_password':'wrong','request_id':'wallet-adjust-test-001'}
+        self.assertEqual(self.post('admin/wallet/change',change,self.at)[0],400)
+        self.assertEqual(self.state_for(self.at)['driver_wallets'][str(self.did)]['balance'],before)
+        change['wallet_password']='test-owner-password-123'
+        self.assertEqual(self.post('admin/wallet/change',change,self.at)[0],200)
+        self.assertEqual(self.post('admin/wallet/change',change,self.at)[0],200)
+        wallet=self.state_for(self.at)['driver_wallets'][str(self.did)]
+        self.assertEqual(wallet['balance'],before+25);self.assertEqual(len(wallet['adjustments']),1)
+        change.update(action='settle',reason='تم استلام وصرف الفلوس',request_id='wallet-settle-test-001')
+        self.assertEqual(self.post('admin/wallet/change',change,self.at)[0],200)
+        wallet=self.state_for(self.at)['driver_wallets'][str(self.did)]
+        self.assertEqual(wallet['balance'],0);self.assertEqual(wallet['cash_due'],0);self.assertEqual(wallet['commission_due'],0)
+        self.assertTrue(wallet['entries']);self.assertEqual(len(wallet['audit']),2)
+        self.assertEqual(self.post('admin/wallet/lock',{},self.at)[0],200)
+        self.assertEqual(self.post('admin/wallet/change',dict(change,request_id='wallet-locked-test-001'),self.at)[0],400)
+        with server.connect() as db: self.assertIsNotNone(db.execute('SELECT id FROM orders WHERE id=?',(oid,)).fetchone())
+        self.assertEqual(self.post('driver/earning',{'id':oid,'paid':True,'wallet_password':'test-owner-password-123'},self.at)[0],400)
+        self.assertEqual(self.post('admin/wallet/unlock',{'wallet_password':'test-owner-password-123'},self.at)[0],200)
+        with server.connect() as db: db.execute('UPDATE wallet_unlocks SET expires=0')
+        self.assertFalse(self.state_for(self.at)['wallet_unlocked'])
+        self.assertEqual(self.state_for(self.at)['driver_wallets'],{})
+
+    def test_archived_chat_remains_for_admin_and_completed_order_hidden_from_customer(self):
+        oid=self.wallet_order('assigned')
+        self.assertEqual(self.post('order/chat',{'order_id':oid,'mode':'send','body':'محادثة محفوظة','request_id':'chat-archive-test-001'},self.ct)[0],200)
+        with server.connect() as db: db.execute("UPDATE orders SET status='delivered' WHERE id=?",(oid,))
+        self.assertFalse(any(o['id']==oid for o in self.state_for(self.ct)['orders']))
+        self.assertEqual(self.post('order/chat',{'order_id':oid,'mode':'list'},self.ct)[0],403)
+        for tok in (self.ct,self.dt): self.assertEqual(self.post('admin/chat/archive',{'order_id':oid},tok)[0],403)
+        status,data=self.post('admin/chat/archive',{'order_id':oid},self.at)
+        self.assertEqual(status,200);self.assertEqual(data['messages'][0]['body'],'محادثة محفوظة')
+        self.assertEqual(data['messages'][0]['sender_role'],'customer')
+        self.assertTrue(any(o['id']==oid for o in self.state_for(self.at)['orders']))
+        self.assertTrue(any(r['id']==oid for r in self.state_for(self.ct)['pending_ratings']))
+
     def test_registration_requires_otp(self):
         code,result=self.post('register',{'name':'جديد','phone':'01000000004','password':'new-password-123','confirm_password':'new-password-123'})
         self.assertEqual(code,400);self.assertIn('رمز',result['error'])
