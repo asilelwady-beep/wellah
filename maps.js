@@ -395,6 +395,11 @@ function initMaps(){
   }
 }
 
+function adminDriverMapCard(d){
+  const photo=typeof d.photo==='string'&&/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(d.photo)?d.photo:'';
+  const coords=Number(d.lat).toFixed(6)+', '+Number(d.lon).toFixed(6);
+  return `<div dir="rtl" style="min-width:220px;display:flex;gap:12px;align-items:center">${photo?`<img src="${esc(photo)}" alt="صورة ${esc(d.name)}" style="width:72px;height:72px;border-radius:16px;object-fit:cover">`:'<span style="width:72px;height:72px;display:grid;place-items:center;background:#fff0e5;border-radius:16px">بدون صورة</span>'}<div><strong>${esc(d.name)}</strong><p style="margin:6px 0">الإحداثيات: <span dir="ltr">${coords}</span></p><small>آخر ظهور: ${esc(d.location_at||'غير مسجل')}</small></div></div>`;
+}
 function refreshAdminLiveMap(fitInitially=false){
   const map=mapViews.find(m=>m.getContainer().id==='admin-map');
   if(!map||!state||tab!=='admin')return false;
@@ -405,11 +410,11 @@ function refreshAdminLiveMap(fitInitially=false){
     const pos=[Number(lat),Number(lon)];seen.add(key);positions.push(pos);
     let marker=map._liveMarkers.get(key);
     if(marker){const old=marker.getLatLng();if(old.lat!==pos[0]||old.lng!==pos[1])marker.setLatLng(pos);if(marker.getPopup()?.getContent()!==label)marker.setPopupContent(label)}
-    else{marker=point(map,pos[0],pos[1],label,color);map._liveMarkers.set(key,marker)}
+    else{marker=point(map,pos[0],pos[1],label,color);if(key.startsWith('driver-')){marker.getPopup().options.autoPan=false;marker.on('mouseover',()=>marker.openPopup())}map._liveMarkers.set(key,marker)}
   };
   for(const m of state.merchants.filter(x=>x.active))update('merchant-'+m.id,m.lat,m.lon,'المحل '+esc(m.name)+' · '+esc(m.address),'#2864c5');
   for(const o of state.orders.filter(x=>!['cancelled','delivered'].includes(x.status)))update('order-'+o.id,o.latitude,o.longitude,'طلب #'+o.id+' · '+esc(o.area)+' · '+esc(o.address),'#e58029');
-  for(const d of state.drivers)update('driver-'+d.id,d.lat,d.lon,'المندوب '+esc(d.name)+' · آخر تحديث '+esc(d.location_at||''),'#087b5b');
+  for(const d of state.drivers)update('driver-'+d.id,d.lat,d.lon,adminDriverMapCard(d),'#087b5b');
   for(const [key,marker] of map._liveMarkers)if(!seen.has(key)){map.removeLayer(marker);map._liveMarkers.delete(key)}
   if(fitInitially)showMapPoints(map,positions);
   return true;
