@@ -120,6 +120,25 @@ class AccountSupportTests(unittest.TestCase):
             data['email']=profile['email'] or ''
             self.post('driver/update',data,self.at)
 
+    def test_driver_shift_selfie_and_owner_only_photo(self):
+        token=self.post('login',{'phone':'01000000003','password':'driver-password-123','expected_role':'driver'})[1]['token']
+        photo='data:image/png;base64,'+base64.b64encode(b'\x89PNG\r\n\x1a\n'+b'x'*60).decode()
+        self.assertEqual(self.post('driver/shift/start',{'selfie':photo},self.ct)[0],403)
+        self.assertEqual(self.post('driver/shift/start',{},token)[0],400)
+        status,body=self.post('driver/shift/start',{'selfie':photo},token)
+        self.assertEqual(status,200);sid=body['shift_id']
+        self.assertEqual(self.post('driver/shift/start',{'selfie':photo},token)[1]['shift_id'],sid)
+        driver=self.state_for(token);self.assertEqual(driver['driver_shift']['id'],sid);self.assertNotIn('selfie',driver['driver_shift']);self.assertEqual(driver['driver_shifts'],[])
+        self.assertTrue(any(x['id']==sid for x in self.state_for(self.at)['driver_shifts']))
+        for forbidden in (self.ct,token):
+            self.assertEqual(self.post('admin/shift/photo',{'id':sid},forbidden)[0],403)
+        self.assertEqual(self.post('admin/shift/photo',{'id':sid},self.at)[1]['photo'],photo)
+        self.assertEqual(self.post('driver/shift/end',{},token)[0],200)
+        self.assertIsNone(self.state_for(token)['driver_shift'])
+        with server.connect() as db:
+            self.assertIsNotNone(db.execute('SELECT ended_at FROM driver_shifts WHERE id=?',(sid,)).fetchone()['ended_at'])
+            db.execute('UPDATE drivers SET available=1 WHERE id=?',(self.did,))
+
     def wallet_order(self, status='delivered'):
         with server.connect() as db:
             return db.execute("INSERT INTO orders(user_id,kind,customer,phone,area,address,payment,payment_status,status,total,delivery_fee,driver_id,created_at,driver_earning_cents,commission_percent,commission_cents,commission_locked,cash_collected) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(self.customer,'delivery','اختبار محفظة','01000000001',server.AREAS[0],'عنوان','cash','confirmed',status,100,100,self.did,server.now(),9000,10,1000,1,1)).lastrowid

@@ -167,7 +167,9 @@ def feature_state(db, user):
     ratings = [dict(r) for r in db.execute('SELECT r.*,u.name AS sender_name,t.name AS target_name FROM ratings r JOIN users u ON u.id=r.sender_id JOIN users t ON t.id=r.target_id' + clause + ' ORDER BY r.at DESC LIMIT 500', args)]
     tickets = [dict(r) for r in db.execute('SELECT s.*,u.name FROM support_tickets s JOIN users u ON u.id=s.user_id' + ('' if user['role'] == 'admin' else ' WHERE s.user_id=?') + ' ORDER BY s.id DESC LIMIT 100', args)]
     pending=[dict(r) for r in db.execute("SELECT o.id,o.driver_id,'delivered' AS status FROM orders o WHERE o.user_id=? AND o.status='delivered' AND o.driver_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ratings r WHERE r.order_id=o.id AND r.sender_id=?) ORDER BY o.id DESC LIMIT 3",(user['id'],user['id']))] if user['role']=='customer' else []
-    return {'pending_ratings':pending,'ratings': ratings, 'support_tickets': tickets, 'email_otp_ready': mail_ready(), 'sms_otp_ready': sms_ready(), 'ai_ready': bool(os.environ.get('OPENAI_API_KEY'))}
+    shift=dict(row) if user['role']=='driver' and (row:=db.execute('SELECT s.id,s.started_at,s.ended_at FROM driver_shifts s JOIN drivers d ON d.id=s.driver_id WHERE d.user_id=? AND s.ended_at IS NULL',(user['id'],)).fetchone()) else None
+    shifts=[dict(r) for r in db.execute('SELECT s.id,s.driver_id,s.started_at,s.ended_at,d.name,u.email FROM driver_shifts s JOIN drivers d ON d.id=s.driver_id JOIN users u ON u.id=d.user_id ORDER BY s.id DESC LIMIT 100')] if user['role']=='admin' else []
+    return {'driver_shift':shift,'driver_shifts':shifts,'pending_ratings':pending,'ratings': ratings, 'support_tickets': tickets, 'email_otp_ready': mail_ready(), 'sms_otp_ready': sms_ready(), 'ai_ready': bool(os.environ.get('OPENAI_API_KEY'))}
 
 
 def feature_post(handler, db, path, data, user, create_user, areas, now):

@@ -2,17 +2,12 @@ package com.wallah.app;
 
 import android.Manifest;
 import android.app.Activity;
-import android.app.AlertDialog;
-import android.hardware.biometrics.BiometricPrompt;
-import android.os.Build;
-import android.os.CancellationSignal;
-import android.provider.Settings;
-import android.view.View;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.webkit.GeolocationPermissions;
+import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
@@ -30,9 +25,9 @@ public class MainActivity extends Activity {
     }
     private static final int LOCATION_REQUEST = 41;
     private static final int FILE_REQUEST = 42;
+    private static final int CAMERA_REQUEST = 43;
+    private PermissionRequest cameraRequest;
     private WebView web;
-    private boolean driverUnlocked = false;
-    private boolean driverPromptActive = false;
     private boolean driverPageLoaded = false;
     private Bundle pendingState;
     private String pendingDestination;
@@ -111,6 +106,17 @@ public class MainActivity extends Activity {
                     requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}, LOCATION_REQUEST);
                 }
             }
+            @Override public void onPermissionRequest(PermissionRequest request) {
+                runOnUiThread(() -> {
+                    Uri origin = request.getOrigin();
+                    boolean cameraOnly = request.getResources().length == 1 && PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(request.getResources()[0]);
+                    if (!"https".equals(origin.getScheme()) || !isAppHost(origin.getHost()) || !cameraOnly || !"driver".equals(BuildConfig.FLAVOR)) { request.deny(); return; }
+                    if (cameraRequest != null) { request.deny(); return; }
+                    if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) request.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+                    else { cameraRequest = request; requestPermissions(new String[]{Manifest.permission.CAMERA}, CAMERA_REQUEST); }
+                });
+            }
+            @Override public void onPermissionRequestCanceled(PermissionRequest request) { if (cameraRequest == request) cameraRequest = null; }
             @Override public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
                 if (fileCallback != null) fileCallback.onReceiveValue(null);
                 fileCallback = callback;
@@ -120,8 +126,7 @@ public class MainActivity extends Activity {
         });
         pendingDestination = incomingLocation(getIntent());
         pendingState = state;
-        if ("driver".equals(BuildConfig.FLAVOR)) web.setVisibility(View.INVISIBLE);
-        else loadInitialPage();
+        loadInitialPage();
     }
 
     private void loadInitialPage() {
@@ -134,62 +139,6 @@ public class MainActivity extends Activity {
         pendingState = null;
     }
 
-    @Override protected void onResume() {
-        super.onResume();
-        if ("driver".equals(BuildConfig.FLAVOR) && !driverUnlocked && !driverPromptActive) requireDriverBiometric();
-    }
-
-    @Override protected void onStop() {
-        if ("driver".equals(BuildConfig.FLAVOR)) {
-            driverUnlocked = false;
-            web.setVisibility(View.INVISIBLE);
-        }
-        super.onStop();
-    }
-
-    private void requireDriverBiometric() {
-        if (Build.VERSION.SDK_INT < 28) {
-            biometricUnavailable("التحقق البيومتري يحتاج أندرويد 9 أو أحدث على جهاز الطيار.");
-            return;
-        }
-        driverPromptActive = true;
-        CancellationSignal signal = new CancellationSignal();
-        new BiometricPrompt.Builder(this)
-            .setTitle("تأكيد هوية الطيار")
-            .setSubtitle("استخدم بصمة الوجه أو البصمة المسجلة على هاتفك لفتح الطلبات")
-            .setNegativeButton("إلغاء", getMainExecutor(), (dialog, which) -> {
-                driverPromptActive = false;
-                finish();
-            })
-            .build()
-            .authenticate(signal, getMainExecutor(), new BiometricPrompt.AuthenticationCallback() {
-                @Override public void onAuthenticationSucceeded(BiometricPrompt.AuthenticationResult result) {
-                    driverPromptActive = false;
-                    driverUnlocked = true;
-                    web.setVisibility(View.VISIBLE);
-                    loadInitialPage();
-                }
-                @Override public void onAuthenticationError(int code, CharSequence message) {
-                    driverPromptActive = false;
-                    if (!isFinishing()) biometricUnavailable("لم يكتمل التحقق البيومتري. تأكد من تسجيل بصمتك في إعدادات الهاتف.");
-                }
-            });
-    }
-
-    private void biometricUnavailable(String message) {
-        if (isFinishing()) return;
-        new AlertDialog.Builder(this)
-            .setTitle("التحقق مطلوب")
-            .setMessage(message)
-            .setPositiveButton("إعدادات الهاتف", (dialog, which) -> {
-                try { startActivity(new Intent(Settings.ACTION_SECURITY_SETTINGS)); }
-                catch (Exception ignored) { finish(); }
-            })
-            .setNegativeButton("إغلاق", (dialog, which) -> finish())
-            .setOnCancelListener(dialog -> finish())
-            .show();
-    }
-
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
@@ -199,6 +148,11 @@ public class MainActivity extends Activity {
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grants) {
         super.onRequestPermissionsResult(requestCode, permissions, grants);
+        if (requestCode == CAMERA_REQUEST && cameraRequest != null) {
+            PermissionRequest pending = cameraRequest; cameraRequest = null;
+            if (grants.length > 0 && grants[0] == PackageManager.PERMISSION_GRANTED) pending.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+            else pending.deny();
+        }
         if (requestCode == LOCATION_REQUEST && locationCallback != null) {
             boolean allowed = false;
             for (int result : grants) if (result == PackageManager.PERMISSION_GRANTED) allowed = true;
@@ -228,6 +182,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         if (fileCallback != null) fileCallback.onReceiveValue(null);
+        if (cameraRequest != null) { cameraRequest.deny(); cameraRequest = null; }
         web.destroy();
         super.onDestroy();
     }

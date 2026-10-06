@@ -157,6 +157,8 @@ def init():
                 db.execute(f'ALTER TABLE orders ADD COLUMN {column} {definition}')
         if 'username' not in {x['name'] for x in db.execute('PRAGMA table_info(users)')}:
             db.execute('ALTER TABLE users ADD COLUMN username TEXT')
+        db.execute('CREATE TABLE IF NOT EXISTS driver_shifts (id INTEGER PRIMARY KEY,driver_id INTEGER NOT NULL REFERENCES drivers(id),selfie TEXT NOT NULL,started_at TEXT NOT NULL,ended_at TEXT)')
+        db.execute('CREATE UNIQUE INDEX IF NOT EXISTS driver_one_open_shift ON driver_shifts(driver_id) WHERE ended_at IS NULL')
         if 'break_until' not in {x['name'] for x in db.execute('PRAGMA table_info(drivers)')}:
             db.execute('ALTER TABLE drivers ADD COLUMN break_until INTEGER NOT NULL DEFAULT 0')
         if 'photo' not in {x['name'] for x in db.execute('PRAGMA table_info(drivers)')}:
@@ -954,6 +956,29 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond({'token':token,'role':u['role']})
                 user=self.user(db)
                 if not user: return self.respond({'error':'سجل الدخول أولًا'},401)
+                if path in ('/api/driver/shift/start','/api/driver/shift/end'):
+                    if user['role']!='driver': return self.respond({'error':'خاص بالطيار فقط'},403)
+                    driver=db.execute('SELECT id FROM drivers WHERE user_id=?',(user['id'],)).fetchone()
+                    if not driver: raise ValueError('حساب الطيار غير موجود')
+                    did=driver['id']
+                    db.execute('BEGIN IMMEDIATE')
+                    active=db.execute('SELECT id FROM driver_shifts WHERE driver_id=? AND ended_at IS NULL',(did,)).fetchone()
+                    if path.endswith('/start'):
+                        if active: return self.respond({'ok':True,'shift_id':active['id']})
+                        selfie=data.get('selfie','')
+                        if not valid_image(selfie,1_500_000): raise ValueError('صورة وجه حديثة من الكاميرا مطلوبة لبدء الشيفت')
+                        sid=db.execute('INSERT INTO driver_shifts(driver_id,selfie,started_at) VALUES (?,?,?)',(did,selfie,now())).lastrowid
+                        db.execute('UPDATE drivers SET available=1,break_until=0 WHERE id=?',(did,))
+                        return self.respond({'ok':True,'shift_id':sid})
+                    if db.execute("SELECT 1 FROM orders WHERE driver_id=? AND status IN ('assigned','ready','picked_up','on_way')",(did,)).fetchone(): raise ValueError('أكمل الطلب الجاري قبل إنهاء الشيفت')
+                    db.execute('UPDATE driver_shifts SET ended_at=? WHERE driver_id=? AND ended_at IS NULL',(now(),did))
+                    db.execute('UPDATE drivers SET available=0 WHERE id=?',(did,))
+                    return self.respond({'ok':True})
+                if path == '/api/admin/shift/photo':
+                    if user['role']!='admin': return self.respond({'error':'خاص بالمسؤول فقط'},403)
+                    shift=db.execute('SELECT selfie FROM driver_shifts WHERE id=?',(int(data.get('id',0)),)).fetchone()
+                    if not shift: raise ValueError('الشيفت غير موجود')
+                    return self.respond({'photo':shift['selfie']})
                 if path == '/api/order/chat':
                     oid=int(data['order_id'])
                     o=db.execute('SELECT * FROM orders WHERE id=?',(oid,)).fetchone()
