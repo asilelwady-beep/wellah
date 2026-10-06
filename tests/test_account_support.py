@@ -139,6 +139,38 @@ class AccountSupportTests(unittest.TestCase):
             self.assertIsNotNone(db.execute('SELECT ended_at FROM driver_shifts WHERE id=?',(sid,)).fetchone()['ended_at'])
             db.execute('UPDATE drivers SET available=1 WHERE id=?',(self.did,))
 
+    def test_daily_shift_expiry_requires_new_selfie(self):
+        from datetime import datetime,timezone,timedelta
+        photo='data:image/png;base64,'+base64.b64encode(b'\x89PNG\r\n\x1a\n'+b'x'*60).decode()
+        token=self.post('login',{'phone':'01000000003','password':'driver-password-123','expected_role':'driver'})[1]['token']
+        with server.connect() as db:
+            db.execute('UPDATE driver_shifts SET ended_at=? WHERE driver_id=? AND ended_at IS NULL',(server.now(),self.did))
+            old=db.execute('INSERT INTO driver_shifts(driver_id,selfie,started_at) VALUES (?,?,?)',(self.did,photo,(datetime.now(timezone.utc)-timedelta(hours=25)).isoformat())).lastrowid
+        self.assertTrue(self.state_for(token)['shift_required'])
+        self.assertEqual(self.post('driver/shift/start',{},token)[0],400)
+        status,body=self.post('driver/shift/start',{'selfie':photo},token)
+        self.assertEqual(status,200);self.assertNotEqual(body['shift_id'],old)
+        self.assertFalse(self.state_for(token)['shift_required'])
+        with server.connect() as db:
+            self.assertIsNotNone(db.execute('SELECT ended_at FROM driver_shifts WHERE id=?',(old,)).fetchone()['ended_at'])
+        self.assertEqual(self.post('driver/shift/end',{},token)[0],200)
+        self.assertTrue(self.state_for(token)['shift_required'])
+        with server.connect() as db: db.execute('UPDATE drivers SET available=1 WHERE id=?',(self.did,))
+
+    def test_owner_can_update_payment_and_contact_settings(self):
+        original=self.state_for(self.at)['settings']
+        data={'wallet':'01000000123','instapay':'payments@example','whatsapp':'01000000124','delivery_fee':original['delivery_fee']}
+        try:
+            self.assertEqual(self.post('settings',data,self.ct)[0],403)
+            self.assertEqual(self.post('settings',data,self.at)[0],200)
+            settings=self.state_for(self.ct)['settings']
+            self.assertEqual(settings['wallet'],data['wallet']);self.assertEqual(settings['instapay'],data['instapay']);self.assertEqual(settings['whatsapp'],data['whatsapp'])
+            data['wallet']='';data['instapay']='01000000125'
+            self.assertEqual(self.post('settings',data,self.at)[0],200)
+            self.assertEqual(self.state_for(self.ct)['settings']['wallet'],'')
+        finally:
+            self.post('settings',{k:original.get(k,'') for k in ('wallet','instapay','whatsapp','delivery_fee')},self.at)
+
     def wallet_order(self, status='delivered'):
         with server.connect() as db:
             return db.execute("INSERT INTO orders(user_id,kind,customer,phone,area,address,payment,payment_status,status,total,delivery_fee,driver_id,created_at,driver_earning_cents,commission_percent,commission_cents,commission_locked,cash_collected) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(self.customer,'delivery','اختبار محفظة','01000000001',server.AREAS[0],'عنوان','cash','confirmed',status,100,100,self.did,server.now(),9000,10,1000,1,1)).lastrowid

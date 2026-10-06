@@ -962,11 +962,12 @@ class Handler(BaseHTTPRequestHandler):
                     if not driver: raise ValueError('حساب الطيار غير موجود')
                     did=driver['id']
                     db.execute('BEGIN IMMEDIATE')
-                    active=db.execute('SELECT id FROM driver_shifts WHERE driver_id=? AND ended_at IS NULL',(did,)).fetchone()
+                    active=db.execute('SELECT id,started_at FROM driver_shifts WHERE driver_id=? AND ended_at IS NULL',(did,)).fetchone()
                     if path.endswith('/start'):
-                        if active: return self.respond({'ok':True,'shift_id':active['id']})
+                        if active and datetime.fromisoformat(active['started_at']).timestamp()+86400>time.time(): return self.respond({'ok':True,'shift_id':active['id']})
                         selfie=data.get('selfie','')
                         if not valid_image(selfie,1_500_000): raise ValueError('صورة وجه حديثة من الكاميرا مطلوبة لبدء الشيفت')
+                        if active: db.execute('UPDATE driver_shifts SET ended_at=? WHERE id=?',(now(),active['id']))
                         sid=db.execute('INSERT INTO driver_shifts(driver_id,selfie,started_at) VALUES (?,?,?)',(did,selfie,now())).lastrowid
                         db.execute('UPDATE drivers SET available=1,break_until=0 WHERE id=?',(did,))
                         return self.respond({'ok':True,'shift_id':sid})
@@ -1163,9 +1164,11 @@ class Handler(BaseHTTPRequestHandler):
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     fee=float(data['delivery_fee'])
                     if fee<0: raise ValueError('رسوم التوصيل غير صحيحة')
-                    for k,v in [('wallet',str(data['wallet']).strip()),('whatsapp',str(data['whatsapp']).strip()),('delivery_fee',str(fee))]:
-                        if not v: raise ValueError('الإعدادات مطلوبة')
-                        db.execute('UPDATE settings SET value=? WHERE key=?',(v,k))
+                    current=dict(db.execute('SELECT key,value FROM settings'))
+                    values=[('wallet',str(data.get('wallet',current.get('wallet',''))).strip()),('instapay',str(data.get('instapay',current.get('instapay',''))).strip()),('whatsapp',str(data.get('whatsapp',current.get('whatsapp',''))).strip()),('delivery_fee',str(fee))]
+                    if any(len(v)>100 for k,v in values): raise ValueError('رقم أو حساب التحويل طويل جدًا')
+                    for k,v in values:
+                        db.execute('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',(k,v))
                 elif path == '/api/commission-rate':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     key=str(data.get('key',''))
@@ -1356,6 +1359,9 @@ class Handler(BaseHTTPRequestHandler):
                     elif action in ('accept_offer','decline_offer','picked_up','on_way','delivered'):
                         d=db.execute('SELECT id FROM drivers WHERE user_id=?',(user['id'],)).fetchone()
                         if user['role']!='driver' or not d or o['driver_id']!=d['id']: return self.respond({'error':'غير مصرح'},403)
+                        if action=='accept_offer':
+                            shift=db.execute('SELECT started_at FROM driver_shifts WHERE driver_id=? AND ended_at IS NULL',(d['id'],)).fetchone()
+                            if not shift or datetime.fromisoformat(shift['started_at']).timestamp()+86400<=time.time(): raise ValueError('ابدأ الشيفت بصورة وجه حديثة قبل قبول طلب جديد')
                     elif user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     if action == "confirm_payment" and o["payment_status"] == "pending" and o["proof"] and o["status"] == "payment_review":
                         db.execute("UPDATE orders SET payment_status='confirmed',status='new' WHERE id=?", (oid,))
