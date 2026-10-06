@@ -25,6 +25,9 @@ import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
     private static final String HOST = "wellah-production.up.railway.app";
+    private static boolean isAppHost(String host) {
+        return HOST.equals(host) || "walla3ha.com".equals(host);
+    }
     private static final int LOCATION_REQUEST = 41;
     private static final int FILE_REQUEST = 42;
     private WebView web;
@@ -89,7 +92,7 @@ public class MainActivity extends Activity {
         web.setWebViewClient(new WebViewClient() {
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri url = request.getUrl();
-                if ("https".equals(url.getScheme()) && HOST.equals(url.getHost())) return false;
+                if ("https".equals(url.getScheme()) && isAppHost(url.getHost())) return false;
                 if (request.isForMainFrame()) {
                     try { startActivity(new Intent(Intent.ACTION_VIEW, url)); } catch (Exception ignored) { }
                 }
@@ -99,7 +102,7 @@ public class MainActivity extends Activity {
         web.setWebChromeClient(new WebChromeClient() {
             @Override public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback callback) {
                 Uri uri = Uri.parse(origin);
-                if (!"https".equals(uri.getScheme()) || !HOST.equals(uri.getHost())) { callback.invoke(origin, false, false); return; }
+                if (!"https".equals(uri.getScheme()) || !isAppHost(uri.getHost())) { callback.invoke(origin, false, false); return; }
                 if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED || checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
                     callback.invoke(origin, true, false);
                 } else {

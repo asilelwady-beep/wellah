@@ -7,8 +7,8 @@ android {
         applicationId 'com.wallah.app'
         minSdk 24
         targetSdk 35
-        versionCode 5
-        versionName '1.0.4'
+        versionCode 6
+        versionName '1.0.5'
     }
     flavorDimensions 'role'
     productFlavors {
@@ -22,7 +22,7 @@ android {
             dimension 'role'
             applicationId 'com.wallah.management'
             resValue 'string', 'app_name', 'ولعه - الإدارة'
-            buildConfigField 'String', 'HOME_URL', '"https://wellah-production.up.railway.app/admin"'
+            buildConfigField 'String', 'HOME_URL', '"https://walla3ha.com/admin"'
         }
         driver {
             dimension 'role'
