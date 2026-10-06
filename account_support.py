@@ -1,4 +1,6 @@
 """Account verification, reversible driver management, ratings and support."""
+import base64
+from urllib.parse import urlencode
 import hashlib
 import hmac
 import json
@@ -13,7 +15,7 @@ from urllib.request import Request, urlopen
 
 
 def init_features(db):
-    for name, definition in [('email', 'TEXT'), ('disabled', 'INTEGER NOT NULL DEFAULT 0')]:
+    for name, definition in [('email', 'TEXT'), ('verified_phone', 'TEXT'), ('disabled', 'INTEGER NOT NULL DEFAULT 0')]:
         if name not in {r['name'] for r in db.execute('PRAGMA table_info(users)')}:
             db.execute(f'ALTER TABLE users ADD COLUMN {name} {definition}')
     db.execute('CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(email) WHERE email IS NOT NULL')
@@ -85,6 +87,36 @@ def send_code(email, code):
         raise ValueError('تعذر إرسال رمز التأكيد. حاول لاحقًا') from None
 
 
+def normalized_mobile(value):
+    value=str(value).strip().translate(str.maketrans('٠١٢٣٤٥٦٧٨٩','0123456789'))
+    value=re.sub(r'[\s()-]', '', value)
+    if value.startswith('0020'): value='0'+value[4:]
+    elif value.startswith('+20'): value='0'+value[3:]
+    elif value.startswith('20') and len(value)==12: value='0'+value[2:]
+    if not re.fullmatch(r'01[0125][0-9]{8}',value):
+        raise ValueError('اكتب رقم موبايل مصري صحيح من 11 رقمًا')
+    return value
+
+
+def sms_ready():
+    return bool(re.fullmatch(r'AC[0-9a-fA-F]{32}',os.environ.get('TWILIO_ACCOUNT_SID','')) and os.environ.get('TWILIO_AUTH_TOKEN') and (os.environ.get('TWILIO_MESSAGING_SERVICE_SID') or os.environ.get('TWILIO_SMS_FROM')))
+
+
+def send_sms_code(phone, code):
+    if not sms_ready(): raise ValueError('خدمة رسائل SMS لم تُربط بعد؛ تواصل مع الدعم')
+    sid=os.environ['TWILIO_ACCOUNT_SID']
+    payload={'To':'+20'+normalized_mobile(phone)[1:], 'Body':f'رمز تأكيد ولعه: {code}. صالح لمدة 10 دقائق. لا تشاركه مع أحد.'}
+    if os.environ.get('TWILIO_MESSAGING_SERVICE_SID'): payload['MessagingServiceSid']=os.environ['TWILIO_MESSAGING_SERVICE_SID']
+    else: payload['From']=os.environ['TWILIO_SMS_FROM']
+    credential=base64.b64encode((sid+':'+os.environ['TWILIO_AUTH_TOKEN']).encode()).decode()
+    req=Request(f'https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json',data=urlencode(payload).encode(),headers={'Authorization':'Basic '+credential,'Content-Type':'application/x-www-form-urlencoded'})
+    try:
+        with urlopen(req,timeout=15) as response: result=json.load(response)
+        if not isinstance(result,dict) or not result.get('sid') or result.get('status') not in ('accepted','queued','sending','sent','delivered'): raise ValueError()
+    except (OSError,ValueError,TypeError):
+        raise ValueError('تعذر إرسال رمز التأكيد للموبايل؛ حاول لاحقًا') from None
+
+
 def limit(db, scope, actor, seconds, maximum):
     bucket = int(time.time()) // seconds
     db.execute('INSERT INTO feature_limits VALUES (?,?,?,1) ON CONFLICT(scope,actor,bucket) DO UPDATE SET count=count+1', (scope, actor, bucket))
@@ -116,10 +148,15 @@ def complete_registration(db, data, create_user):
     db.execute('BEGIN IMMEDIATE')
     if db.execute('SELECT used FROM account_codes WHERE id=?', (code['id'],)).fetchone()['used']:
         raise ValueError('رمز التأكيد مستخدم بالفعل')
-    if str(data.get('email', '')).strip().lower() != code['email']:
+    mobile=code['email'].startswith('sms:')
+    if mobile:
+        if normalized_mobile(data.get('phone','')) != code['email'][4:]: raise ValueError('رقم الموبايل لا يطابق الرقم الذي تم تأكيده')
+        data=dict(data,phone=normalized_mobile(data['phone']))
+    elif str(data.get('email', '')).strip().lower() != code['email']:
         raise ValueError('البريد لا يطابق البريد الذي تم تأكيده')
     uid = create_user(db, str(data.get('name', '')), str(data.get('phone', '')), 'customer', str(data.get('password', '')))
-    db.execute('UPDATE users SET email=? WHERE id=?', (code['email'], uid))
+    if mobile: db.execute('UPDATE users SET verified_phone=? WHERE id=?',(code['email'][4:],uid))
+    else: db.execute('UPDATE users SET email=? WHERE id=?', (code['email'], uid))
     db.execute('UPDATE account_codes SET used=1 WHERE id=?', (code['id'],))
     return uid
 
@@ -129,38 +166,43 @@ def feature_state(db, user):
     clause = '' if user['role'] == 'admin' else ' WHERE r.sender_id=?'
     ratings = [dict(r) for r in db.execute('SELECT r.*,u.name AS sender_name,t.name AS target_name FROM ratings r JOIN users u ON u.id=r.sender_id JOIN users t ON t.id=r.target_id' + clause + ' ORDER BY r.at DESC LIMIT 500', args)]
     tickets = [dict(r) for r in db.execute('SELECT s.*,u.name FROM support_tickets s JOIN users u ON u.id=s.user_id' + ('' if user['role'] == 'admin' else ' WHERE s.user_id=?') + ' ORDER BY s.id DESC LIMIT 100', args)]
-    return {'ratings': ratings, 'support_tickets': tickets, 'email_otp_ready': mail_ready(), 'ai_ready': bool(os.environ.get('OPENAI_API_KEY'))}
+    return {'ratings': ratings, 'support_tickets': tickets, 'email_otp_ready': mail_ready(), 'sms_otp_ready': sms_ready(), 'ai_ready': bool(os.environ.get('OPENAI_API_KEY'))}
 
 
 def feature_post(handler, db, path, data, user, create_user, areas, now):
     if path == '/api/auth/send-code':
-        email = str(data.get('email', '')).strip().lower()
+        mobile=bool(data.get('phone'))
+        phone=normalized_mobile(data['phone']) if mobile else ''
+        email='sms:'+phone if mobile else str(data.get('email','')).strip().lower()
         purpose = str(data.get('purpose', 'register'))
         if purpose not in ('register', 'reset', 'link'):
             raise ValueError('طلب غير صالح')
-        if len(email) > 254 or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email):
+        if not mobile and (len(email) > 254 or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email)):
             raise ValueError('أدخل بريدًا إلكترونيًا صحيحًا')
         limit(db, 'otp-ip', handler.client_address[0], 600, 10)
         limit(db, 'otp-email', email, 60, 1)
-        if not mail_ready():
+        if not (sms_ready() if mobile else mail_ready()):
             raise ValueError('خدمة إرسال رمز التأكيد لم تُربط بعد؛ تواصل مع الدعم')
         if purpose == 'link' and not user:
             handler.respond({'error':'سجل الدخول أولًا'},401)
             return True
-        account = db.execute('SELECT id FROM users WHERE email=? AND disabled=0', (email,)).fetchone()
+        if mobile:
+            if purpose=='link': raise ValueError('استخدم ربط البريد من إعدادات الحساب')
+            account=next((u for u in db.execute('SELECT id,phone FROM users WHERE disabled=0') if re.sub(r'[^0-9]','',str(u['phone'])) in (phone,'20'+phone[1:],'0020'+phone[1:])),None)
+        else: account = db.execute('SELECT id FROM users WHERE email=? AND disabled=0', (email,)).fetchone()
         if purpose == 'link' and account and account['id'] != user['id']:
             raise ValueError('هذا البريد مستخدم لحساب آخر')
         ident = secrets.token_urlsafe(24)
         # Reset responses never reveal whether an account exists.
         if purpose == 'reset' and not account:
-            handler.respond({'ok': True, 'challenge_id': ident, 'message': 'إذا كان البريد مسجلًا فسيصلك رمز التأكيد'})
+            handler.respond({'ok': True, 'challenge_id': ident, 'message': ('إذا كان رقم الموبايل مسجلًا فسيصلك رمز التأكيد' if mobile else 'إذا كان البريد مسجلًا فسيصلك رمز التأكيد')})
             return True
         code = f'{secrets.randbelow(1000000):06d}'
-        send_code(email, code)
+        send_sms_code(phone,code) if mobile else send_code(email, code)
         ts = int(time.time())
         db.execute('UPDATE account_codes SET used=1 WHERE email=? AND purpose=? AND used=0', (email, purpose))
         db.execute('INSERT INTO account_codes(id,purpose,email,user_id,code_hash,expires,created,remote) VALUES (?,?,?,?,?,?,?,?)', (ident, purpose, email, user['id'] if purpose == 'link' else account['id'] if account else None, hashlib.sha256((ident + ':' + code).encode()).hexdigest(), ts + 600, ts, handler.client_address[0]))
-        handler.respond({'ok': True, 'challenge_id': ident, 'message': 'إذا كان البريد مسجلًا فسيصلك رمز التأكيد' if purpose == 'reset' else 'تم إرسال رمز التأكيد إلى بريدك'})
+        handler.respond({'ok': True, 'challenge_id': ident, 'message': ('إذا كان رقم الموبايل مسجلًا فسيصلك رمز التأكيد' if mobile else 'إذا كان البريد مسجلًا فسيصلك رمز التأكيد') if purpose == 'reset' else ('تم طلب إرسال رمز التأكيد برسالة SMS إلى موبايلك' if mobile else 'تم إرسال رمز التأكيد إلى بريدك')})
         return True
     if path == '/api/auth/link-email':
         if not user:

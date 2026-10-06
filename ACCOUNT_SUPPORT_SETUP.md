@@ -25,3 +25,6 @@ WhatsApp support uses the existing number in dashboard settings. The shortcut op
 ## Validation
 
 Run `python -m unittest discover -s tests -v`. Tests cover OTP enforcement, single use, expiration, persistent attempt limits, password reset, account email linking, medicine validation, driver permissions, reversible deletion, active orders, rating ownership, support reply ownership and HTTPS email success/failure. JavaScript syntax and DOM rendering of every admin panel were also checked.
+
+## Mobile OTP
+Customer registration and password recovery now request SMS codes for Egyptian mobile numbers. Configure TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and either TWILIO_MESSAGING_SERVICE_SID or TWILIO_SMS_FROM in server environment. Enable Egypt delivery on the provider account. Keys must never be placed in browser files. Until configured, SMS requests fail closed. Local codes expire in ten minutes and allow five attempts. Existing email verification/linking endpoints remain compatible.

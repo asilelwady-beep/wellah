@@ -818,10 +818,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 return self.respond({'error':'تعذر قراءة الرابط المختصر؛ افتح اللوكيشن وانسخ الرابط الكامل أو حدد النقطة على الخريطة'},502)
         if path == '/api/auth-config':
-            from account_support import mail_ready
+            from account_support import mail_ready, sms_ready
             with connect() as db:
                 wa=db.execute("SELECT value FROM settings WHERE key='whatsapp'").fetchone()
-                return self.respond({'email_otp_ready':mail_ready(),'ai_ready':bool(os.environ.get('OPENAI_API_KEY')),'whatsapp':wa['value'] if wa else ''})
+                return self.respond({'email_otp_ready':mail_ready(),'sms_otp_ready':sms_ready(),'ai_ready':bool(os.environ.get('OPENAI_API_KEY')),'whatsapp':wa['value'] if wa else ''})
         if path == '/api/maps-config':
             # Maps JavaScript browser keys are public; restrict this key to walla3ha.com
             # and to the Maps JavaScript API in Google Cloud Console.

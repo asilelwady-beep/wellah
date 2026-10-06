@@ -50,6 +50,29 @@ class AccountSupportTests(unittest.TestCase):
             with urlopen(req) as r:return r.status,json.load(r)
         except HTTPError as e:return e.code,json.load(e)
 
+    def test_sms_registration_binds_phone_and_is_single_use(self):
+        phone='01000000121'
+        with patch.object(features,'sms_ready',return_value=True), patch.object(features,'limit'), patch.object(features,'send_sms_code') as send:
+            status,response=self.post('auth/send-code',{'phone':'+201000000121','purpose':'register'})
+        self.assertEqual(status,200)
+        code=send.call_args.args[1]
+        data={'name':'اختبار موبايل','phone':'01000000122','password':'mobile-password-123','confirm_password':'mobile-password-123','challenge_id':response['challenge_id'],'code':code}
+        self.assertEqual(self.post('register',data)[0],400)
+        data['phone']=phone
+        self.assertEqual(self.post('register',data)[0],200)
+        self.assertEqual(self.post('register',data)[0],400)
+        with server.connect() as db:
+            self.assertEqual(db.execute('SELECT verified_phone FROM users WHERE phone=?',(phone,)).fetchone()['verified_phone'],phone)
+        with patch.object(features,'sms_ready',return_value=True), patch.object(features,'limit'), patch.object(features,'send_sms_code') as send:
+            status,response=self.post('auth/send-code',{'phone':phone,'purpose':'reset'})
+        self.assertEqual(status,200)
+        self.assertEqual(self.post('auth/reset-password',{'challenge_id':response['challenge_id'],'code':send.call_args.args[1],'password':'changed-mobile-password','confirm_password':'changed-mobile-password'})[0],200)
+
+    def test_sms_unconfigured_does_not_create_challenge(self):
+        with patch.object(features,'sms_ready',return_value=False):
+            self.assertEqual(self.post('auth/send-code',{'phone':'01000000123','purpose':'register'})[0],400)
+        self.assertEqual(features.normalized_mobile('٠١٠٠٠٠٠٠١٢٣'),'01000000123')
+
     def test_registration_requires_otp(self):
         code,result=self.post('register',{'name':'جديد','phone':'01000000004','password':'new-password-123','confirm_password':'new-password-123'})
         self.assertEqual(code,400);self.assertIn('رمز',result['error'])
@@ -138,6 +161,21 @@ class AccountSupportTests(unittest.TestCase):
             self.assertEqual(self.post('auth/link-email',data,self.ot)[0],400)
             self.assertEqual(self.post('auth/link-email',data,self.ct)[0],200)
             with server.connect() as db:self.assertEqual(db.execute('SELECT email FROM users WHERE id=?',(self.customer,)).fetchone()['email'],'existing@example.test')
+
+class SMSDeliveryTests(unittest.TestCase):
+    def test_sms_provider_request_and_failure(self):
+        from urllib.parse import parse_qs
+        env={'TWILIO_ACCOUNT_SID':'AC'+'a'*32,'TWILIO_AUTH_TOKEN':'server-secret','TWILIO_MESSAGING_SERVICE_SID':'MG'+'b'*32}
+        with patch.dict(os.environ,env,clear=True), patch.object(features,'urlopen') as send:
+            send.return_value.__enter__.return_value=io.BytesIO(b'{"sid":"SMtest","status":"queued"}')
+            features.send_sms_code('01000000124','123456')
+            body=parse_qs(send.call_args.args[0].data.decode())
+            self.assertEqual(body['To'],['+201000000124'])
+            self.assertIn('123456',body['Body'][0])
+            send.side_effect=OSError('server-secret')
+            with self.assertRaises(ValueError) as failure: features.send_sms_code('01000000124','123456')
+            self.assertNotIn('server-secret',str(failure.exception))
+
 
 class EmailDeliveryTests(unittest.TestCase):
     def test_resend_requires_key_and_sender(self):
