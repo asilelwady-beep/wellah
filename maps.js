@@ -365,20 +365,7 @@ function initMaps(){
     }
   }else if(tab==='admin'){
     const map=baseMap('admin-map');if(!map)return;
-    const positions=[];
-    for(const m of state.merchants.filter(x=>x.active)){
-      point(map,m.lat,m.lon,'المحل '+esc(m.name)+' · '+esc(m.address),'#2864c5');
-      positions.push([m.lat,m.lon]);
-    }
-    for(const o of state.orders.filter(x=>!['cancelled','delivered'].includes(x.status))){
-      point(map,o.latitude,o.longitude,'طلب #'+o.id+' · '+esc(o.area)+' · '+esc(o.address),'#e58029');
-      positions.push([o.latitude,o.longitude]);
-    }
-    for(const d of state.drivers.filter(x=>x.lat!=null&&x.lon!=null)){
-      point(map,d.lat,d.lon,'المندوب '+esc(d.name)+' · آخر تحديث '+esc(d.location_at||''));
-      positions.push([d.lat,d.lon]);
-    }
-    showMapPoints(map,positions);
+    refreshAdminLiveMap(true);
     const merchantMap=baseMap('merchant-map');
     if(merchantMap){
       let marker=null;
@@ -406,4 +393,24 @@ function initMaps(){
     if(profile?.lat!=null&&profile?.lon!=null){point(map,profile.lat,profile.lon,'موقعي الحالي','#087b5b');if(!positions.length)positions.push([profile.lat,profile.lon])}
     showMapPoints(map,positions);
   }
+}
+
+function refreshAdminLiveMap(fitInitially=false){
+  const map=mapViews.find(m=>m.getContainer().id==='admin-map');
+  if(!map||!state||tab!=='admin')return false;
+  if(!map._liveMarkers)map._liveMarkers=new Map();
+  const seen=new Set(),positions=[];
+  const update=(key,lat,lon,label,color)=>{
+    if(lat==null||lon==null||!Number.isFinite(Number(lat))||!Number.isFinite(Number(lon)))return;
+    const pos=[Number(lat),Number(lon)];seen.add(key);positions.push(pos);
+    let marker=map._liveMarkers.get(key);
+    if(marker){const old=marker.getLatLng();if(old.lat!==pos[0]||old.lng!==pos[1])marker.setLatLng(pos);if(marker.getPopup()?.getContent()!==label)marker.setPopupContent(label)}
+    else{marker=point(map,pos[0],pos[1],label,color);map._liveMarkers.set(key,marker)}
+  };
+  for(const m of state.merchants.filter(x=>x.active))update('merchant-'+m.id,m.lat,m.lon,'المحل '+esc(m.name)+' · '+esc(m.address),'#2864c5');
+  for(const o of state.orders.filter(x=>!['cancelled','delivered'].includes(x.status)))update('order-'+o.id,o.latitude,o.longitude,'طلب #'+o.id+' · '+esc(o.area)+' · '+esc(o.address),'#e58029');
+  for(const d of state.drivers)update('driver-'+d.id,d.lat,d.lon,'المندوب '+esc(d.name)+' · آخر تحديث '+esc(d.location_at||''),'#087b5b');
+  for(const [key,marker] of map._liveMarkers)if(!seen.has(key)){map.removeLayer(marker);map._liveMarkers.delete(key)}
+  if(fitInitially)showMapPoints(map,positions);
+  return true;
 }
