@@ -1,4 +1,4 @@
-const SHELL='wallaha-shell-v10-driver-email-break';
+const SHELL='wallaha-shell-v11-order-chat-settings';
 const ASSETS=['/customer','/driver','/admin','/icon-192.png','/icon-512.png'];
 self.addEventListener('install',event=>event.waitUntil(caches.open(SHELL).then(cache=>cache.addAll(ASSETS)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key!==SHELL).map(key=>caches.delete(key)))).then(()=>self.clients.claim())));
