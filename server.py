@@ -20,6 +20,7 @@ from urllib.parse import urlparse, parse_qs, urlencode
 from urllib.request import urlopen, Request, build_opener, HTTPRedirectHandler
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from threading import Lock
+from account_support import init_features, feature_post, feature_state, normalized_username, complete_registration
 
 ROOT = Path(__file__).parent
 DB = Path(os.environ.get('WALLAHA_DB_PATH', str(ROOT / 'wallaha.sqlite3')))
@@ -136,6 +137,7 @@ def init():
         CREATE TABLE IF NOT EXISTS driver_trip_points (driver_id INTEGER NOT NULL, order_id INTEGER NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, at TEXT NOT NULL, PRIMARY KEY(driver_id,order_id));
         CREATE TABLE IF NOT EXISTS driver_distance_daily (driver_id INTEGER NOT NULL, day TEXT NOT NULL, meters REAL NOT NULL DEFAULT 0, PRIMARY KEY(driver_id,day));
         """)
+        init_features(db)
         if not db.execute("SELECT 1 FROM settings WHERE key='wallet'").fetchone():
             db.executemany("INSERT INTO settings VALUES (?,?)", [("wallet", os.environ.get('WALLAHA_WALLET','')), ("whatsapp", os.environ.get('WALLAHA_WHATSAPP','')), ("delivery_fee", "20")])
         db.execute("INSERT OR IGNORE INTO settings VALUES ('per_km_rate','')")
@@ -342,16 +344,14 @@ def create_user(db, name, phone, role, password, username=None):
     if not name.strip() or not phone.strip() or len(password) < 10:
         raise ValueError('الاسم والهاتف وكلمة مرور من 10 أحرف على الأقل مطلوبة')
     if username is not None:
-        username=str(username).strip().lower()
-        if not re.fullmatch(r'[a-z][a-z0-9_]{2,29}', username):
-            raise ValueError('اسم المستخدم يبدأ بحرف إنجليزي ويحتوي 3 إلى 30 حرفًا أو رقمًا أو _')
+        username=normalized_username(username)
     salt = secrets.token_hex(16)
     digest = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=2**14, r=8, p=1).hex()
     return db.execute('INSERT INTO users(name,phone,role,salt,password_hash,username) VALUES (?,?,?,?,?,?)', (name.strip(), phone.strip(), role, salt, digest, username)).lastrowid
 
 
 def authenticate(db, phone, password):
-    u = db.execute('SELECT * FROM users WHERE phone=? OR username=?', (str(phone).strip(),str(phone).strip().lower())).fetchone()
+    u = db.execute('SELECT * FROM users WHERE disabled=0 AND (phone=? OR username=? OR email=?)', (str(phone).strip(),str(phone).strip().lower(),str(phone).strip().lower())).fetchone()
     if not u: return None
     digest = hashlib.scrypt(str(password).encode(), salt=bytes.fromhex(u['salt']), n=2**14, r=8, p=1).hex()
     return u if hmac.compare_digest(digest, u['password_hash']) else None
@@ -528,7 +528,7 @@ def assign(db, oid):
     merchant = db.execute('SELECT area FROM merchants WHERE id=?',(o['merchant_id'],)).fetchone() if o['merchant_id'] else None
     pickup_area = merchant['area'] if merchant and not o['shop_anywhere'] else o['area']
     # Last known location must be recent. Busy and declined drivers are excluded.
-    candidates = db.execute("""SELECT d.id,d.lat,d.lon,d.vehicle_type FROM drivers d WHERE d.available=1 AND d.break_until<=? AND (?=1 OR d.area=?)
+    candidates = db.execute("""SELECT d.id,d.lat,d.lon,d.vehicle_type FROM drivers d JOIN users du ON du.id=d.user_id WHERE du.disabled=0 AND d.available=1 AND d.break_until<=? AND (?=1 OR d.area=?)
         AND d.lat IS NOT NULL AND d.lon IS NOT NULL AND d.location_at>=?
         AND NOT EXISTS (SELECT 1 FROM orders x WHERE x.driver_id=d.id AND x.id<>?
             AND x.status IN ('offered','assigned','ready','picked_up','on_way'))
@@ -670,7 +670,7 @@ class Handler(BaseHTTPRequestHandler):
         header = self.headers.get('Authorization', '')
         if not header.startswith('Bearer '): return None
         digest = hashlib.sha256(header[7:].encode()).hexdigest()
-        return db.execute('SELECT u.id,u.name,u.phone,u.role,u.username FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires>?', (digest, int(time.time()))).fetchone()
+        return db.execute('SELECT u.id,u.name,u.phone,u.role,u.username,u.email FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires>? AND u.disabled=0', (digest, int(time.time()))).fetchone()
 
     def respond(self, value, code=200):
         data = json.dumps(value, ensure_ascii=False).encode()
@@ -817,6 +817,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond({'url':final})
             except Exception:
                 return self.respond({'error':'تعذر قراءة الرابط المختصر؛ افتح اللوكيشن وانسخ الرابط الكامل أو حدد النقطة على الخريطة'},502)
+        if path == '/api/auth-config':
+            from account_support import mail_ready
+            with connect() as db:
+                wa=db.execute("SELECT value FROM settings WHERE key='whatsapp'").fetchone()
+                return self.respond({'email_otp_ready':mail_ready(),'ai_ready':bool(os.environ.get('OPENAI_API_KEY')),'whatsapp':wa['value'] if wa else ''})
         if path == '/api/maps-config':
             # Maps JavaScript browser keys are public; restrict this key to walla3ha.com
             # and to the Maps JavaScript API in Google Cloud Console.
@@ -878,9 +883,9 @@ class Handler(BaseHTTPRequestHandler):
             data=(ROOT/'icon.svg').read_bytes()
             self.send_response(200);self.send_header('Content-Type','image/svg+xml');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
             return
-        if path in ('/icon-192.png','/icon-512.png','/sw.js','/maps.js'):
+        if path in ('/icon-192.png','/icon-512.png','/sw.js','/maps.js','/features.js'):
             data=(ROOT/path[1:]).read_bytes()
-            mime='application/javascript' if path in ('/sw.js','/maps.js') else 'image/png'
+            mime='application/javascript' if path in ('/sw.js','/maps.js','/features.js') else 'image/png'
             self.send_response(200);self.send_header('Content-Type',mime);self.send_header('Cache-Control','public, max-age=3600');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
             return
         if path != "/api/state":
@@ -905,15 +910,16 @@ class Handler(BaseHTTPRequestHandler):
                     o.pop('prescription', None)
             profile=db.execute('SELECT id,name,phone,photo,area,vehicle_type,available,break_until,lat,lon,location_at FROM drivers WHERE user_id=?',(user['id'],)).fetchone() if user['role']=='driver' else None
             wallets={str(d['id']):driver_wallet(db,d['id']) for d in db.execute('SELECT id FROM drivers')} if user['role']=='admin' else {}
-            self.respond({"draft_catalog":preview_catalog(db) if user['role'] in ('customer','admin') else [],"driver_profile":dict(profile) if profile else None,"driver_wallet":driver_wallet(db,profile['id']) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}})
+            self.respond({**feature_state(db,user),"draft_catalog":preview_catalog(db) if user['role'] in ('customer','admin') else [],"driver_profile":dict(profile) if profile else None,"driver_wallet":driver_wallet(db,profile['id']) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username,u.disabled FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}})
 
     def do_POST(self):
         try:
             data = self.body()
             with connect() as db:
                 path = urlparse(self.path).path
+                if feature_post(self, db, path, data, self.user(db), create_user, AREAS, now): return
                 if path == '/api/register':
-                    uid=create_user(db,str(data['name']),str(data['phone']),'customer',str(data['password']))
+                    uid=complete_registration(db,data,create_user)
                     return self.respond({'ok':True,'id':uid})
                 if path in ('/api/login','/api/admin/login'):
                     phone=str(data.get('phone','')).strip()[:64]
@@ -1162,6 +1168,9 @@ class Handler(BaseHTTPRequestHandler):
                 elif path == '/api/driver/availability':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     did=int(data['id'])
+                    account=db.execute('SELECT u.disabled FROM users u JOIN drivers d ON d.user_id=u.id WHERE d.id=?',(did,)).fetchone()
+                    if not account: raise ValueError('المندوب غير موجود')
+                    if account['disabled']: raise ValueError('استرجع حساب الطيار أولًا')
                     cur=db.execute('UPDATE drivers SET available=? WHERE id=?',(1 if data.get('available') else 0,did))
                     if not cur.rowcount: raise ValueError('المندوب غير موجود')
                     if not data.get('available'):
@@ -1185,6 +1194,8 @@ class Handler(BaseHTTPRequestHandler):
                     if data["area"] not in AREAS: raise ValueError("منطقة غير معروفة")
                     vehicle=str(data.get('vehicle_type','موتوسيكل'))
                     if vehicle not in ('موتوسيكل','عجلة','توك توك','سيارة','ميكروباص','سكوتر'): raise ValueError('نوع المركبة غير معروف')
+                    if data.get('password') != data.get('confirm_password'): raise ValueError('كلمتا المرور غير متطابقتين')
+                    if not data.get('username'): raise ValueError('اسم المستخدم مطلوب')
                     uid=create_user(db,str(data['name']),str(data['phone']),'driver',str(data['password']),data.get('username'))
                     db.execute("INSERT INTO drivers(user_id,name,phone,area,vehicle_type) VALUES (?,?,?,?,?)", (uid,str(data["name"]).strip(), str(data["phone"]).strip(), data["area"],vehicle))
                 elif path == "/api/order":
@@ -1241,7 +1252,7 @@ class Handler(BaseHTTPRequestHandler):
                             if p['merchant_id']!=merchant['id'] or p["stock"] < stock_qty: raise ValueError("اختر منتجات من نفس المحل وبكمية متاحة")
                             items.append((p, qty))
                             medicine_review |= p['category']=='أدوية'
-                            requires_prescription |= bool(p['requires_prescription'])
+                            requires_prescription |= p['category']=='أدوية' or bool(p['requires_prescription'])
                             subtotal += (p["price"] / weight_basis(p) if sold_by_weight(p) else p["price"]) * qty
                         if not items: raise ValueError("السلة فارغة")
                     prescription=str(data.get('prescription',''))

@@ -1,0 +1,254 @@
+"""Account verification, reversible driver management, ratings and support."""
+import hashlib
+import hmac
+import json
+import os
+import re
+import secrets
+import smtplib
+import ssl
+import time
+from email.message import EmailMessage
+from urllib.request import Request, urlopen
+
+
+def init_features(db):
+    for name, definition in [('email', 'TEXT'), ('disabled', 'INTEGER NOT NULL DEFAULT 0')]:
+        if name not in {r['name'] for r in db.execute('PRAGMA table_info(users)')}:
+            db.execute(f'ALTER TABLE users ADD COLUMN {name} {definition}')
+    db.execute('CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(email) WHERE email IS NOT NULL')
+    db.executescript('''
+    CREATE TABLE IF NOT EXISTS account_codes (
+        id TEXT PRIMARY KEY, purpose TEXT NOT NULL, email TEXT NOT NULL,
+        user_id INTEGER REFERENCES users(id), code_hash TEXT NOT NULL,
+        expires INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+        used INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, remote TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS ratings (
+        order_id INTEGER NOT NULL REFERENCES orders(id), sender_id INTEGER NOT NULL REFERENCES users(id),
+        target_id INTEGER NOT NULL REFERENCES users(id), stars INTEGER NOT NULL CHECK(stars BETWEEN 1 AND 5),
+        comment TEXT NOT NULL DEFAULT '', at TEXT NOT NULL, PRIMARY KEY(order_id,sender_id));
+    CREATE TABLE IF NOT EXISTS support_tickets (
+        id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
+        message TEXT NOT NULL, answer TEXT NOT NULL DEFAULT '', ai INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'open', at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS feature_limits (
+        scope TEXT NOT NULL, actor TEXT NOT NULL, bucket INTEGER NOT NULL, count INTEGER NOT NULL,
+        PRIMARY KEY(scope,actor,bucket));
+    ''')
+
+
+def normalized_username(value):
+    value = str(value).strip().lower()
+    if not re.fullmatch(r'[a-z\u0621-\u064a][a-z0-9_\u0621-\u064a\u0660-\u0669]{2,29}', value):
+        raise ValueError('اسم المستخدم من 3 إلى 30 حرفًا عربيًا أو إنجليزيًا وأرقام أو _، ويبدأ بحرف')
+    return value
+
+
+def mail_ready():
+    return bool(os.environ.get('WALLAHA_SMTP_HOST') and os.environ.get('WALLAHA_SMTP_FROM'))
+
+
+def send_code(email, code):
+    if not mail_ready():
+        raise ValueError('إرسال رمز التأكيد غير متاح حاليًا؛ تواصل مع الدعم')
+    msg = EmailMessage()
+    msg['Subject'] = 'رمز تأكيد حساب ولعه'
+    msg['From'] = os.environ['WALLAHA_SMTP_FROM']
+    msg['To'] = email
+    msg.set_content(f'رمز التأكيد: {code}\nصالح لمدة 10 دقائق. لا تشارك الرمز مع أي شخص.')
+    port = int(os.environ.get('WALLAHA_SMTP_PORT', '587'))
+    try:
+        cls = smtplib.SMTP_SSL if port == 465 else smtplib.SMTP
+        with cls(os.environ['WALLAHA_SMTP_HOST'], port, timeout=15) as smtp:
+            if port != 465:
+                smtp.starttls(context=ssl.create_default_context())
+            if os.environ.get('WALLAHA_SMTP_USER'):
+                smtp.login(os.environ['WALLAHA_SMTP_USER'], os.environ.get('WALLAHA_SMTP_PASSWORD', ''))
+            smtp.send_message(msg)
+    except (OSError, smtplib.SMTPException):
+        raise ValueError('تعذر إرسال رمز التأكيد. حاول لاحقًا') from None
+
+
+def limit(db, scope, actor, seconds, maximum):
+    bucket = int(time.time()) // seconds
+    db.execute('INSERT INTO feature_limits VALUES (?,?,?,1) ON CONFLICT(scope,actor,bucket) DO UPDATE SET count=count+1', (scope, actor, bucket))
+    n = db.execute('SELECT count FROM feature_limits WHERE scope=? AND actor=? AND bucket=?', (scope, actor, bucket)).fetchone()['count']
+    db.commit()  # Limits and failed code attempts must survive rejected requests.
+    if n > maximum:
+        raise ValueError('محاولات كثيرة؛ حاول لاحقًا')
+
+
+def checked_code(db, data, purpose):
+    ident = str(data.get('challenge_id', ''))
+    row = db.execute('SELECT * FROM account_codes WHERE id=? AND purpose=?', (ident, purpose)).fetchone()
+    if not row or row['used'] or row['expires'] <= int(time.time()) or row['attempts'] >= 5:
+        raise ValueError('رمز التأكيد منتهي أو غير صالح؛ اطلب رمزًا جديدًا')
+    db.execute('UPDATE account_codes SET attempts=attempts+1 WHERE id=?', (ident,))
+    db.commit()
+    candidate = hashlib.sha256((ident + ':' + str(data.get('code', ''))).encode()).hexdigest()
+    if not hmac.compare_digest(row['code_hash'], candidate):
+        raise ValueError('رمز التأكيد غير صحيح')
+    return row
+
+
+def complete_registration(db, data, create_user):
+    if data.get('password') != data.get('confirm_password'):
+        raise ValueError('كلمتا المرور غير متطابقتين')
+    db.execute('BEGIN IMMEDIATE')
+    code = checked_code(db, data, 'register')
+    # checked_code commits attempts; reacquire a write lock and recheck consumption.
+    db.execute('BEGIN IMMEDIATE')
+    if db.execute('SELECT used FROM account_codes WHERE id=?', (code['id'],)).fetchone()['used']:
+        raise ValueError('رمز التأكيد مستخدم بالفعل')
+    if str(data.get('email', '')).strip().lower() != code['email']:
+        raise ValueError('البريد لا يطابق البريد الذي تم تأكيده')
+    uid = create_user(db, str(data.get('name', '')), str(data.get('phone', '')), 'customer', str(data.get('password', '')))
+    db.execute('UPDATE users SET email=? WHERE id=?', (code['email'], uid))
+    db.execute('UPDATE account_codes SET used=1 WHERE id=?', (code['id'],))
+    return uid
+
+
+def feature_state(db, user):
+    args = () if user['role'] == 'admin' else (user['id'],)
+    clause = '' if user['role'] == 'admin' else ' WHERE r.sender_id=?'
+    ratings = [dict(r) for r in db.execute('SELECT r.*,u.name AS sender_name,t.name AS target_name FROM ratings r JOIN users u ON u.id=r.sender_id JOIN users t ON t.id=r.target_id' + clause + ' ORDER BY r.at DESC LIMIT 500', args)]
+    tickets = [dict(r) for r in db.execute('SELECT s.*,u.name FROM support_tickets s JOIN users u ON u.id=s.user_id' + ('' if user['role'] == 'admin' else ' WHERE s.user_id=?') + ' ORDER BY s.id DESC LIMIT 100', args)]
+    return {'ratings': ratings, 'support_tickets': tickets, 'email_otp_ready': mail_ready(), 'ai_ready': bool(os.environ.get('OPENAI_API_KEY'))}
+
+
+def feature_post(handler, db, path, data, user, create_user, areas, now):
+    if path == '/api/auth/send-code':
+        email = str(data.get('email', '')).strip().lower()
+        purpose = str(data.get('purpose', 'register'))
+        if purpose not in ('register', 'reset', 'link'):
+            raise ValueError('طلب غير صالح')
+        if len(email) > 254 or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email):
+            raise ValueError('أدخل بريدًا إلكترونيًا صحيحًا')
+        limit(db, 'otp-ip', handler.client_address[0], 600, 10)
+        limit(db, 'otp-email', email, 60, 1)
+        if not mail_ready():
+            raise ValueError('خدمة إرسال رمز التأكيد لم تُربط بعد؛ تواصل مع الدعم')
+        if purpose == 'link' and not user:
+            handler.respond({'error':'سجل الدخول أولًا'},401)
+            return True
+        account = db.execute('SELECT id FROM users WHERE email=? AND disabled=0', (email,)).fetchone()
+        if purpose == 'link' and account and account['id'] != user['id']:
+            raise ValueError('هذا البريد مستخدم لحساب آخر')
+        ident = secrets.token_urlsafe(24)
+        # Reset responses never reveal whether an account exists.
+        if purpose == 'reset' and not account:
+            handler.respond({'ok': True, 'challenge_id': ident, 'message': 'إذا كان البريد مسجلًا فسيصلك رمز التأكيد'})
+            return True
+        code = f'{secrets.randbelow(1000000):06d}'
+        send_code(email, code)
+        ts = int(time.time())
+        db.execute('UPDATE account_codes SET used=1 WHERE email=? AND purpose=? AND used=0', (email, purpose))
+        db.execute('INSERT INTO account_codes(id,purpose,email,user_id,code_hash,expires,created,remote) VALUES (?,?,?,?,?,?,?,?)', (ident, purpose, email, user['id'] if purpose == 'link' else account['id'] if account else None, hashlib.sha256((ident + ':' + code).encode()).hexdigest(), ts + 600, ts, handler.client_address[0]))
+        handler.respond({'ok': True, 'challenge_id': ident, 'message': 'إذا كان البريد مسجلًا فسيصلك رمز التأكيد' if purpose == 'reset' else 'تم إرسال رمز التأكيد إلى بريدك'})
+        return True
+    if path == '/api/auth/link-email':
+        if not user:
+            handler.respond({'error':'سجل الدخول أولًا'},401)
+            return True
+        account=db.execute('SELECT * FROM users WHERE id=?',(user['id'],)).fetchone()
+        digest=hashlib.scrypt(str(data.get('current_password','')).encode(),salt=bytes.fromhex(account['salt']),n=2**14,r=8,p=1).hex()
+        if not hmac.compare_digest(digest,account['password_hash']):
+            raise ValueError('كلمة المرور الحالية غير صحيحة')
+        db.execute('BEGIN IMMEDIATE')
+        code=checked_code(db,data,'link')
+        db.execute('BEGIN IMMEDIATE')
+        if code['user_id']!=user['id'] or db.execute('SELECT used FROM account_codes WHERE id=?',(code['id'],)).fetchone()['used']:
+            raise ValueError('رمز غير صالح لهذا الحساب')
+        db.execute('UPDATE users SET email=? WHERE id=?',(code['email'],user['id']))
+        db.execute('UPDATE account_codes SET used=1 WHERE id=?',(code['id'],))
+        handler.respond({'ok':True})
+        return True
+    if path == '/api/auth/reset-password':
+        password = str(data.get('password', ''))
+        if len(password) < 10 or password != data.get('confirm_password'):
+            raise ValueError('اكتب كلمة مرور من 10 أحرف على الأقل وأكدها بنفس القيمة')
+        db.execute('BEGIN IMMEDIATE')
+        row = checked_code(db, data, 'reset')
+        db.execute('BEGIN IMMEDIATE')
+        if db.execute('SELECT used FROM account_codes WHERE id=?', (row['id'],)).fetchone()['used'] or not row['user_id']:
+            raise ValueError('رمز التأكيد غير صالح')
+        salt = secrets.token_hex(16)
+        digest = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=2**14, r=8, p=1).hex()
+        db.execute('UPDATE users SET salt=?,password_hash=? WHERE id=? AND disabled=0', (salt, digest, row['user_id']))
+        db.execute('DELETE FROM sessions WHERE user_id=?', (row['user_id'],))
+        db.execute('UPDATE account_codes SET used=1 WHERE id=?', (row['id'],))
+        handler.respond({'ok': True})
+        return True
+    if path not in ('/api/driver/update', '/api/driver/delete', '/api/driver/restore', '/api/rating', '/api/support', '/api/support/reply'):
+        return False
+    if not user:
+        handler.respond({'error': 'سجل الدخول أولًا'}, 401)
+        return True
+    if path.startswith('/api/driver/'):
+        if user['role'] != 'admin':
+            handler.respond({'error': 'غير مصرح'}, 403)
+            return True
+        driver = db.execute('SELECT * FROM drivers WHERE id=?', (int(data.get('id', 0)),)).fetchone()
+        if not driver:
+            raise ValueError('الطيار غير موجود')
+        if path == '/api/driver/update':
+            name, phone = str(data.get('name', '')).strip(), str(data.get('phone', '')).strip()
+            username = normalized_username(data.get('username', ''))
+            if not name or len(name) > 100 or not re.fullmatch(r'[+0-9٠-٩ ()-]{7,25}', phone) or data.get('area') not in areas:
+                raise ValueError('راجع اسم الطيار وهاتفه ومنطقته')
+            db.execute('UPDATE users SET name=?,phone=?,username=? WHERE id=?', (name, phone, username, driver['user_id']))
+            db.execute('UPDATE drivers SET name=?,phone=?,area=? WHERE id=?', (name, phone, data['area'], driver['id']))
+        else:
+            disabled = 1 if path.endswith('/delete') else 0
+            if disabled and db.execute("SELECT 1 FROM orders WHERE driver_id=? AND status NOT IN ('delivered','cancelled')", (driver['id'],)).fetchone():
+                raise ValueError('أعد إسناد الطلبات الجارية قبل حذف الطيار')
+            db.execute('UPDATE users SET disabled=? WHERE id=?', (disabled, driver['user_id']))
+            db.execute('UPDATE drivers SET available=0 WHERE id=?', (driver['id'],))
+            db.execute('DELETE FROM sessions WHERE user_id=?', (driver['user_id'],))
+    elif path == '/api/rating':
+        oid = int(data.get('order_id', 0))
+        order = db.execute('SELECT o.*,d.user_id AS driver_user FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id WHERE o.id=?', (oid,)).fetchone()
+        stars = int(data.get('stars', 0))
+        if not order or order['status'] != 'delivered' or not order['driver_user'] or not 1 <= stars <= 5:
+            raise ValueError('التقييم متاح بعد تسليم الطلب فقط من 1 إلى 5')
+        if user['role'] == 'customer' and order['user_id'] == user['id']:
+            target = order['driver_user']
+        elif user['role'] == 'driver' and order['driver_user'] == user['id']:
+            target = order['user_id']
+        else:
+            handler.respond({'error': 'غير مصرح بتقييم هذا الطلب'}, 403)
+            return True
+        comment = str(data.get('comment', '')).strip()[:500]
+        db.execute('INSERT INTO ratings VALUES (?,?,?,?,?,?) ON CONFLICT(order_id,sender_id) DO UPDATE SET stars=excluded.stars,comment=excluded.comment,at=excluded.at', (oid, user['id'], target, stars, comment, now()))
+    elif path == '/api/support/reply':
+        if user['role'] != 'admin':
+            handler.respond({'error': 'غير مصرح'}, 403)
+            return True
+        answer = str(data.get('answer', '')).strip()
+        if not answer or len(answer) > 2000:
+            raise ValueError('اكتب ردًا حتى 2000 حرف')
+        cur = db.execute("UPDATE support_tickets SET answer=?,ai=0,status='closed' WHERE id=?", (answer, int(data.get('id', 0))))
+        if not cur.rowcount:
+            raise ValueError('رسالة الدعم غير موجودة')
+    elif path == '/api/support':
+        message = str(data.get('message', '')).strip()
+        if not message or len(message) > 1000:
+            raise ValueError('اكتب رسالتك حتى 1000 حرف')
+        limit(db, 'support', str(user['id']), 3600, 20)
+        answer, ai = '', 0
+        if os.environ.get('OPENAI_API_KEY') and data.get('use_ai'):
+            payload = {'model': os.environ.get('WALLAHA_AI_MODEL', 'gpt-4.1-mini'), 'store': False, 'max_output_tokens': 350,
+                       'instructions': 'أنت مساعد دعم تطبيق ولعه. رد بالعربية باختصار. الروشتة إلزامية لطلبات الأدوية. رمز إنشاء الحساب واسترجاع كلمة المرور بالبريد. لا تطلب كلمة مرور أو OTP. لا تقدم تشخيصًا أو وصف دواء أو جرعات. لا تدعي تعديل الطلبات أو الحسابات ولا تخترع حالة طلب أو أسعارًا. عند مشكلة حساب أو دفع اطلب التواصل مع المسؤول.', 'input': message}
+            try:
+                req = Request('https://api.openai.com/v1/responses', data=json.dumps(payload).encode(), headers={'Authorization': 'Bearer ' + os.environ['OPENAI_API_KEY'], 'Content-Type': 'application/json'})
+                with urlopen(req, timeout=20) as response:
+                    result = json.load(response)
+                answer = '\n'.join(c['text'] for item in result.get('output', []) for c in item.get('content', []) if c.get('type') == 'output_text')[:2000]
+                ai = int(bool(answer))
+            except (OSError, ValueError, KeyError):
+                pass
+        cur = db.execute('INSERT INTO support_tickets(user_id,message,answer,ai,at) VALUES (?,?,?,?,?)', (user['id'], message, answer, ai, now()))
+        handler.respond({'ok': True, 'id': cur.lastrowid, 'answer': answer or 'وصلت رسالتك للدعم، وسيراجعها المسؤول.', 'ai': bool(ai)})
+        return True
+    handler.respond({'ok': True})
+    return True
