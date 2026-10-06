@@ -33,6 +33,7 @@ public class MainActivity extends Activity {
     private boolean driverPageLoaded = false;
     private Bundle pendingState;
     private String pendingDestination;
+    private boolean appUpdated;
     private ValueCallback<Uri[]> fileCallback;
     private GeolocationPermissions.Callback locationCallback;
     private String locationOrigin;
@@ -67,8 +68,8 @@ public class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
-        getWindow().setStatusBarColor(0xff093d3a);
-        getWindow().setNavigationBarColor(0xff093d3a);
+        getWindow().setStatusBarColor(0xffe95716);
+        getWindow().setNavigationBarColor(0xffe95716);
         web = new WebView(this);
         web.setFitsSystemWindows(true);
         setContentView(web);
@@ -79,6 +80,12 @@ public class MainActivity extends Activity {
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setAllowFileAccess(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        android.content.SharedPreferences appPrefs = getSharedPreferences("app_updates", MODE_PRIVATE);
+        appUpdated = appPrefs.getInt("version", 0) != BuildConfig.VERSION_CODE;
+        if (appUpdated) {
+            web.clearCache(true);
+            appPrefs.edit().putInt("version", BuildConfig.VERSION_CODE).apply();
+        }
         web.setWebViewClient(new WebViewClient() {
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri url = request.getUrl();
@@ -118,8 +125,9 @@ public class MainActivity extends Activity {
         if (driverPageLoaded) return;
         driverPageLoaded = true;
         if (pendingDestination != null) web.loadUrl(pendingDestination);
-        else if (pendingState != null) web.restoreState(pendingState);
-        else web.loadUrl(BuildConfig.HOME_URL);
+        else if (pendingState != null && !appUpdated) web.restoreState(pendingState);
+        else web.loadUrl(Uri.parse(BuildConfig.HOME_URL).buildUpon()
+            .appendQueryParameter("app_version", BuildConfig.VERSION_NAME).build().toString());
         pendingState = null;
     }
 
