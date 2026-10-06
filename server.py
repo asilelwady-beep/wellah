@@ -158,6 +158,8 @@ def init():
         if 'username' not in {x['name'] for x in db.execute('PRAGMA table_info(users)')}:
             db.execute('ALTER TABLE users ADD COLUMN username TEXT')
         db.execute('CREATE TABLE IF NOT EXISTS driver_shifts (id INTEGER PRIMARY KEY,driver_id INTEGER NOT NULL REFERENCES drivers(id),selfie TEXT NOT NULL,started_at TEXT NOT NULL,ended_at TEXT)')
+        for table,column,definition in [('drivers','identity_blocked_shift','INTEGER'),('driver_shifts','review_status',"TEXT NOT NULL DEFAULT 'pending'"),('driver_shifts','reviewed_at','TEXT'),('driver_shifts','reviewed_by','INTEGER'),('driver_shifts','restored_at','TEXT')]:
+            if column not in {r['name'] for r in db.execute('PRAGMA table_info('+table+')')}: db.execute('ALTER TABLE '+table+' ADD COLUMN '+column+' '+definition)
         db.execute('CREATE UNIQUE INDEX IF NOT EXISTS driver_one_open_shift ON driver_shifts(driver_id) WHERE ended_at IS NULL')
         if 'break_until' not in {x['name'] for x in db.execute('PRAGMA table_info(drivers)')}:
             db.execute('ALTER TABLE drivers ADD COLUMN break_until INTEGER NOT NULL DEFAULT 0')
@@ -532,7 +534,7 @@ def assign(db, oid):
     merchant = db.execute('SELECT area FROM merchants WHERE id=?',(o['merchant_id'],)).fetchone() if o['merchant_id'] else None
     pickup_area = merchant['area'] if merchant and not o['shop_anywhere'] else o['area']
     # Last known location must be recent. Busy and declined drivers are excluded.
-    candidates = db.execute("""SELECT d.id,d.lat,d.lon,d.vehicle_type FROM drivers d JOIN users du ON du.id=d.user_id WHERE du.disabled=0 AND d.available=1 AND d.break_until<=? AND (?=1 OR d.area=?)
+    candidates = db.execute("""SELECT d.id,d.lat,d.lon,d.vehicle_type FROM drivers d JOIN users du ON du.id=d.user_id WHERE du.disabled=0 AND d.identity_blocked_shift IS NULL AND d.available=1 AND d.break_until<=? AND (?=1 OR d.area=?)
         AND d.lat IS NOT NULL AND d.lon IS NOT NULL AND d.location_at>=?
         AND NOT EXISTS (SELECT 1 FROM orders x WHERE x.driver_id=d.id AND x.id<>?
             AND x.status IN ('offered','assigned','ready','picked_up','on_way'))
@@ -918,7 +920,7 @@ class Handler(BaseHTTPRequestHandler):
                         if key.startswith('commission_'): o.pop(key)
                     if user['role']=='customer':
                         o.pop('driver_earning_cents',None);o.pop('driver_earning_paid',None)
-            profile=db.execute('SELECT id,name,phone,photo,area,vehicle_type,available,break_until,lat,lon,location_at FROM drivers WHERE user_id=?',(user['id'],)).fetchone() if user['role']=='driver' else None
+            profile=db.execute('SELECT id,name,phone,photo,area,vehicle_type,available,break_until,lat,lon,location_at,identity_blocked_shift FROM drivers WHERE user_id=?',(user['id'],)).fetchone() if user['role']=='driver' else None
             wallets={str(d['id']):driver_wallet(db,d['id']) for d in db.execute('SELECT id FROM drivers')} if user['role']=='admin' and unlocked(self,db) else {}
             self.respond({**feature_state(db,user),"draft_catalog":preview_catalog(db) if user['role'] in ('customer','admin') else [],"driver_profile":dict(profile) if profile else None,"wallet_unlocked":unlocked(self,db) if user['role']=='admin' else False,"driver_wallet":redact_wallet(driver_wallet(db,profile['id'])) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username,u.disabled,u.email FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}})
 
@@ -956,6 +958,28 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond({'token':token,'role':u['role']})
                 user=self.user(db)
                 if not user: return self.respond({'error':'سجل الدخول أولًا'},401)
+                if user['role']=='driver' and path not in ('/api/logout','/api/support') and db.execute('SELECT 1 FROM drivers WHERE user_id=? AND identity_blocked_shift IS NOT NULL',(user['id'],)).fetchone():
+                    return self.respond({'error':'حسابك موقوف بإنذار مراجعة الهوية. تواصل مع الإدارة لإعادة التفعيل.'},403)
+                if path == '/api/admin/shift/review':
+                    if user['role']!='admin': return self.respond({'error':'خاص بالمسؤول فقط'},403)
+                    db.execute('BEGIN IMMEDIATE')
+                    shift=db.execute('SELECT * FROM driver_shifts WHERE id=?',(int(data.get('id',0)),)).fetchone()
+                    if not shift: raise ValueError('الشيفت غير موجود')
+                    action=data.get('action')
+                    if action=='restore':
+                        blocked=db.execute('SELECT identity_blocked_shift FROM drivers WHERE id=?',(shift['driver_id'],)).fetchone()['identity_blocked_shift']
+                        if blocked!=shift['id']: raise ValueError('هذا الإنذار ليس سبب الإيقاف الحالي')
+                        db.execute('UPDATE drivers SET identity_blocked_shift=NULL,available=0 WHERE id=?',(shift['driver_id'],))
+                        db.execute('UPDATE driver_shifts SET restored_at=? WHERE id=?',(now(),shift['id']))
+                    elif action in ('confirm','warn') and shift['review_status']=='pending':
+                        db.execute('UPDATE driver_shifts SET review_status=?,reviewed_at=?,reviewed_by=? WHERE id=?',('confirmed' if action=='confirm' else 'warned',now(),user['id'],shift['id']))
+                        if action=='warn':
+                            db.execute('UPDATE drivers SET identity_blocked_shift=?,available=0 WHERE id=?',(shift['id'],shift['driver_id']))
+                            db.execute('UPDATE driver_shifts SET ended_at=? WHERE driver_id=? AND ended_at IS NULL',(now(),shift['driver_id']))
+                            for offered in db.execute("SELECT id FROM orders WHERE driver_id=? AND status='offered'",(shift['driver_id'],)).fetchall():
+                                db.execute("UPDATE orders SET driver_id=NULL,status='awaiting_driver',offer_until=NULL WHERE id=?",(offered['id'],));assign(db,offered['id'])
+                    else: raise ValueError('تمت مراجعة الصورة بالفعل أو الإجراء غير صحيح')
+                    return self.respond({'ok':True})
                 if path in ('/api/driver/shift/start','/api/driver/shift/end'):
                     if user['role']!='driver': return self.respond({'error':'خاص بالطيار فقط'},403)
                     driver=db.execute('SELECT id FROM drivers WHERE user_id=?',(user['id'],)).fetchone()
@@ -1230,6 +1254,7 @@ class Handler(BaseHTTPRequestHandler):
                     oid,did=int(data['id']),int(data['driver_id'])
                     o=db.execute('SELECT * FROM orders WHERE id=?',(oid,)).fetchone()
                     d=db.execute('SELECT * FROM drivers WHERE id=?',(did,)).fetchone()
+                    if d and d['identity_blocked_shift'] is not None: raise ValueError('الطيار موقوف بإنذار الهوية')
                     if not o or not d or (o['kind']=='ride' and d['vehicle_type']!=o['vehicle']) or o['area']!=d['area'] or not d['available'] or d['break_until']>int(time.time()) or o['payment_status']!='confirmed' or o['status'] not in ('assigned','awaiting_driver','ready') or (o['kind']!='products' and not o['quote_accepted']):
                         raise ValueError('تعذر إسناد الطلب لهذا المندوب')
                     if not o['commission_locked']:

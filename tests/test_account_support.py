@@ -50,6 +50,30 @@ class AccountSupportTests(unittest.TestCase):
             with urlopen(req) as r:return r.status,json.load(r)
         except HTTPError as e:return e.code,json.load(e)
 
+    def test_admin_identity_review_blocks_and_restores_driver(self):
+        photo='data:image/png;base64,'+base64.b64encode(b'\x89PNG\r\n\x1a\n'+b'x'*60).decode()
+        with server.connect() as db:
+            uid=server.create_user(db,'مراجعة الهوية','01000000891','driver','identity-password-123','identity_test')
+            did=db.execute('INSERT INTO drivers(user_id,name,phone,area) VALUES (?,?,?,?)',(uid,'مراجعة الهوية','01000000891',server.AREAS[0])).lastrowid
+        dt=self.post('login',{'phone':'01000000891','password':'identity-password-123'})[1]['token']
+        code,result=self.post('driver/shift/start',{'selfie':photo},dt);self.assertEqual(code,200)
+        sid=result['shift_id']
+        self.assertEqual(self.post('admin/shift/review',{'id':sid,'action':'warn'},dt)[0],403)
+        self.assertEqual(self.post('admin/shift/review',{'id':sid,'action':'warn'},self.at)[0],200)
+        self.assertEqual(self.post('driver/shift/start',{'selfie':photo},dt)[0],403)
+        self.assertEqual(self.post('location',{'lat':29.85,'lon':31.27},dt)[0],403)
+        self.assertEqual(self.post('driver/photo',{'photo':photo},dt)[0],403)
+        self.assertEqual(self.state_for(dt)['driver_profile']['identity_blocked_shift'],sid)
+        self.assertEqual(self.post('admin/shift/review',{'id':sid,'action':'confirm'},self.at)[0],400)
+        self.assertEqual(self.post('admin/shift/review',{'id':sid,'action':'restore'},self.at)[0],200)
+        self.assertTrue(self.state_for(dt)['shift_required'])
+        code,result=self.post('driver/shift/start',{'selfie':photo},dt);self.assertEqual(code,200)
+        self.assertNotEqual(result['shift_id'],sid)
+        self.assertEqual(self.post('admin/shift/review',{'id':result['shift_id'],'action':'confirm'},self.at)[0],200)
+        archived=next(s for s in self.state_for(self.at)['driver_shifts'] if s['id']==result['shift_id'])
+        self.assertEqual(archived['review_status'],'confirmed')
+        self.assertNotIn('selfie',archived)
+
     def test_sms_registration_binds_phone_and_is_single_use(self):
         phone='01000000121'
         with patch.object(features,'sms_ready',return_value=True), patch.object(features,'limit'), patch.object(features,'send_sms_code') as send:
