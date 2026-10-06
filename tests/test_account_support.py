@@ -1,5 +1,6 @@
 import base64
 import json
+import io
 import os
 import sys
 import tempfile
@@ -137,5 +138,34 @@ class AccountSupportTests(unittest.TestCase):
             self.assertEqual(self.post('auth/link-email',data,self.ot)[0],400)
             self.assertEqual(self.post('auth/link-email',data,self.ct)[0],200)
             with server.connect() as db:self.assertEqual(db.execute('SELECT email FROM users WHERE id=?',(self.customer,)).fetchone()['email'],'existing@example.test')
+
+class EmailDeliveryTests(unittest.TestCase):
+    def test_resend_requires_key_and_sender(self):
+        with patch.dict(os.environ,{'RESEND_API_KEY':'test-key'},clear=True):
+            self.assertFalse(features.mail_ready())
+            with self.assertRaises(ValueError):features.send_code('client@example.test','123456')
+        with patch.dict(os.environ,{'RESEND_API_KEY':'test-key','WALLAHA_EMAIL_FROM':'otp@verified.example.test'},clear=True):
+            self.assertTrue(features.mail_ready())
+
+    def test_resend_sends_only_code_to_requested_recipient(self):
+        with patch.dict(os.environ,{'RESEND_API_KEY':'test-key','WALLAHA_EMAIL_FROM':'otp@verified.example.test'},clear=True),patch.object(features,'urlopen',return_value=io.StringIO('{"id":"email-test"}')) as request:
+            features.send_code('client@example.test','123456')
+            req=request.call_args.args[0]
+            self.assertEqual(req.full_url,'https://api.resend.com/emails')
+            payload=json.loads(req.data)
+            self.assertEqual(payload['to'],['client@example.test'])
+            self.assertIn('123456',payload['text'])
+            self.assertEqual(set(payload),{'from','to','subject','text'})
+
+    def test_resend_failure_does_not_report_success_or_leak_secret(self):
+        with patch.dict(os.environ,{'RESEND_API_KEY':'test-key','WALLAHA_EMAIL_FROM':'otp@verified.example.test'},clear=True):
+            for response in ('{}','not-json'):
+                with patch.object(features,'urlopen',return_value=io.StringIO(response)),self.assertRaises(ValueError) as error:
+                    features.send_code('client@example.test','123456')
+                self.assertNotIn('test-key',str(error.exception))
+                self.assertNotIn('123456',str(error.exception))
+            with patch.object(features,'urlopen',side_effect=OSError('test-key')),self.assertRaises(ValueError) as error:
+                features.send_code('client@example.test','123456')
+            self.assertNotIn('test-key',str(error.exception))
 
 if __name__=='__main__':unittest.main()

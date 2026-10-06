@@ -8,6 +8,8 @@ Driver accounts remain owner-created. Arabic or English usernames and password c
 
 Set these in the existing Railway wellah service, keeping secrets out of Git:
 
+- For Resend over HTTPS: RESEND_API_KEY and WALLAHA_EMAIL_FROM (a verified sender)
+- Or use the following SMTP settings instead:
 - WALLAHA_SMTP_HOST and WALLAHA_SMTP_FROM
 - WALLAHA_SMTP_PORT: 587 STARTTLS or 465 TLS
 - WALLAHA_SMTP_USER and WALLAHA_SMTP_PASSWORD when authentication is required
@@ -22,4 +24,4 @@ WhatsApp support uses the existing number in dashboard settings. The shortcut op
 
 ## Validation
 
-Run `python -m unittest discover -s tests -v`. The 11 tests cover OTP enforcement, single use, expiration, persistent attempt limits, password reset, account email linking, medicine validation, driver permissions, reversible deletion, active orders, rating ownership and support reply ownership. JavaScript syntax and DOM rendering of every admin panel were also checked.
+Run `python -m unittest discover -s tests -v`. Tests cover OTP enforcement, single use, expiration, persistent attempt limits, password reset, account email linking, medicine validation, driver permissions, reversible deletion, active orders, rating ownership, support reply ownership and HTTPS email success/failure. JavaScript syntax and DOM rendering of every admin panel were also checked.

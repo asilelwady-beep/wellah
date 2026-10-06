@@ -45,17 +45,33 @@ def normalized_username(value):
 
 
 def mail_ready():
-    return bool(os.environ.get('WALLAHA_SMTP_HOST') and os.environ.get('WALLAHA_SMTP_FROM'))
+    return bool((os.environ.get('RESEND_API_KEY') and os.environ.get('WALLAHA_EMAIL_FROM')) or
+                (os.environ.get('WALLAHA_SMTP_HOST') and os.environ.get('WALLAHA_SMTP_FROM')))
 
 
 def send_code(email, code):
     if not mail_ready():
         raise ValueError('إرسال رمز التأكيد غير متاح حاليًا؛ تواصل مع الدعم')
+    text = f'رمز التأكيد: {code}\nصالح لمدة 10 دقائق. لا تشارك الرمز مع أي شخص.'
+    if os.environ.get('RESEND_API_KEY') and os.environ.get('WALLAHA_EMAIL_FROM'):
+        payload = {'from': os.environ['WALLAHA_EMAIL_FROM'], 'to': [email],
+                   'subject': 'رمز تأكيد حساب ولعه', 'text': text}
+        req = Request('https://api.resend.com/emails', data=json.dumps(payload).encode(),
+                      headers={'Authorization': 'Bearer ' + os.environ['RESEND_API_KEY'],
+                               'Content-Type': 'application/json', 'User-Agent': 'Wellah/1.0'})
+        try:
+            with urlopen(req, timeout=15) as response:
+                result = json.load(response)
+            if not isinstance(result, dict) or not result.get('id'):
+                raise ValueError('تعذر تأكيد إرسال البريد')
+        except (OSError, ValueError):
+            raise ValueError('تعذر إرسال رمز التأكيد. راجع ربط خدمة البريد أو حاول لاحقًا') from None
+        return
     msg = EmailMessage()
     msg['Subject'] = 'رمز تأكيد حساب ولعه'
     msg['From'] = os.environ['WALLAHA_SMTP_FROM']
     msg['To'] = email
-    msg.set_content(f'رمز التأكيد: {code}\nصالح لمدة 10 دقائق. لا تشارك الرمز مع أي شخص.')
+    msg.set_content(text)
     port = int(os.environ.get('WALLAHA_SMTP_PORT', '587'))
     try:
         cls = smtplib.SMTP_SSL if port == 465 else smtplib.SMTP
