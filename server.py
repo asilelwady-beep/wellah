@@ -140,6 +140,7 @@ def init():
         """)
         init_features(db)
         init_wallet_controls(db)
+        db.execute('CREATE TABLE IF NOT EXISTS staff_members (user_id INTEGER PRIMARY KEY REFERENCES users(id), permissions TEXT NOT NULL, created_by INTEGER NOT NULL REFERENCES users(id))')
         if not db.execute("SELECT 1 FROM settings WHERE key='wallet'").fetchone():
             db.executemany("INSERT INTO settings VALUES (?,?)", [("wallet", os.environ.get('WALLAHA_WALLET','')), ("whatsapp", os.environ.get('WALLAHA_WHATSAPP','')), ("delivery_fee", "20")])
         db.execute("INSERT OR IGNORE INTO settings VALUES ('per_km_rate','')")
@@ -687,13 +688,40 @@ def driver_wallet(db, driver_id):
             'cash_due':round(sum(o['total'] for o in entries if o['payment']=='cash' and o['cash_collected'] and not o['cash_settled']),2),
             'entries':entries,'adjustments':adjustments,'audit':audit}
 
+STAFF_SECTIONS = {'admin-overview','admin-orders','admin-driver-list','admin-driver-shifts','admin-map-section','admin-daily','admin-activity','admin-products','admin-merchants','admin-categories','admin-delivery-rate','admin-commission','admin-services','admin-ratings','admin-featured','admin-support'}
+
+def staff_access(user, section):
+    if user['role'] != 'admin': return False
+    return user['staff_permissions'] is None or section in json.loads(user['staff_permissions'])
+
+def staff_state(view, permissions):
+    allowed=set(permissions)
+    if not allowed.intersection({'admin-orders','admin-driver-list','admin-map-section','admin-daily','admin-overview'}): view['orders']=[]
+    if not allowed.intersection({'admin-driver-list','admin-driver-shifts','admin-map-section','admin-daily','admin-overview'}): view['drivers']=[]
+    if not allowed.intersection({'admin-products','admin-categories','admin-overview'}): view['products']=[]
+    if not allowed.intersection({'admin-products','admin-merchants','admin-categories'}): view['merchants']=[];view['categories']=[]
+    if 'admin-driver-shifts' not in allowed: view['driver_shifts']=[]
+    if 'admin-daily' not in allowed: view['daily_distances']=[];view['daily_resets']=[]
+    if 'admin-ratings' not in allowed: view['ratings']=[];view['driver_complaints']=[]
+    if 'admin-featured' not in allowed: view['featured_people']=[];view['featured_rewards']=[]
+    if 'admin-support' not in allowed: view['support_tickets']=[]
+    if 'admin-overview' not in allowed and 'admin-daily' not in allowed: view['daily_stats']=None
+    if 'admin-products' not in allowed: view['draft_catalog']=[]
+    if 'admin-services' not in allowed: view['services']=[]
+    if 'admin-delivery-rate' not in allowed: view['area_fees']={}
+    if 'admin-orders' not in allowed and 'admin-driver-list' not in allowed: view['chat_threads']=[];view['chat_counts']={}
+    view['driver_wallets']={};view['wallet_unlocked']=False
+    view['settings']={k:v for k,v in view['settings'].items() if (k.startswith('commission_') and 'admin-commission' in allowed) or (k in ('delivery_fee','per_km_rate') and 'admin-delivery-rate' in allowed)}
+    view['staff_permissions']=list(allowed)
+    return view
+
 
 class Handler(BaseHTTPRequestHandler):
     def user(self, db):
         header = self.headers.get('Authorization', '')
         if not header.startswith('Bearer '): return None
         digest = hashlib.sha256(header[7:].encode()).hexdigest()
-        return db.execute('SELECT u.id,u.name,u.phone,u.role,u.username,u.email FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires>? AND u.disabled=0', (digest, int(time.time()))).fetchone()
+        return db.execute('SELECT u.id,u.name,u.phone,u.role,u.username,u.email,sm.permissions AS staff_permissions FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN staff_members sm ON sm.user_id=u.id WHERE s.token_hash=? AND s.expires>? AND u.disabled=0', (digest, int(time.time()))).fetchone()
 
     def respond(self, value, code=200):
         data = json.dumps(value, ensure_ascii=False).encode()
@@ -937,13 +965,22 @@ class Handler(BaseHTTPRequestHandler):
                         o.pop('driver_earning_cents',None);o.pop('driver_earning_paid',None)
             profile=db.execute('SELECT id,name,phone,photo,area,vehicle_type,available,break_until,lat,lon,location_at,identity_blocked_shift FROM drivers WHERE user_id=?',(user['id'],)).fetchone() if user['role']=='driver' else None
             wallets={str(d['id']):driver_wallet(db,d['id']) for d in db.execute('SELECT id FROM drivers')} if user['role']=='admin' and unlocked(self,db) else {}
-            self.respond({**feature_state(db,user),"draft_catalog":preview_catalog(db) if user['role'] in ('customer','admin') else [],"driver_profile":dict(profile) if profile else None,"wallet_unlocked":unlocked(self,db) if user['role']=='admin' else False,"driver_wallet":redact_wallet(driver_wallet(db,profile['id'])) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username,u.disabled,u.email FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}})
+            view={**feature_state(db,user),"draft_catalog":preview_catalog(db) if user['role'] in ('customer','admin') else [],"driver_profile":dict(profile) if profile else None,"wallet_unlocked":unlocked(self,db) if user['role']=='admin' else False,"driver_wallet":redact_wallet(driver_wallet(db,profile['id'])) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username,u.disabled,u.email FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}}
+            if user['staff_permissions'] is not None: staff_state(view,json.loads(user['staff_permissions']))
+            else: view['staff_permissions']=None
+            if user['role']=='admin' and user['staff_permissions'] is None: view['staff_members']=[dict(r) for r in db.execute("SELECT u.id,u.name,u.username,u.disabled,s.permissions FROM staff_members s JOIN users u ON u.id=s.user_id ORDER BY u.id DESC")]
+            self.respond(view)
 
     def do_POST(self):
         try:
             data = self.body()
             with connect() as db:
                 path = urlparse(self.path).path
+                actor=self.user(db)
+                if actor and actor['staff_permissions'] is not None:
+                    readable=path=='/api/admin/activity' and staff_access(actor,'admin-activity') or path=='/api/admin/chat/archive' and (staff_access(actor,'admin-orders') or staff_access(actor,'admin-driver-list'))
+                    if not readable and path not in ('/api/logout','/api/change-password','/api/login','/api/admin/login'):
+                        return self.respond({'error':'حساب الفريق للعرض فقط؛ هذا الإجراء يحتاج المسؤول الرئيسي'},403)
                 if wallet_post(self,db,path,data,self.user(db),now,driver_wallet): return
                 if feature_post(self, db, path, data, self.user(db), create_user, AREAS, now): return
                 if path == '/api/register':
@@ -973,6 +1010,25 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond({'token':token,'role':u['role']})
                 user=self.user(db)
                 if not user: return self.respond({'error':'سجل الدخول أولًا'},401)
+                if path == '/api/admin/team':
+                    if user['role']!='admin' or user['staff_permissions'] is not None: return self.respond({'error':'إدارة الفريق للمسؤول الرئيسي فقط'},403)
+                    action=str(data.get('action',''))
+                    permissions=json.dumps(sorted(set(data.get('permissions',[])) & STAFF_SECTIONS),ensure_ascii=False)
+                    if action=='create':
+                        username=normalized_username(str(data.get('username','')))
+                        if not json.loads(permissions): raise ValueError('اختر قسمًا واحدًا على الأقل')
+                        uid=create_user(db,str(data.get('name','')), 'staff:'+username,'admin',str(data.get('password','')),username)
+                        db.execute('INSERT INTO staff_members(user_id,permissions,created_by) VALUES (?,?,?)',(uid,permissions,user['id']))
+                    elif action in ('update','disable','enable'):
+                        uid=int(data.get('id',0))
+                        if not db.execute('SELECT 1 FROM staff_members WHERE user_id=?',(uid,)).fetchone(): raise ValueError('عضو الفريق غير موجود')
+                        if action=='update':
+                            if not json.loads(permissions): raise ValueError('اختر قسمًا واحدًا على الأقل')
+                            db.execute('UPDATE staff_members SET permissions=? WHERE user_id=?',(permissions,uid))
+                        else: db.execute('UPDATE users SET disabled=? WHERE id=?',(int(action=='disable'),uid))
+                        db.execute('DELETE FROM sessions WHERE user_id=?',(uid,))
+                    else: raise ValueError('إجراء غير معروف')
+                    return self.respond({'ok':True})
                 if user['role']=='driver' and path not in ('/api/logout','/api/support') and db.execute('SELECT 1 FROM drivers WHERE user_id=? AND identity_blocked_shift IS NOT NULL',(user['id'],)).fetchone():
                     return self.respond({'error':'حسابك موقوف بإنذار مراجعة الهوية. تواصل مع الإدارة لإعادة التفعيل.'},403)
                 if path == '/api/admin/shift/review':

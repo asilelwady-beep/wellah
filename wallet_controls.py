@@ -41,6 +41,9 @@ def verify_owner(handler,db,user,password):
 def redact_wallet(wallet):
     wallet.pop('commission_due',None)
     wallet.pop('audit',None)
+    wallet['paid']=0
+    wallet['entries']=[entry for entry in wallet['entries'] if not entry['driver_earning_paid'] or (entry['payment']=='cash' and entry['cash_collected'] and not entry['cash_settled'])]
+    wallet['adjustments']=[entry for entry in wallet['adjustments'] if not entry['settled']]
     for entry in wallet['entries']:
         for key in list(entry):
             if key.startswith('commission_'): entry.pop(key)
