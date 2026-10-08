@@ -185,7 +185,8 @@ def feature_state(db, user):
         ORDER BY u.featured DESC,completed DESC,CASE WHEN COUNT(r.stars)>=3 THEN AVG(r.stars) ELSE 0 END DESC LIMIT 100""")] if user['role']=='admin' else []
     rewards=[dict(r) for r in db.execute('SELECT id,user_id,kind,amount_cents,created_at,used_order_id FROM featured_rewards ORDER BY id DESC LIMIT 100')] if user['role']=='admin' else []
     complaints=[dict(r) for r in db.execute('SELECT c.*,u.name AS customer_name,d.name AS driver_name FROM driver_complaints c JOIN users u ON u.id=c.customer_id JOIN drivers d ON d.id=c.driver_id ORDER BY c.id DESC LIMIT 100')] if user['role']=='admin' else []
-    return {'shift_required':shift_required,'shift_second_required':second_required,'driver_shift':shift,'driver_shifts':shifts,'my_rating':dict(rating),'featured_people':featured,'featured_rewards':rewards,'driver_complaints':complaints,'pending_ratings':pending,'ratings': ratings, 'support_tickets': tickets, 'email_otp_ready': mail_ready(), 'sms_otp_ready': sms_ready(), 'ai_ready': bool(os.environ.get('OPENAI_API_KEY'))}
+    chat_counts={str(r['order_id']):r['count'] for r in db.execute('SELECT order_id,COUNT(*) AS count FROM order_messages GROUP BY order_id')} if user['role']=='admin' else {}
+    return {'shift_required':shift_required,'shift_second_required':second_required,'driver_shift':shift,'driver_shifts':shifts,'my_rating':dict(rating),'featured_people':featured,'featured_rewards':rewards,'driver_complaints':complaints,'pending_ratings':pending,'ratings': ratings, 'support_tickets': tickets, 'chat_counts':chat_counts, 'email_otp_ready': mail_ready(), 'sms_otp_ready': sms_ready(), 'ai_ready': bool(os.environ.get('OPENAI_API_KEY'))}
 
 
 def feature_post(handler, db, path, data, user, create_user, areas, now):
