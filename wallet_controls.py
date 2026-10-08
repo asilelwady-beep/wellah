@@ -75,7 +75,7 @@ def wallet_post(handler,db,path,data,user,now,driver_wallet):
     if existing:
         previous=json.loads(existing['details'])
         if existing['driver_id']!=driver_id or existing['action']!=action or previous['intent']!=intent: raise ValueError('معرف التسوية مستخدم لتعديل آخر')
-        handler.respond({'ok':True});return True
+        handler.respond({'ok':True,'wallet':driver_wallet(db,driver_id)});return True
     before=driver_wallet(db,driver_id)
     if action=='adjust':
         try: amount=Decimal(intent['amount'])
@@ -93,6 +93,8 @@ def wallet_post(handler,db,path,data,user,now,driver_wallet):
         if len(email)>254 or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',email): raise ValueError('اكتب بريد الطيار الصحيح')
         db.execute('UPDATE users SET email=? WHERE id=?',(email,driver['user_id']))
     else: raise ValueError('تعديل المحفظة غير معروف')
-    details=json.dumps({'intent':intent,'before':{k:v for k,v in before.items() if k not in ('entries','adjustments','audit')},'after':{k:v for k,v in driver_wallet(db,driver_id).items() if k not in ('entries','adjustments','audit')}},ensure_ascii=False)
+    after=driver_wallet(db,driver_id)
+    if action=='settle' and any(abs(after[key])>0.001 for key in ('balance','commission_due','cash_due')): raise ValueError('تعذر تصفير جميع مبالغ الطيار؛ راجع بيانات المشاوير')
+    details=json.dumps({'intent':intent,'before':{k:v for k,v in before.items() if k not in ('entries','adjustments','audit')},'after':{k:v for k,v in after.items() if k not in ('entries','adjustments','audit')}},ensure_ascii=False)
     db.execute('INSERT INTO wallet_audit(driver_id,admin_id,request_id,action,details,at) VALUES (?,?,?,?,?,?)',(driver_id,user['id'],request_id,action,details,now()))
-    handler.respond({'ok':True});return True
+    handler.respond({'ok':True,'wallet':after});return True
