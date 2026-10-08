@@ -189,7 +189,11 @@ def feature_state(db, user):
     chat_threads=[dict(r) for r in db.execute('''SELECT m.order_id,o.customer,o.status,d.name AS driver_name,COUNT(*) AS message_count,MAX(m.id) AS last_message_id,MAX(m.at) AS last_at
         FROM order_messages m JOIN orders o ON o.id=m.order_id LEFT JOIN drivers d ON d.id=o.driver_id
         GROUP BY m.order_id ORDER BY last_message_id DESC''')] if user['role']=='admin' else []
-    return {'shift_required':shift_required,'shift_second_required':second_required,'driver_shift':shift,'driver_shifts':shifts,'my_rating':dict(rating),'featured_people':featured,'featured_rewards':rewards,'driver_complaints':complaints,'pending_ratings':pending,'ratings': ratings, 'support_tickets': tickets, 'chat_counts':chat_counts, 'chat_threads':chat_threads, 'email_otp_ready': mail_ready(), 'sms_otp_ready': sms_ready(), 'ai_ready': bool(os.environ.get('OPENAI_API_KEY'))}
+    customer_directory=[dict(r) for r in db.execute('''SELECT u.id,u.name,u.phone,u.email,u.disabled,COUNT(o.id) AS order_count,
+        SUM(CASE WHEN o.status='delivered' THEN 1 ELSE 0 END) AS delivered_count
+        FROM users u LEFT JOIN orders o ON o.user_id=u.id WHERE u.role='customer'
+        GROUP BY u.id ORDER BY COUNT(o.id) DESC,u.id DESC''')] if user['role']=='admin' else []
+    return {'shift_required':shift_required,'shift_second_required':second_required,'driver_shift':shift,'driver_shifts':shifts,'my_rating':dict(rating),'featured_people':featured,'featured_rewards':rewards,'driver_complaints':complaints,'pending_ratings':pending,'ratings': ratings, 'support_tickets': tickets, 'chat_counts':chat_counts, 'chat_threads':chat_threads, 'customer_directory':customer_directory, 'email_otp_ready': mail_ready(), 'sms_otp_ready': sms_ready(), 'ai_ready': bool(os.environ.get('OPENAI_API_KEY'))}
 
 
 def feature_post(handler, db, path, data, user, create_user, areas, now):
