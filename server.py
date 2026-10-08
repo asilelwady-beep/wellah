@@ -161,6 +161,18 @@ def init():
         for table,column,definition in [('drivers','identity_blocked_shift','INTEGER'),('driver_shifts','review_status',"TEXT NOT NULL DEFAULT 'pending'"),('driver_shifts','reviewed_at','TEXT'),('driver_shifts','reviewed_by','INTEGER'),('driver_shifts','restored_at','TEXT')]:
             if column not in {r['name'] for r in db.execute('PRAGMA table_info('+table+')')}: db.execute('ALTER TABLE '+table+' ADD COLUMN '+column+' '+definition)
         db.execute('CREATE UNIQUE INDEX IF NOT EXISTS driver_one_open_shift ON driver_shifts(driver_id) WHERE ended_at IS NULL')
+        for column,definition in [('second_selfie','TEXT'),('second_photo_at','TEXT'),('second_review_status',"TEXT NOT NULL DEFAULT 'pending'"),('second_reviewed_at','TEXT')]:
+            if column not in {r['name'] for r in db.execute('PRAGMA table_info(driver_shifts)')}:
+                db.execute('ALTER TABLE driver_shifts ADD COLUMN '+column+' '+definition)
+        db.execute('CREATE TABLE IF NOT EXISTS featured_rewards (id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),kind TEXT NOT NULL,amount_cents INTEGER NOT NULL CHECK(amount_cents>0),created_at TEXT NOT NULL,used_order_id INTEGER REFERENCES orders(id))')
+        db.execute('CREATE INDEX IF NOT EXISTS featured_rewards_available ON featured_rewards(user_id,kind,used_order_id)')
+        if 'featured' not in {r['name'] for r in db.execute('PRAGMA table_info(drivers)')}:
+            db.execute('ALTER TABLE drivers ADD COLUMN featured INTEGER NOT NULL DEFAULT 0')
+        if 'featured' not in {r['name'] for r in db.execute('PRAGMA table_info(users)')}:
+            db.execute('ALTER TABLE users ADD COLUMN featured INTEGER NOT NULL DEFAULT 0')
+        if 'discount_cents' not in {r['name'] for r in db.execute('PRAGMA table_info(orders)')}:
+            db.execute('ALTER TABLE orders ADD COLUMN discount_cents INTEGER NOT NULL DEFAULT 0')
+        db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('featured_min_order','35')")
         if 'break_until' not in {x['name'] for x in db.execute('PRAGMA table_info(drivers)')}:
             db.execute('ALTER TABLE drivers ADD COLUMN break_until INTEGER NOT NULL DEFAULT 0')
         if 'photo' not in {x['name'] for x in db.execute('PRAGMA table_info(drivers)')}:
@@ -534,12 +546,13 @@ def assign(db, oid):
     merchant = db.execute('SELECT area FROM merchants WHERE id=?',(o['merchant_id'],)).fetchone() if o['merchant_id'] else None
     pickup_area = merchant['area'] if merchant and not o['shop_anywhere'] else o['area']
     # Last known location must be recent. Busy and declined drivers are excluded.
-    candidates = db.execute("""SELECT d.id,d.lat,d.lon,d.vehicle_type FROM drivers d JOIN users du ON du.id=d.user_id WHERE du.disabled=0 AND d.identity_blocked_shift IS NULL AND d.available=1 AND d.break_until<=? AND (?=1 OR d.area=?)
+    candidates = db.execute("""SELECT d.id,d.lat,d.lon,d.vehicle_type,d.featured FROM drivers d JOIN users du ON du.id=d.user_id WHERE du.disabled=0 AND d.identity_blocked_shift IS NULL AND d.available=1 AND d.break_until<=? AND (?=1 OR d.area=?)
         AND d.lat IS NOT NULL AND d.lon IS NOT NULL AND d.location_at>=?
         AND NOT EXISTS (SELECT 1 FROM orders x WHERE x.driver_id=d.id AND x.id<>?
             AND x.status IN ('offered','assigned','ready','picked_up','on_way'))
-        AND NOT EXISTS (SELECT 1 FROM order_declines x WHERE x.order_id=? AND x.driver_id=d.id)""",
-        (int(time.time()),1 if o['kind']!='products' else 0,pickup_area,datetime.fromtimestamp(time.time()-300,timezone.utc).isoformat(timespec='seconds'),oid,oid)).fetchall()
+        AND NOT EXISTS (SELECT 1 FROM order_declines x WHERE x.order_id=? AND x.driver_id=d.id)
+        AND EXISTS (SELECT 1 FROM driver_shifts s WHERE s.driver_id=d.id AND s.ended_at IS NULL AND s.started_at>=? AND (s.started_at>? OR s.second_selfie IS NOT NULL))""",
+        (int(time.time()),1 if o['kind']!='products' else 0,pickup_area,datetime.fromtimestamp(time.time()-300,timezone.utc).isoformat(timespec='seconds'),oid,oid,datetime.fromtimestamp(time.time()-86400,timezone.utc).isoformat(timespec='seconds'),datetime.fromtimestamp(time.time()-21600,timezone.utc).isoformat(timespec='seconds'))).fetchall()
     if o['kind']=='ride':
         candidates=[d for d in candidates if d['vehicle_type']==o['vehicle']]
     origin=(o['pickup_lat'],o['pickup_lon']) if o['pickup_lat'] is not None else (o['latitude'],o['longitude'])
@@ -551,13 +564,15 @@ def assign(db, oid):
         a,b=map(math.radians,(origin[0],d['lat']))
         da=math.radians(d['lat']-origin[0]);dl=math.radians(d['lon']-origin[1])
         return 6371*2*math.asin(min(1,math.sqrt(math.sin(da/2)**2+math.cos(a)*math.cos(b)*math.sin(dl/2)**2)))
-    d=min(candidates,key=lambda x:(distance(x),x['id'])) if candidates else None
+    minimum=float(db.execute("SELECT value FROM settings WHERE key='featured_min_order'").fetchone()[0])
+    prioritize=float(o['delivery_fee'] or o['total'])>=minimum
+    d=min(candidates,key=lambda x:(0 if prioritize and x['featured'] else 1,distance(x),x['id'])) if candidates else None
     if d:
         if not o['commission_locked']:
             percent,share,net=commission_split(db,o['kind'],d['vehicle_type'],o['delivery_fee'])
             db.execute('UPDATE orders SET commission_percent=?,commission_cents=?,driver_earning_cents=?,commission_locked=1 WHERE id=?',(percent,share,net,oid))
         db.execute("UPDATE orders SET driver_id=?,status='offered',offer_until=? WHERE id=?", (d['id'],int(time.time())+90,oid))
-        log(db, oid, "عُرض الطلب تلقائيًا على أقرب مندوب متاح من نقطة الاستلام")
+        log(db, oid, "أولوية الطيار المميز للطلب الأعلى قيمة" if prioritize and d['featured'] else "عُرض الطلب تلقائيًا على أقرب مندوب متاح من نقطة الاستلام")
     else:
         db.execute("UPDATE orders SET driver_id=NULL,status='awaiting_driver',offer_until=NULL WHERE id=?", (oid,))
         if o['status']!='awaiting_driver': log(db, oid, "بانتظار مندوب متاح في منطقة الاستلام يشارك موقعًا حديثًا")
@@ -902,7 +917,7 @@ class Handler(BaseHTTPRequestHandler):
             user = self.user(db)
             if not user: return self.respond({'error':'سجل الدخول أولًا'}, 401)
             refresh_offers(db)
-            clause, args = ('', ()) if user['role']=='admin' else ((" WHERE o.user_id=? AND o.status NOT IN ('delivered','cancelled')", (user['id'],)) if user['role']=='customer' else (' WHERE d.user_id=?', (user['id'],)))
+            clause, args = ('', ()) if user['role']=='admin' else ((" WHERE o.user_id=?", (user['id'],)) if user['role']=='customer' else (' WHERE d.user_id=?', (user['id'],)))
             orders = rows(db, "SELECT o.*,d.name AS driver_name,d.phone AS driver_phone,d.photo AS driver_photo,d.lat AS driver_lat,d.lon AS driver_lon,d.location_at AS driver_location_at,m.name AS merchant_name,m.address AS merchant_address FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id LEFT JOIN merchants m ON m.id=o.merchant_id"+clause+" ORDER BY o.id DESC", args)
             for o in orders:
                 o["items"] = rows(db, "SELECT oi.product_id,oi.name,oi.quantity,oi.unit_price,oi.unit,COALESCE(NULLIF(p.image,''),CASE WHEN p.catalog_preview=1 THEN '/product-illustration/' || p.id || '.svg' ELSE '/icon.svg' END) AS image FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=?", (o["id"],))
@@ -971,22 +986,25 @@ class Handler(BaseHTTPRequestHandler):
                         if blocked!=shift['id']: raise ValueError('هذا الإنذار ليس سبب الإيقاف الحالي')
                         db.execute('UPDATE drivers SET identity_blocked_shift=NULL,available=0 WHERE id=?',(shift['driver_id'],))
                         db.execute('UPDATE driver_shifts SET restored_at=? WHERE id=?',(now(),shift['id']))
-                    elif action in ('confirm','warn') and shift['review_status']=='pending':
-                        db.execute('UPDATE driver_shifts SET review_status=?,reviewed_at=?,reviewed_by=? WHERE id=?',('confirmed' if action=='confirm' else 'warned',now(),user['id'],shift['id']))
-                        if action=='warn':
+                    elif action in ('confirm','warn','confirm_second','warn_second') and (shift['review_status'] if action in ('confirm','warn') else shift['second_review_status'])=='pending' and (action in ('confirm','warn') or shift['second_selfie']):
+                        if action in ('confirm','warn'):
+                            db.execute('UPDATE driver_shifts SET review_status=?,reviewed_at=?,reviewed_by=? WHERE id=?',('confirmed' if action=='confirm' else 'warned',now(),user['id'],shift['id']))
+                        else:
+                            db.execute('UPDATE driver_shifts SET second_review_status=?,second_reviewed_at=?,reviewed_by=? WHERE id=?',('confirmed' if action=='confirm_second' else 'warned',now(),user['id'],shift['id']))
+                        if action in ('warn','warn_second'):
                             db.execute('UPDATE drivers SET identity_blocked_shift=?,available=0 WHERE id=?',(shift['id'],shift['driver_id']))
                             db.execute('UPDATE driver_shifts SET ended_at=? WHERE driver_id=? AND ended_at IS NULL',(now(),shift['driver_id']))
                             for offered in db.execute("SELECT id FROM orders WHERE driver_id=? AND status='offered'",(shift['driver_id'],)).fetchall():
                                 db.execute("UPDATE orders SET driver_id=NULL,status='awaiting_driver',offer_until=NULL WHERE id=?",(offered['id'],));assign(db,offered['id'])
                     else: raise ValueError('تمت مراجعة الصورة بالفعل أو الإجراء غير صحيح')
                     return self.respond({'ok':True})
-                if path in ('/api/driver/shift/start','/api/driver/shift/end'):
+                if path in ('/api/driver/shift/start','/api/driver/shift/end','/api/driver/shift/second'):
                     if user['role']!='driver': return self.respond({'error':'خاص بالطيار فقط'},403)
                     driver=db.execute('SELECT id FROM drivers WHERE user_id=?',(user['id'],)).fetchone()
                     if not driver: raise ValueError('حساب الطيار غير موجود')
                     did=driver['id']
                     db.execute('BEGIN IMMEDIATE')
-                    active=db.execute('SELECT id,started_at FROM driver_shifts WHERE driver_id=? AND ended_at IS NULL',(did,)).fetchone()
+                    active=db.execute('SELECT id,started_at,second_selfie FROM driver_shifts WHERE driver_id=? AND ended_at IS NULL',(did,)).fetchone()
                     if path.endswith('/start'):
                         if active and datetime.fromisoformat(active['started_at']).timestamp()+86400>time.time(): return self.respond({'ok':True,'shift_id':active['id']})
                         selfie=data.get('selfie','')
@@ -995,22 +1013,53 @@ class Handler(BaseHTTPRequestHandler):
                         sid=db.execute('INSERT INTO driver_shifts(driver_id,selfie,started_at) VALUES (?,?,?)',(did,selfie,now())).lastrowid
                         db.execute('UPDATE drivers SET available=1,break_until=0 WHERE id=?',(did,))
                         return self.respond({'ok':True,'shift_id':sid})
+                    if path.endswith('/second'):
+                        if not active: raise ValueError('ابدأ الشيفت أولًا')
+                        elapsed=time.time()-datetime.fromisoformat(active['started_at']).timestamp()
+                        if elapsed<21600 or elapsed>=86400: raise ValueError('الصورة الثانية متاحة بعد ٦ ساعات وقبل انتهاء الشيفت')
+                        if active['second_selfie']: raise ValueError('الصورة الثانية مسجلة بالفعل')
+                        selfie=data.get('selfie','')
+                        if not valid_image(selfie,1_500_000): raise ValueError('التقط صورة وجه حديثة بالكاميرا')
+                        db.execute('UPDATE driver_shifts SET second_selfie=?,second_photo_at=? WHERE id=?',(selfie,now(),active['id']))
+                        return self.respond({'ok':True})
                     if db.execute("SELECT 1 FROM orders WHERE driver_id=? AND status IN ('assigned','ready','picked_up','on_way')",(did,)).fetchone(): raise ValueError('أكمل الطلب الجاري قبل إنهاء الشيفت')
                     db.execute('UPDATE driver_shifts SET ended_at=? WHERE driver_id=? AND ended_at IS NULL',(now(),did))
                     db.execute('UPDATE drivers SET available=0 WHERE id=?',(did,))
                     return self.respond({'ok':True})
                 if path == '/api/admin/shift/photo':
                     if user['role']!='admin': return self.respond({'error':'خاص بالمسؤول فقط'},403)
-                    shift=db.execute('SELECT selfie FROM driver_shifts WHERE id=?',(int(data.get('id',0)),)).fetchone()
+                    shift=db.execute('SELECT selfie,second_selfie FROM driver_shifts WHERE id=?',(int(data.get('id',0)),)).fetchone()
                     if not shift: raise ValueError('الشيفت غير موجود')
-                    return self.respond({'photo':shift['selfie']})
+                    photo=shift['second_selfie'] if data.get('second') else shift['selfie']
+                    if not photo: raise ValueError('لم تُلتقط الصورة الثانية بعد')
+                    return self.respond({'photo':photo})
+                if path == '/api/admin/featured':
+                    if user['role']!='admin': return self.respond({'error':'خاص بالمسؤول فقط'},403)
+                    uid=int(data.get('user_id',0))
+                    person=db.execute("SELECT id,role FROM users WHERE id=? AND disabled=0 AND role IN ('customer','driver')",(uid,)).fetchone()
+                    if not person: raise ValueError('الحساب غير موجود')
+                    action=data.get('action')
+                    if action=='mark':
+                        featured=int(bool(data.get('featured')))
+                        db.execute('UPDATE users SET featured=? WHERE id=?',(featured,uid))
+                        if person['role']=='driver': db.execute('UPDATE drivers SET featured=? WHERE user_id=?',(featured,uid))
+                    elif action in ('discount','bonus'):
+                        if (action=='discount' and person['role']!='customer') or (action=='bonus' and person['role']!='driver'): raise ValueError('نوع المكافأة لا يناسب الحساب')
+                        amount=Decimal(str(data.get('amount','')))
+                        if not amount.is_finite() or not Decimal('0.01')<=amount<=Decimal('10000'): raise ValueError('اكتب مبلغًا من ٠٫٠١ إلى ١٠٠٠٠ جنيه')
+                        cents=int((amount*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+                        db.execute('INSERT INTO featured_rewards(user_id,kind,amount_cents,created_at) VALUES (?,?,?,?)',(uid,action,cents,now()))
+                        if action=='bonus':
+                            did=db.execute('SELECT id FROM drivers WHERE user_id=?',(uid,)).fetchone()['id']
+                            db.execute('INSERT INTO wallet_adjustments(driver_id,admin_id,amount_cents,reason,at,settled) VALUES (?,?,?,?,?,0)',(did,user['id'],cents,'بونص الطيار المميز',now()))
+                    else: raise ValueError('الإجراء غير صحيح')
+                    return self.respond({'ok':True})
                 if path == '/api/order/chat':
                     oid=int(data['order_id'])
                     o=db.execute('SELECT * FROM orders WHERE id=?',(oid,)).fetchone()
                     d=db.execute('SELECT user_id FROM drivers WHERE id=?',(o['driver_id'],)).fetchone() if o and o['driver_id'] else None
                     is_customer=bool(o and user['role']=='customer' and o['user_id']==user['id'])
                     is_driver=bool(d and user['role']=='driver' and d['user_id']==user['id'])
-                    if is_customer and o['status'] in ('delivered','cancelled'): return self.respond({'error':'انتهى الطلب وأُرشف لدى الإدارة'},403)
                     if not o or not d or not (is_customer or is_driver) or o['status'] not in ('assigned','ready','picked_up','on_way','delivered','cancelled'):
                         return self.respond({'error':'الدردشة متاحة لصاحب الطلب والمندوب الذي قبله فقط'},403)
                     mode=data.get('mode','list')
@@ -1186,9 +1235,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond({'ok':True,'imported':count})
                 elif path == '/api/settings':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
-                    fee=float(data['delivery_fee'])
-                    if fee<0: raise ValueError('رسوم التوصيل غير صحيحة')
                     current=dict(db.execute('SELECT key,value FROM settings'))
+                    fee=float(data.get('delivery_fee',current.get('delivery_fee','20')))
+                    if not math.isfinite(fee) or fee<0: raise ValueError('رسوم التوصيل غير صحيحة')
                     values=[('wallet',str(data.get('wallet',current.get('wallet',''))).strip()),('instapay',str(data.get('instapay',current.get('instapay',''))).strip()),('whatsapp',str(data.get('whatsapp',current.get('whatsapp',''))).strip()),('delivery_fee',str(fee))]
                     if any(len(v)>100 for k,v in values): raise ValueError('رقم أو حساب التحويل طويل جدًا')
                     for k,v in values:
@@ -1363,6 +1412,13 @@ class Handler(BaseHTTPRequestHandler):
                     status = "awaiting_quote" if kind != "products" else ("medicine_review" if medicine_review else ("new" if payment == "cash" else "payment_review"))
                     cur = db.execute("INSERT INTO orders(user_id,client_request_id,kind,customer,phone,area,address,details,vehicle,pickup,destination,payment,proof,reference,prescription,medicine_review,payment_status,status,total,delivery_fee,quote_accepted,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (user['id'],request_id,kind, customer, phone, data["area"], address, str(data.get("details", "")), str(data.get("vehicle", "")), str(data.get("pickup", "")), str(data.get("destination", "")), payment, proof, str(data.get("reference", "")), prescription,1 if medicine_review else 0, ps, status, subtotal+fee, fee,1 if kind=='products' else 0, now()))
                     oid = cur.lastrowid
+                    if kind=='products' and payment=='cash' and not medicine_review and not prescription_only:
+                        reward=db.execute("SELECT id,amount_cents FROM featured_rewards WHERE user_id=? AND kind='discount' AND used_order_id IS NULL ORDER BY id LIMIT 1",(user['id'],)).fetchone()
+                        if reward:
+                            cents=min(reward['amount_cents'],int((Decimal(str(subtotal+fee))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP)))
+                            db.execute('UPDATE orders SET total=total-?,discount_cents=? WHERE id=?',(cents/100,cents,oid))
+                            db.execute('UPDATE featured_rewards SET used_order_id=? WHERE id=?',(oid,reward['id']))
+                            log(db,oid,f'خصم مميز بقيمة {cents/100:.2f} جنيه')
                     if prescription_only: db.execute('UPDATE orders SET prescription_only=1,total=0,delivery_fee=0,quote_accepted=0 WHERE id=?',(oid,))
                     if km_quote:
                         db.execute('UPDATE orders SET route_km=?,km_rate=? WHERE id=?',(km_quote['km'],km_quote['rate'],oid))
@@ -1391,8 +1447,9 @@ class Handler(BaseHTTPRequestHandler):
                         d=db.execute('SELECT id FROM drivers WHERE user_id=?',(user['id'],)).fetchone()
                         if user['role']!='driver' or not d or o['driver_id']!=d['id']: return self.respond({'error':'غير مصرح'},403)
                         if action=='accept_offer':
-                            shift=db.execute('SELECT started_at FROM driver_shifts WHERE driver_id=? AND ended_at IS NULL',(d['id'],)).fetchone()
+                            shift=db.execute('SELECT started_at,second_selfie FROM driver_shifts WHERE driver_id=? AND ended_at IS NULL',(d['id'],)).fetchone()
                             if not shift or datetime.fromisoformat(shift['started_at']).timestamp()+86400<=time.time(): raise ValueError('ابدأ الشيفت بصورة وجه حديثة قبل قبول طلب جديد')
+                            if datetime.fromisoformat(shift['started_at']).timestamp()+21600<=time.time() and not shift['second_selfie']: raise ValueError('التقط صورة الشيفت الثانية قبل قبول طلب جديد')
                     elif user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     if action == "confirm_payment" and o["payment_status"] == "pending" and o["proof"] and o["status"] == "payment_review":
                         db.execute("UPDATE orders SET payment_status='confirmed',status='new' WHERE id=?", (oid,))
@@ -1467,6 +1524,8 @@ class Handler(BaseHTTPRequestHandler):
                         log(db,oid,'أكد المسؤول استلام الكاش من المندوب')
                     elif action in ('cancel','reject_medicine','customer_cancel') and o["status"] not in ("delivered", "cancelled") and (action!='reject_medicine' or o['status']=='medicine_review') and (action!='customer_cancel' or (o['status'] in ('awaiting_quote','quote_pending','medicine_review','payment_review','new','awaiting_driver','offered','assigned') and not (o['payment']=='wallet' and (o['payment_status']=='confirmed' or bool(o['proof']))))):
                         db.execute("UPDATE orders SET status='cancelled' WHERE id=?", (oid,))
+                        if o['discount_cents']:
+                            db.execute('UPDATE featured_rewards SET used_order_id=NULL WHERE used_order_id=? AND kind=\'discount\'',(oid,))
                         for it in db.execute("SELECT * FROM order_items WHERE order_id=?", (oid,)):
                             db.execute("UPDATE products SET stock=stock+? WHERE id=?", (it["stock_quantity"] if it["stock_quantity"] is not None else it["quantity"], it["product_id"]))
                         log(db, oid, "ألغي الطلب وأعيدت المنتجات للكمية المتاحة")

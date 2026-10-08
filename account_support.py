@@ -30,6 +30,11 @@ def init_features(db):
         order_id INTEGER NOT NULL REFERENCES orders(id), sender_id INTEGER NOT NULL REFERENCES users(id),
         target_id INTEGER NOT NULL REFERENCES users(id), stars INTEGER NOT NULL CHECK(stars BETWEEN 1 AND 5),
         comment TEXT NOT NULL DEFAULT '', at TEXT NOT NULL, PRIMARY KEY(order_id,sender_id));
+    CREATE TABLE IF NOT EXISTS driver_complaints (
+        id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders(id),
+        customer_id INTEGER NOT NULL REFERENCES users(id), driver_id INTEGER NOT NULL REFERENCES drivers(id),
+        category TEXT NOT NULL, details TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open',
+        at TEXT NOT NULL, UNIQUE(order_id,customer_id));
     CREATE TABLE IF NOT EXISTS support_tickets (
         id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
         message TEXT NOT NULL, answer TEXT NOT NULL DEFAULT '', ai INTEGER NOT NULL DEFAULT 0,
@@ -168,10 +173,19 @@ def feature_state(db, user):
     ratings = [dict(r) for r in db.execute('SELECT r.*,u.name AS sender_name,t.name AS target_name FROM ratings r JOIN users u ON u.id=r.sender_id JOIN users t ON t.id=r.target_id' + clause + ' ORDER BY r.at DESC LIMIT 500', args)]
     tickets = [dict(r) for r in db.execute('SELECT s.*,u.name FROM support_tickets s JOIN users u ON u.id=s.user_id' + ('' if user['role'] == 'admin' else ' WHERE s.user_id=?') + ' ORDER BY s.id DESC LIMIT 100', args)]
     pending=[dict(r) for r in db.execute("SELECT o.id,o.driver_id,'delivered' AS status FROM orders o WHERE o.user_id=? AND o.status='delivered' AND o.driver_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ratings r WHERE r.order_id=o.id AND r.sender_id=?) ORDER BY o.id DESC LIMIT 3",(user['id'],user['id']))] if user['role']=='customer' else []
-    shift=dict(row) if user['role']=='driver' and (row:=db.execute('SELECT s.id,s.started_at,s.ended_at FROM driver_shifts s JOIN drivers d ON d.id=s.driver_id WHERE d.user_id=? AND s.ended_at IS NULL',(user['id'],)).fetchone()) else None
-    shifts=[dict(r) for r in db.execute('SELECT s.id,s.driver_id,s.started_at,s.ended_at,s.review_status,s.reviewed_at,s.restored_at,d.identity_blocked_shift,d.name,u.email FROM driver_shifts s JOIN drivers d ON d.id=s.driver_id JOIN users u ON u.id=d.user_id ORDER BY s.id DESC LIMIT 100')] if user['role']=='admin' else []
+    shift=dict(row) if user['role']=='driver' and (row:=db.execute('SELECT s.id,s.started_at,s.ended_at,s.second_photo_at FROM driver_shifts s JOIN drivers d ON d.id=s.driver_id WHERE d.user_id=? AND s.ended_at IS NULL',(user['id'],)).fetchone()) else None
+    shifts=[dict(r) for r in db.execute('SELECT s.id,s.driver_id,s.started_at,s.ended_at,s.review_status,s.reviewed_at,s.restored_at,s.second_photo_at,s.second_review_status,s.second_reviewed_at,d.identity_blocked_shift,d.name,u.email FROM driver_shifts s JOIN drivers d ON d.id=s.driver_id JOIN users u ON u.id=d.user_id ORDER BY s.id DESC LIMIT 100')] if user['role']=='admin' else []
     shift_required=user['role']=='driver' and (not shift or datetime.fromisoformat(shift['started_at']).timestamp()+86400<=time.time())
-    return {'shift_required':shift_required,'driver_shift':shift,'driver_shifts':shifts,'pending_ratings':pending,'ratings': ratings, 'support_tickets': tickets, 'email_otp_ready': mail_ready(), 'sms_otp_ready': sms_ready(), 'ai_ready': bool(os.environ.get('OPENAI_API_KEY'))}
+    second_required=bool(shift and not shift_required and not shift['second_photo_at'] and datetime.fromisoformat(shift['started_at']).timestamp()+21600<=time.time())
+    rating=db.execute('SELECT ROUND(AVG(stars),2) AS average,COUNT(*) AS count FROM ratings WHERE target_id=?',(user['id'],)).fetchone()
+    featured=[dict(r) for r in db.execute("""SELECT u.id,u.name,u.role,u.featured,ROUND(AVG(r.stars),2) AS average,COUNT(r.stars) AS rating_count,
+        (SELECT COUNT(*) FROM orders o WHERE o.status='delivered' AND (o.user_id=u.id OR o.driver_id IN (SELECT id FROM drivers WHERE user_id=u.id))) AS completed,
+        (SELECT id FROM drivers WHERE user_id=u.id) AS driver_id
+        FROM users u LEFT JOIN ratings r ON r.target_id=u.id WHERE u.role IN ('customer','driver') AND u.disabled=0 GROUP BY u.id
+        ORDER BY u.featured DESC,completed DESC,CASE WHEN COUNT(r.stars)>=3 THEN AVG(r.stars) ELSE 0 END DESC LIMIT 100""")] if user['role']=='admin' else []
+    rewards=[dict(r) for r in db.execute('SELECT id,user_id,kind,amount_cents,created_at,used_order_id FROM featured_rewards ORDER BY id DESC LIMIT 100')] if user['role']=='admin' else []
+    complaints=[dict(r) for r in db.execute('SELECT c.*,u.name AS customer_name,d.name AS driver_name FROM driver_complaints c JOIN users u ON u.id=c.customer_id JOIN drivers d ON d.id=c.driver_id ORDER BY c.id DESC LIMIT 100')] if user['role']=='admin' else []
+    return {'shift_required':shift_required,'shift_second_required':second_required,'driver_shift':shift,'driver_shifts':shifts,'my_rating':dict(rating),'featured_people':featured,'featured_rewards':rewards,'driver_complaints':complaints,'pending_ratings':pending,'ratings': ratings, 'support_tickets': tickets, 'email_otp_ready': mail_ready(), 'sms_otp_ready': sms_ready(), 'ai_ready': bool(os.environ.get('OPENAI_API_KEY'))}
 
 
 def feature_post(handler, db, path, data, user, create_user, areas, now):
@@ -248,12 +262,12 @@ def feature_post(handler, db, path, data, user, create_user, areas, now):
         db.execute('UPDATE account_codes SET used=1 WHERE id=?', (row['id'],))
         handler.respond({'ok': True})
         return True
-    if path not in ('/api/driver/update', '/api/driver/delete', '/api/driver/restore', '/api/rating', '/api/support', '/api/support/reply'):
+    if path not in ('/api/driver/update', '/api/driver/delete', '/api/driver/restore', '/api/rating', '/api/driver/complaint', '/api/support', '/api/support/reply'):
         return False
     if not user:
         handler.respond({'error': 'سجل الدخول أولًا'}, 401)
         return True
-    if path.startswith('/api/driver/'):
+    if path.startswith('/api/driver/') and path != '/api/driver/complaint':
         if user['role'] != 'admin':
             handler.respond({'error': 'غير مصرح'}, 403)
             return True
@@ -294,6 +308,15 @@ def feature_post(handler, db, path, data, user, create_user, areas, now):
             return True
         comment = str(data.get('comment', '')).strip()[:500]
         db.execute('INSERT INTO ratings VALUES (?,?,?,?,?,?) ON CONFLICT(order_id,sender_id) DO UPDATE SET stars=excluded.stars,comment=excluded.comment,at=excluded.at', (oid, user['id'], target, stars, comment, now()))
+    elif path == '/api/driver/complaint':
+        oid=int(data.get('order_id',0))
+        order=db.execute('SELECT id,driver_id FROM orders WHERE id=? AND user_id=? AND driver_id IS NOT NULL',(oid,user['id'])).fetchone() if user['role']=='customer' else None
+        if not order: raise ValueError('الشكوى متاحة للعميل بعد قبول الطيار لطلبه')
+        category=str(data.get('category','')).strip()
+        if category not in ('تأخير','أسلوب التعامل','مشكلة في الطلب','مشكلة في القيادة','أخرى'): raise ValueError('اختر نوع الشكوى')
+        details=str(data.get('details','')).strip()
+        if len(details)>1000: raise ValueError('التفاصيل حتى ١٠٠٠ حرف')
+        db.execute('INSERT INTO driver_complaints(order_id,customer_id,driver_id,category,details,at) VALUES (?,?,?,?,?,?) ON CONFLICT(order_id,customer_id) DO UPDATE SET category=excluded.category,details=excluded.details,at=excluded.at,status=\'open\'',(oid,user['id'],order['driver_id'],category,details,now()))
     elif path == '/api/support/reply':
         if user['role'] != 'admin':
             handler.respond({'error': 'غير مصرح'}, 403)
