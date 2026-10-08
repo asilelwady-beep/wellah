@@ -216,9 +216,10 @@ def admin_activity(db, data):
         raise ValueError('اختر فترة لا تزيد عن سنة')
     orders=[dict(r) for r in db.execute('SELECT o.id,o.created_at AS at,o.customer,o.total,o.status,o.driver_id,d.name AS driver_name FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id WHERE o.created_at>=? AND o.created_at<? ORDER BY o.id DESC LIMIT 1000 OFFSET ?',(start,end,offset))]
     settlements=[dict(r) for r in db.execute('SELECT a.id,a.at,a.action,a.details,a.driver_id,d.name AS driver_name FROM wallet_audit a JOIN drivers d ON d.id=a.driver_id WHERE a.at>=? AND a.at<? ORDER BY a.id DESC LIMIT 1000 OFFSET ?',(start,end,offset))]
+    events=[dict(r) for r in db.execute('SELECT e.id,e.at,e.action,e.order_id,o.customer,d.name AS driver_name FROM events e JOIN orders o ON o.id=e.order_id LEFT JOIN drivers d ON d.id=o.driver_id WHERE e.at>=? AND e.at<? ORDER BY e.id DESC LIMIT 1000 OFFSET ?',(start,end,offset))]
     resets=[dict(r) for r in db.execute("SELECT r.id,r.at,r.day,r.person_type,r.person_id,COALESCE(u.name,d.name) AS name FROM daily_counter_resets r LEFT JOIN users u ON r.person_type='customer' AND u.id=r.person_id LEFT JOIN drivers d ON r.person_type='driver' AND d.id=r.person_id WHERE r.at>=? AND r.at<? ORDER BY r.id DESC LIMIT 1000 OFFSET ?",(start,end,offset))]
     rewards=[dict(r) for r in db.execute('SELECT f.id,f.created_at AS at,f.kind,f.amount_cents,u.name AS name,u.role AS person_type FROM featured_rewards f JOIN users u ON u.id=f.user_id WHERE f.created_at>=? AND f.created_at<? ORDER BY f.id DESC LIMIT 1000 OFFSET ?',(start,end,offset))]
-    return {'orders':orders,'settlements':settlements,'resets':resets,'rewards':rewards,'has_more':any(len(group)>=1000 for group in (orders,settlements,resets,rewards))}
+    return {'orders':orders,'events':events,'settlements':settlements,'resets':resets,'rewards':rewards,'has_more':any(len(group)>=1000 for group in (orders,events,settlements,resets,rewards))}
 
 
 def feature_post(handler, db, path, data, user, create_user, areas, now):
