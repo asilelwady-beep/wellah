@@ -1054,6 +1054,15 @@ class Handler(BaseHTTPRequestHandler):
                             db.execute('INSERT INTO wallet_adjustments(driver_id,admin_id,amount_cents,reason,at,settled) VALUES (?,?,?,?,?,0)',(did,user['id'],cents,'بونص الطيار المميز',now()))
                     else: raise ValueError('الإجراء غير صحيح')
                     return self.respond({'ok':True})
+                if path == '/api/admin/chat/archive':
+                    if user['role']!='admin': return self.respond({'error':'خاص بالمسؤول فقط'},403)
+                    oid=int(data.get('order_id',0))
+                    if not db.execute('SELECT 1 FROM orders WHERE id=?',(oid,)).fetchone(): raise ValueError('الطلب غير موجود')
+                    after=max(0,int(data.get('after_id',0)))
+                    messages=rows(db,"SELECT m.id,m.body,m.at,m.driver_id,u.name AS sender_name,u.role AS sender_role FROM order_messages m JOIN users u ON u.id=m.sender_id WHERE m.order_id=? AND m.id>? ORDER BY m.id LIMIT 101",(oid,after))
+                    more=len(messages)>100
+                    messages=messages[:100]
+                    return self.respond({'messages':messages,'next_id':messages[-1]['id'] if messages else after,'has_more':more})
                 if path == '/api/order/chat':
                     oid=int(data['order_id'])
                     o=db.execute('SELECT * FROM orders WHERE id=?',(oid,)).fetchone()
@@ -1082,7 +1091,7 @@ class Handler(BaseHTTPRequestHandler):
                             if db.execute('SELECT COUNT(*) FROM order_messages WHERE sender_id=? AND at>=?',(user['id'],cutoff)).fetchone()[0]>=30:
                                 return self.respond({'error':'رسائل كثيرة؛ انتظر قليلًا ثم أرسل'},429)
                             db.execute('INSERT INTO order_messages(order_id,driver_id,sender_id,request_id,body,at) VALUES (?,?,?,?,?,?)',(oid,o['driver_id'],user['id'],request_id,body,now()))
-                    messages=rows(db,"SELECT id,sender_id,body,at FROM (SELECT id,sender_id,body,at FROM order_messages WHERE order_id=? AND driver_id=? ORDER BY id DESC LIMIT 200) ORDER BY id",(oid,o['driver_id']))
+                    messages=rows(db,"SELECT id,sender_id,body,at FROM (SELECT id,sender_id,body,at FROM order_messages WHERE order_id=? AND (driver_id=? OR ?=1) ORDER BY id DESC LIMIT 200) ORDER BY id",(oid,o['driver_id'],int(is_customer)))
                     return self.respond({'messages':messages,'driver_id':o['driver_id'],'can_send':o['status'] in ('assigned','ready','picked_up','on_way')})
                 if path == '/api/delivery-quote':
                     if user['role']!='customer': return self.respond({'error':'غير مصرح'},403)
