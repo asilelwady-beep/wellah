@@ -917,7 +917,7 @@ class Handler(BaseHTTPRequestHandler):
             user = self.user(db)
             if not user: return self.respond({'error':'سجل الدخول أولًا'}, 401)
             refresh_offers(db)
-            clause, args = ('', ()) if user['role']=='admin' else ((" WHERE o.user_id=?", (user['id'],)) if user['role']=='customer' else (' WHERE d.user_id=?', (user['id'],)))
+            clause, args = ('', ()) if user['role']=='admin' else ((" WHERE o.user_id=? AND o.status NOT IN ('delivered','cancelled')", (user['id'],)) if user['role']=='customer' else (' WHERE d.user_id=?', (user['id'],)))
             orders = rows(db, "SELECT o.*,d.name AS driver_name,d.phone AS driver_phone,d.photo AS driver_photo,d.lat AS driver_lat,d.lon AS driver_lon,d.location_at AS driver_location_at,m.name AS merchant_name,m.address AS merchant_address FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id LEFT JOIN merchants m ON m.id=o.merchant_id"+clause+" ORDER BY o.id DESC", args)
             for o in orders:
                 o["items"] = rows(db, "SELECT oi.product_id,oi.name,oi.quantity,oi.unit_price,oi.unit,COALESCE(NULLIF(p.image,''),CASE WHEN p.catalog_preview=1 THEN '/product-illustration/' || p.id || '.svg' ELSE '/icon.svg' END) AS image FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=?", (o["id"],))
@@ -1069,6 +1069,8 @@ class Handler(BaseHTTPRequestHandler):
                     d=db.execute('SELECT user_id FROM drivers WHERE id=?',(o['driver_id'],)).fetchone() if o and o['driver_id'] else None
                     is_customer=bool(o and user['role']=='customer' and o['user_id']==user['id'])
                     is_driver=bool(d and user['role']=='driver' and d['user_id']==user['id'])
+                    if is_customer and o['status'] in ('delivered','cancelled'):
+                        return self.respond({'error':'انتهى الطلب؛ سجل المحادثة محفوظ لدى إدارة ولعه'},403)
                     if not o or not d or not (is_customer or is_driver) or o['status'] not in ('assigned','ready','picked_up','on_way','delivered','cancelled'):
                         return self.respond({'error':'الدردشة متاحة لصاحب الطلب والمندوب الذي قبله فقط'},403)
                     mode=data.get('mode','list')
