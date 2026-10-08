@@ -11,7 +11,8 @@ import smtplib
 import ssl
 import time
 from email.message import EmailMessage
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from urllib.request import Request, urlopen
 
 
@@ -39,6 +40,10 @@ def init_features(db):
         id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
         message TEXT NOT NULL, answer TEXT NOT NULL DEFAULT '', ai INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'open', at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS daily_counter_resets (
+        id INTEGER PRIMARY KEY, person_type TEXT NOT NULL CHECK(person_type IN ('customer','driver')),
+        person_id INTEGER NOT NULL, day TEXT NOT NULL, admin_id INTEGER NOT NULL REFERENCES users(id), at TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS daily_counter_resets_lookup ON daily_counter_resets(day,person_type,person_id,at);
     CREATE TABLE IF NOT EXISTS feature_limits (
         scope TEXT NOT NULL, actor TEXT NOT NULL, bucket INTEGER NOT NULL, count INTEGER NOT NULL,
         PRIMARY KEY(scope,actor,bucket));
@@ -174,7 +179,7 @@ def feature_state(db, user):
     tickets = [dict(r) for r in db.execute('SELECT s.*,u.name FROM support_tickets s JOIN users u ON u.id=s.user_id' + ('' if user['role'] == 'admin' else ' WHERE s.user_id=?') + ' ORDER BY s.id DESC LIMIT 100', args)]
     pending=[dict(r) for r in db.execute("SELECT o.id,o.driver_id,'delivered' AS status FROM orders o WHERE o.user_id=? AND o.status='delivered' AND o.driver_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ratings r WHERE r.order_id=o.id AND r.sender_id=?) ORDER BY o.id DESC LIMIT 3",(user['id'],user['id']))] if user['role']=='customer' else []
     shift=dict(row) if user['role']=='driver' and (row:=db.execute('SELECT s.id,s.started_at,s.ended_at,s.second_photo_at FROM driver_shifts s JOIN drivers d ON d.id=s.driver_id WHERE d.user_id=? AND s.ended_at IS NULL',(user['id'],)).fetchone()) else None
-    shifts=[dict(r) for r in db.execute('SELECT s.id,s.driver_id,s.started_at,s.ended_at,s.review_status,s.reviewed_at,s.restored_at,s.second_photo_at,s.second_review_status,s.second_reviewed_at,d.identity_blocked_shift,d.name,u.email FROM driver_shifts s JOIN drivers d ON d.id=s.driver_id JOIN users u ON u.id=d.user_id ORDER BY s.id DESC LIMIT 100')] if user['role']=='admin' else []
+    shifts=[dict(r) for r in db.execute('SELECT s.id,s.driver_id,s.started_at,s.ended_at,s.review_status,s.reviewed_at,s.restored_at,s.second_photo_at,s.second_review_status,s.second_reviewed_at,d.identity_blocked_shift,d.name,d.photo,u.email FROM driver_shifts s JOIN drivers d ON d.id=s.driver_id JOIN users u ON u.id=d.user_id ORDER BY s.id DESC LIMIT 100')] if user['role']=='admin' else []
     shift_required=user['role']=='driver' and (not shift or datetime.fromisoformat(shift['started_at']).timestamp()+86400<=time.time())
     second_required=bool(shift and not shift_required and not shift['second_photo_at'] and datetime.fromisoformat(shift['started_at']).timestamp()+21600<=time.time())
     rating=db.execute('SELECT ROUND(AVG(stars),2) AS average,COUNT(*) AS count FROM ratings WHERE target_id=?',(user['id'],)).fetchone()
@@ -185,15 +190,54 @@ def feature_state(db, user):
         ORDER BY u.featured DESC,completed DESC,CASE WHEN COUNT(r.stars)>=3 THEN AVG(r.stars) ELSE 0 END DESC LIMIT 100""")] if user['role']=='admin' else []
     rewards=[dict(r) for r in db.execute('SELECT id,user_id,kind,amount_cents,created_at,used_order_id FROM featured_rewards ORDER BY id DESC LIMIT 100')] if user['role']=='admin' else []
     complaints=[dict(r) for r in db.execute('SELECT c.*,u.name AS customer_name,d.name AS driver_name FROM driver_complaints c JOIN users u ON u.id=c.customer_id JOIN drivers d ON d.id=c.driver_id ORDER BY c.id DESC LIMIT 100')] if user['role']=='admin' else []
+    daily_resets=[dict(r) for r in db.execute('SELECT person_type,person_id,day,MAX(at) AS at FROM daily_counter_resets GROUP BY person_type,person_id,day ORDER BY day DESC LIMIT 2000')] if user['role']=='admin' else []
     daily_distances=[dict(r) for r in db.execute('SELECT driver_id,day,meters FROM driver_distance_daily ORDER BY day DESC')] if user['role']=='admin' else []
     chat_counts={str(r['order_id']):r['count'] for r in db.execute('SELECT order_id,COUNT(*) AS count FROM order_messages GROUP BY order_id')} if user['role']=='admin' else {}
     chat_threads=[dict(r) for r in db.execute('''SELECT m.order_id,o.customer,o.status,d.name AS driver_name,COUNT(*) AS message_count,MAX(m.id) AS last_message_id,MAX(m.at) AS last_at
         FROM order_messages m JOIN orders o ON o.id=m.order_id LEFT JOIN drivers d ON d.id=o.driver_id
         GROUP BY m.order_id ORDER BY last_message_id DESC''')] if user['role']=='admin' else []
-    return {'shift_required':shift_required,'shift_second_required':second_required,'driver_shift':shift,'driver_shifts':shifts,'my_rating':dict(rating),'featured_people':featured,'featured_rewards':rewards,'driver_complaints':complaints,'pending_ratings':pending,'ratings': ratings, 'support_tickets': tickets, 'chat_counts':chat_counts, 'daily_distances':daily_distances, 'chat_threads':chat_threads, 'email_otp_ready': mail_ready(), 'sms_otp_ready': sms_ready(), 'ai_ready': bool(os.environ.get('OPENAI_API_KEY'))}
+    return {'shift_required':shift_required,'shift_second_required':second_required,'driver_shift':shift,'driver_shifts':shifts,'my_rating':dict(rating),'featured_people':featured,'featured_rewards':rewards,'driver_complaints':complaints,'pending_ratings':pending,'ratings': ratings, 'support_tickets': tickets, 'chat_counts':chat_counts, 'daily_distances':daily_distances, 'daily_resets':daily_resets, 'chat_threads':chat_threads, 'email_otp_ready': mail_ready(), 'sms_otp_ready': sms_ready(), 'ai_ready': bool(os.environ.get('OPENAI_API_KEY'))}
+
+
+def cairo_day_window(day):
+    if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', str(day)):
+        raise ValueError('اختر تاريخًا صحيحًا')
+    start=datetime.strptime(day,'%Y-%m-%d').replace(tzinfo=ZoneInfo('Africa/Cairo'))
+    return start.astimezone(timezone.utc).isoformat(timespec='seconds'),(start+timedelta(days=1)).astimezone(timezone.utc).isoformat(timespec='seconds')
+
+
+def admin_activity(db, data):
+    first,last=str(data.get('from','')),str(data.get('to',''))
+    offset=int(data.get('offset',0))
+    if offset<0 or offset>100000: raise ValueError('صفحة غير صالحة')
+    start,_=cairo_day_window(first)
+    _,end=cairo_day_window(last)
+    if first>last or (datetime.strptime(last,'%Y-%m-%d')-datetime.strptime(first,'%Y-%m-%d')).days>366:
+        raise ValueError('اختر فترة لا تزيد عن سنة')
+    orders=[dict(r) for r in db.execute('SELECT o.id,o.created_at AS at,o.customer,o.total,o.status,o.driver_id,d.name AS driver_name FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id WHERE o.created_at>=? AND o.created_at<? ORDER BY o.id DESC LIMIT 1000 OFFSET ?',(start,end,offset))]
+    settlements=[dict(r) for r in db.execute('SELECT a.id,a.at,a.action,a.details,a.driver_id,d.name AS driver_name FROM wallet_audit a JOIN drivers d ON d.id=a.driver_id WHERE a.at>=? AND a.at<? ORDER BY a.id DESC LIMIT 1000 OFFSET ?',(start,end,offset))]
+    resets=[dict(r) for r in db.execute("SELECT r.id,r.at,r.day,r.person_type,r.person_id,COALESCE(u.name,d.name) AS name FROM daily_counter_resets r LEFT JOIN users u ON r.person_type='customer' AND u.id=r.person_id LEFT JOIN drivers d ON r.person_type='driver' AND d.id=r.person_id WHERE r.at>=? AND r.at<? ORDER BY r.id DESC LIMIT 1000 OFFSET ?",(start,end,offset))]
+    rewards=[dict(r) for r in db.execute('SELECT f.id,f.created_at AS at,f.kind,f.amount_cents,u.name AS name,u.role AS person_type FROM featured_rewards f JOIN users u ON u.id=f.user_id WHERE f.created_at>=? AND f.created_at<? ORDER BY f.id DESC LIMIT 1000 OFFSET ?',(start,end,offset))]
+    return {'orders':orders,'settlements':settlements,'resets':resets,'rewards':rewards,'has_more':any(len(group)>=1000 for group in (orders,settlements,resets,rewards))}
 
 
 def feature_post(handler, db, path, data, user, create_user, areas, now):
+    if path in ('/api/admin/activity','/api/admin/daily/reset'):
+        if not user or user['role']!='admin':
+            handler.respond({'error':'خاص بالإدارة فقط'},403)
+            return True
+        if path.endswith('/activity'):
+            handler.respond(admin_activity(db,data))
+            return True
+        role,person_id,day=str(data.get('person_type','')),int(data.get('person_id',0)),str(data.get('day',''))
+        if day!=datetime.now(ZoneInfo('Africa/Cairo')).strftime('%Y-%m-%d'):
+            raise ValueError('يمكن تصفير عداد اليوم الحالي فقط')
+        table='users' if role=='customer' else 'drivers' if role=='driver' else ''
+        if not table or not db.execute(f'SELECT 1 FROM {table} WHERE id=?'+(" AND role='customer'" if role=='customer' else ''),(person_id,)).fetchone():
+            raise ValueError('الحساب غير موجود')
+        db.execute('INSERT INTO daily_counter_resets(person_type,person_id,day,admin_id,at) VALUES (?,?,?,?,?)',(role,person_id,day,user['id'],now()))
+        handler.respond({'ok':True})
+        return True
     if path == '/api/auth/send-code':
         mobile=bool(data.get('phone'))
         phone=normalized_mobile(data['phone']) if mobile else ''
