@@ -189,6 +189,25 @@ function baseMap(id,zoom=13){
     maxZoom:19,updateWhenIdle:true,updateWhenZooming:false,keepBuffer:2,attribution:'&copy; OpenStreetMap contributors'
   }).addTo(map);
   el.dataset.mapProvider='openstreetmap';
+  // Keep the lightweight map available while the configured Google layer loads.
+  loadGoogleMaps().then(ready=>{
+    if(!ready||!mapViews.includes(map))return;
+    try{
+      const layer=L.gridLayer.googleMutant({type:'roadmap',maxZoom:21});
+      map.removeLayer(baseLayer);
+      layer.addTo(map);
+      el.dataset.mapProvider='google';
+      layer.on('error',()=>{if(mapViews.includes(map)){map.removeLayer(layer);baseLayer.addTo(map);el.dataset.mapProvider='openstreetmap'}});
+    }catch(error){if(mapViews.includes(map)&&!map.hasLayer(baseLayer))baseLayer.addTo(map)}
+  });
+  const external=L.control({position:'bottomright'});
+  external.onAdd=()=>{
+    const link=L.DomUtil.create('a','map-google-open');link.textContent='فتح في خرائط Google ↗';link.target='_blank';link.rel='noopener';
+    link.setAttribute('aria-label','عرض النقطة في تطبيق خرائط جوجل');
+    const update=()=>{const selected=id==='customer-map'&&chosenPoint?[chosenPoint.latitude,chosenPoint.longitude]:id==='pickup-map'&&chosenPickup?[chosenPickup.latitude,chosenPickup.longitude]:null;const center=map.getCenter();const lat=selected?.[0]??center.lat,lon=selected?.[1]??center.lng;link.href='https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(lat+','+lon)};
+    update();link.addEventListener('click',update);map.on('moveend',update);L.DomEvent.disableClickPropagation(link);return link;
+  };
+  external.addTo(map);
   const locate=L.control({position:'topleft'});
   locate.onAdd=()=>{const button=L.DomUtil.create('button','map-locate');button.type='button';button.title='اعرض موقعي الحالي';button.setAttribute('aria-label','اعرض موقعي الحالي');button.textContent='⌖';L.DomEvent.disableClickPropagation(button);L.DomEvent.on(button,'click',()=>showMyLocationOnMap(id));return button};
   locate.addTo(map);
