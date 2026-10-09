@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Local, dependency-free prototype for Wallaha. Not a production service."""
 import json
+import gzip
 import base64
 import hashlib
 import hmac
@@ -168,6 +169,9 @@ def init():
                 db.execute('ALTER TABLE driver_shifts ADD COLUMN '+column+' '+definition)
         db.execute('CREATE TABLE IF NOT EXISTS featured_rewards (id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(id),kind TEXT NOT NULL,amount_cents INTEGER NOT NULL CHECK(amount_cents>0),created_at TEXT NOT NULL,used_order_id INTEGER REFERENCES orders(id))')
         db.execute('CREATE INDEX IF NOT EXISTS featured_rewards_available ON featured_rewards(user_id,kind,used_order_id)')
+        db.execute('CREATE INDEX IF NOT EXISTS order_items_order_lookup ON order_items(order_id)')
+        db.execute('CREATE INDEX IF NOT EXISTS events_order_lookup ON events(order_id,id)')
+        db.execute('CREATE INDEX IF NOT EXISTS orders_dispatch_lookup ON orders(status,offer_until)')
         if 'featured' not in {r['name'] for r in db.execute('PRAGMA table_info(drivers)')}:
             db.execute('ALTER TABLE drivers ADD COLUMN featured INTEGER NOT NULL DEFAULT 0')
         if 'featured' not in {r['name'] for r in db.execute('PRAGMA table_info(users)')}:
@@ -583,6 +587,8 @@ def assign(db, oid):
 
 
 def refresh_offers(db):
+    if not db.execute("SELECT 1 FROM orders WHERE status='awaiting_driver' OR (status='offered' AND offer_until<?) LIMIT 1", (int(time.time()),)).fetchone():
+        return
     if not db.in_transaction:
         db.execute('BEGIN IMMEDIATE')
     for o in db.execute("SELECT id,driver_id FROM orders WHERE status='offered' AND offer_until<?",(int(time.time()),)).fetchall():
@@ -728,7 +734,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def respond(self, value, code=200):
         data = json.dumps(value, ensure_ascii=False).encode()
+        compressed = len(data) > 2048 and 'gzip' in self.headers.get('Accept-Encoding', '').lower()
+        if compressed: data = gzip.compress(data, compresslevel=3)
         self.send_response(code)
+        if compressed: self.send_header('Content-Encoding', 'gzip')
+        self.send_header('Vary', 'Accept-Encoding')
+        self.send_header('Cache-Control', 'no-store')
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
@@ -949,10 +960,19 @@ class Handler(BaseHTTPRequestHandler):
             if not user: return self.respond({'error':'سجل الدخول أولًا'}, 401)
             refresh_offers(db)
             clause, args = ('', ()) if user['role']=='admin' else ((" WHERE o.user_id=? AND o.status NOT IN ('delivered','cancelled')", (user['id'],)) if user['role']=='customer' else (' WHERE d.user_id=?', (user['id'],)))
+            if user['staff_permissions'] is not None and not set(json.loads(user['staff_permissions'])).intersection({'admin-orders','admin-driver-list','admin-map-section','admin-daily','admin-overview'}):
+                clause, args = ' WHERE 0', ()
             orders = rows(db, "SELECT o.*,d.name AS driver_name,d.phone AS driver_phone,d.photo AS driver_photo,d.lat AS driver_lat,d.lon AS driver_lon,d.location_at AS driver_location_at,m.name AS merchant_name,m.address AS merchant_address FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id LEFT JOIN merchants m ON m.id=o.merchant_id"+clause+" ORDER BY o.id DESC", args)
+            item_groups, event_groups = {}, {}
+            order_scope = "SELECT o.id FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id" + clause
+            if orders:
+                for item in rows(db, "SELECT oi.order_id,oi.product_id,oi.name,oi.quantity,oi.unit_price,oi.unit,COALESCE(NULLIF(p.image,''),CASE WHEN p.catalog_preview=1 THEN '/product-illustration/' || p.id || '.svg' ELSE '/icon.svg' END) AS image FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id IN ("+order_scope+") ORDER BY oi.rowid", args):
+                    item_groups.setdefault(item.pop('order_id'), []).append(item)
+                for event in rows(db, "SELECT order_id,action,at FROM events WHERE order_id IN ("+order_scope+") ORDER BY id", args):
+                    event_groups.setdefault(event.pop('order_id'), []).append(event)
             for o in orders:
-                o["items"] = rows(db, "SELECT oi.product_id,oi.name,oi.quantity,oi.unit_price,oi.unit,COALESCE(NULLIF(p.image,''),CASE WHEN p.catalog_preview=1 THEN '/product-illustration/' || p.id || '.svg' ELSE '/icon.svg' END) AS image FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id=?", (o["id"],))
-                o["events"] = rows(db, "SELECT action,at FROM events WHERE order_id=? ORDER BY id", (o["id"],))
+                o["items"] = item_groups.get(o['id'], [])
+                o["events"] = event_groups.get(o['id'], [])
                 if user['role']!='admin':
                     if user['role']=='customer' and o['status'] not in ('assigned','ready','picked_up','on_way','delivered'):
                         o['driver_lat']=o['driver_lon']=o['driver_location_at']=None

@@ -183,31 +183,12 @@ function baseMap(id,zoom=13){
   const el=document.getElementById(id);
   if(!el)return null;
   if(!window.L){el.textContent='تعذر تحميل الخريطة الآن. تحقق من الاتصال ثم حدّث الصفحة.';return null}
-  const map=L.map(el,{scrollWheelZoom:false,zoomControl:false,zoomAnimation:true,fadeAnimation:true}).setView(mapCenter,zoom);
+  const map=L.map(el,{scrollWheelZoom:false,zoomControl:false,zoomAnimation:true,fadeAnimation:true,preferCanvas:true}).setView(mapCenter,zoom);
   L.control.zoom({position:'bottomleft'}).addTo(map);
   const baseLayer=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
-    maxZoom:19,attribution:'&copy; OpenStreetMap contributors'
+    maxZoom:19,updateWhenIdle:true,updateWhenZooming:false,keepBuffer:2,attribution:'&copy; OpenStreetMap contributors'
   }).addTo(map);
-  let vectorLayer=null;
-  try{
-    const canvas=document.createElement('canvas');
-    if(typeof L.maplibreGL==='function'&&(canvas.getContext('webgl2')||canvas.getContext('webgl'))){
-      vectorLayer=L.maplibreGL({
-        style:'https://tiles.openfreemap.org/styles/liberty',
-        interactive:false,
-        attribution:'© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors'
-      }).addTo(map);
-      el.dataset.mapProvider='vector';
-    }
-  }catch(error){if(vectorLayer){map.removeLayer(vectorLayer);vectorLayer=null}console.warn('Vector map unavailable',error)}
-  loadGoogleMaps().then(ready=>{
-    if(!ready||!mapViews.includes(map))return;
-    try{
-      const googleLayer=L.gridLayer.googleMutant({type:'roadmap',maxZoom:21});
-      googleLayer.once('load',()=>{if(mapViews.includes(map)){if(vectorLayer)map.removeLayer(vectorLayer);map.removeLayer(baseLayer);el.dataset.mapProvider='google'}});
-      googleLayer.addTo(map);
-    }catch(error){console.warn('Google Maps layer unavailable',error)}
-  });
+  el.dataset.mapProvider='openstreetmap';
   const locate=L.control({position:'topleft'});
   locate.onAdd=()=>{const button=L.DomUtil.create('button','map-locate');button.type='button';button.title='اعرض موقعي الحالي';button.setAttribute('aria-label','اعرض موقعي الحالي');button.textContent='⌖';L.DomEvent.disableClickPropagation(button);L.DomEvent.on(button,'click',()=>showMyLocationOnMap(id));return button};
   locate.addTo(map);
@@ -259,8 +240,13 @@ window.showNearbyMapRoads=async()=>{
       'لا توجد شوارع مسجلة في هذا الجزء؛ حدد المكان يدويًا وأضف علامة مميزة.';
   }catch(error){status.textContent=error.message||'تعذر تحميل الشوارع'}
 };
-function initMaps(){
-  if(!state)return;
+let leafletReady=null,mapInitVersion=0;
+function ensureLeaflet(){if(window.L)return Promise.resolve();if(!leafletReady)leafletReady=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';script.onload=resolve;script.onerror=()=>{script.remove();leafletReady=null;reject(new Error('تعذر تحميل الخريطة'))};document.head.append(script)});return leafletReady}
+async function initMaps(){
+  const version=++mapInitVersion;
+  if(!state||!document.querySelector('.map'))return;
+  try{await ensureLeaflet()}catch(e){document.querySelectorAll('.map').forEach(el=>el.textContent=e.message);return}
+  if(version!==mapInitVersion||!state)return;
   const tripMap=baseMap('trip-map');
   if(tripMap){
     const active=state.orders.filter(o=>!['cancelled','delivered'].includes(o.status));
@@ -419,3 +405,4 @@ function refreshAdminLiveMap(fitInitially=false){
   if(fitInitially)showMapPoints(map,positions);
   return true;
 }
+
