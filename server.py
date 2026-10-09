@@ -1521,7 +1521,12 @@ class Handler(BaseHTTPRequestHandler):
                             if not shift or datetime.fromisoformat(shift['started_at']).timestamp()+86400<=time.time(): raise ValueError('ابدأ الشيفت بصورة وجه حديثة قبل قبول طلب جديد')
                             if datetime.fromisoformat(shift['started_at']).timestamp()+21600<=time.time() and not shift['second_selfie']: raise ValueError('التقط صورة الشيفت الثانية قبل قبول طلب جديد')
                     elif user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
-                    if action == "confirm_payment" and o["payment_status"] == "pending" and o["proof"] and o["status"] == "payment_review":
+                    if action == 'retry_dispatch' and user['role']=='admin' and o['status']=='awaiting_driver' and o['payment_status']=='confirmed' and (o['kind']=='products' or o['quote_accepted']):
+                        db.execute('DELETE FROM order_declines WHERE order_id=?',(oid,))
+                        db.execute('DELETE FROM order_offer_timeouts WHERE order_id=?',(oid,))
+                        log(db,oid,'طلب المسؤول إعادة محاولة توزيع الطيارين')
+                        assign(db,oid)
+                    elif action == "confirm_payment" and o["payment_status"] == "pending" and o["proof"] and o["status"] == "payment_review":
                         db.execute("UPDATE orders SET payment_status='confirmed',status='new' WHERE id=?", (oid,))
                         log(db, oid, "أكد المسؤول وصول التحويل")
                         assign(db,oid)
