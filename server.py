@@ -703,6 +703,16 @@ def staff_access(user, section):
     if user['role'] != 'admin': return False
     return user['staff_permissions'] is None or section in json.loads(user['staff_permissions'])
 
+def redact_order_contacts(order, role):
+    """Personal contact fields stay on the server for the owner dashboard."""
+    if role == 'driver':
+        for key in ('phone', 'sender_phone', 'recipient_phone'):
+            order[key] = None
+    if role in ('driver', 'customer'):
+        order['driver_phone'] = None
+    return order
+
+
 def staff_state(view, permissions):
     allowed=set(permissions)
     if not allowed.intersection({'admin-orders','admin-driver-list','admin-map-section','admin-daily','admin-overview'}): view['orders']=[]
@@ -973,6 +983,7 @@ class Handler(BaseHTTPRequestHandler):
                 for event in rows(db, "SELECT order_id,action,at FROM events WHERE order_id IN ("+order_scope+") ORDER BY id", args):
                     event_groups.setdefault(event.pop('order_id'), []).append(event)
             for o in orders:
+                redact_order_contacts(o, user['role'])
                 o["items"] = item_groups.get(o['id'], [])
                 o["events"] = event_groups.get(o['id'], [])
                 if user['role']!='admin':
