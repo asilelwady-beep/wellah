@@ -890,7 +890,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/maps-config':
             # Maps JavaScript browser keys are public; restrict this key to walla3ha.com
             # and to the Maps JavaScript API in Google Cloud Console.
-            return self.respond({'google_maps_key': os.environ.get('WALLAHA_GOOGLE_MAPS_API_KEY','')})
+            with connect() as db:
+                saved=db.execute("SELECT value FROM settings WHERE key='google_maps_browser_key'").fetchone()
+            return self.respond({'google_maps_key': saved['value'] if saved else os.environ.get('WALLAHA_GOOGLE_MAPS_API_KEY','')})
         if path == '/api/catalog':
             with connect() as db:
                 return self.respond({
@@ -1323,6 +1325,12 @@ class Handler(BaseHTTPRequestHandler):
                         db.execute("INSERT INTO products(name,category,price,stock,active,merchant_id,price_pending) VALUES (?,'سوبر ماركت',0,0,0,?,1)",(name,merchant['id']))
                         count+=1
                     return self.respond({'ok':True,'imported':count})
+                elif path == '/api/maps-settings':
+                    if user['role']!='admin' or user['staff_permissions'] is not None: return self.respond({'error':'ربط الخرائط للمسؤول الرئيسي فقط'},403)
+                    key=str(data.get('browser_key','')).strip()
+                    if not re.fullmatch(r'AIza[A-Za-z0-9_-]{35}',key): raise ValueError('أدخل مفتاح Maps JavaScript API الصحيح من حساب جوجل')
+                    db.execute('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',('google_maps_browser_key',key))
+                    return self.respond({'ok':True})
                 elif path == '/api/settings':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     current=dict(db.execute('SELECT key,value FROM settings'))
