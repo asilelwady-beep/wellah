@@ -171,7 +171,6 @@ def init():
         db.execute('CREATE INDEX IF NOT EXISTS featured_rewards_available ON featured_rewards(user_id,kind,used_order_id)')
         db.execute('CREATE INDEX IF NOT EXISTS order_items_order_lookup ON order_items(order_id)')
         db.execute('CREATE INDEX IF NOT EXISTS events_order_lookup ON events(order_id,id)')
-        db.execute('CREATE INDEX IF NOT EXISTS orders_dispatch_lookup ON orders(status,offer_until)')
         if 'featured' not in {r['name'] for r in db.execute('PRAGMA table_info(drivers)')}:
             db.execute('ALTER TABLE drivers ADD COLUMN featured INTEGER NOT NULL DEFAULT 0')
         if 'featured' not in {r['name'] for r in db.execute('PRAGMA table_info(users)')}:
@@ -213,6 +212,7 @@ def init():
         for column,definition in [('merchant_id','INTEGER REFERENCES merchants(id)'),('pickup_lat','REAL'),('pickup_lon','REAL'),('offer_until','INTEGER')]:
             if column not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
                 db.execute(f'ALTER TABLE orders ADD COLUMN {column} {definition}')
+        db.execute('CREATE INDEX IF NOT EXISTS orders_dispatch_lookup ON orders(status,offer_until)')
         db.execute('CREATE UNIQUE INDEX IF NOT EXISTS orders_request_once ON orders(user_id,client_request_id) WHERE client_request_id IS NOT NULL')
         db.executemany('INSERT OR IGNORE INTO area_fees(area,fee) VALUES (?,?)', [(area,20) for area in AREAS])
         if 'catalog_preview' not in {x['name'] for x in db.execute('PRAGMA table_info(products)')}:
