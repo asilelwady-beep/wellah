@@ -259,23 +259,52 @@ window.showNearbyMapRoads=async()=>{
 };
 let leafletReady=null,mapInitVersion=0;
 function ensureLeaflet(){if(window.L)return Promise.resolve();if(!leafletReady)leafletReady=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';script.onload=resolve;script.onerror=()=>{script.remove();leafletReady=null;reject(new Error('تعذر تحميل الخريطة'))};document.head.append(script)});return leafletReady}
+function moveDriverBike(map,position){
+  if(!position||!position.every(Number.isFinite))return;
+  if(!map._driverMarker){
+    const icon=L.divIcon({className:'',html:'<span role="img" aria-label="موتوسيكل الطيار" style="width:44px;height:44px;display:grid;place-items:center;border:3px solid #fff;border-radius:50%;background:#e84b36;box-shadow:0 3px 12px #18212b66;font-size:25px;line-height:1">🏍️</span>',iconSize:[44,44],iconAnchor:[22,22]});
+    map._driverMarker=L.marker(position,{icon,keyboard:false,zIndexOffset:1000}).addTo(map).bindPopup('موقع الطيار الحالي',{autoPan:false});
+    return;
+  }
+  if(map._driverMoveFrame)cancelAnimationFrame(map._driverMoveFrame);
+  const from=map._driverMarker.getLatLng(),to=L.latLng(position[0],position[1]);
+  if(map.distance(from,to)<2.5)return;
+  if(map.distance(from,to)>1000){map._driverMarker.setLatLng(to);return}
+  let startedAt=0;
+  const animate=now=>{
+    if(!startedAt)startedAt=now;
+    const t=Math.min(1,(now-startedAt)/650),ease=t*t*(3-2*t);
+    map._driverMarker.setLatLng([from.lat+(to.lat-from.lat)*ease,from.lng+(to.lng-from.lng)*ease]);
+    if(t<1)map._driverMoveFrame=requestAnimationFrame(animate);else map._driverMoveFrame=0;
+  };
+  map._driverMoveFrame=requestAnimationFrame(animate);
+}
 function updateDriverMap(){
   const map=mapViews.find(m=>m.getContainer().id==='driver-map');
   if(!map||!state||tab!=='driver')return;
   if(!map._driverOverlay)map._driverOverlay=L.layerGroup().addTo(map);
-  map._driverOverlay.clearLayers();
   const positions=[],active=state.orders.filter(o=>!['cancelled','delivered'].includes(o.status));
   const current=active.find(o=>['assigned','ready','picked_up','on_way'].includes(o.status));
   const chosen=active.find(o=>o.id===selectedTripId)||current||active.find(o=>o.status==='offered');
-  for(const o of (current?[current]:chosen?[chosen]:active)){
-    const popup='<strong>طلب #'+o.id+'</strong> · '+esc(o.area)+'<br>'+esc(o.address)+'<br><button type="button" onclick="openTrip('+o.id+')">تفاصيل الطلب</button>'+(o.status==='offered'?'<button type="button" onclick="act('+o.id+',\'accept_offer\')">قبول</button>':'');
-    if(o.pickup_lat!=null){point(map,o.pickup_lat,o.pickup_lon,'استلام من '+esc(o.shop_anywhere?o.pickup:o.merchant_name||o.pickup),'#2864c5',map._driverOverlay);positions.push([o.pickup_lat,o.pickup_lon])}
-    if(o.latitude!=null&&o.longitude!=null){point(map,o.latitude,o.longitude,popup,'#e58029',map._driverOverlay);if(current)positions.push([o.latitude,o.longitude])}
+  const order=current||chosen;
+  const orderKey=order?order.id+':'+order.status+':'+Boolean(order.shop_anywhere):'empty';
+  if(map._driverOrderKey!==orderKey){
+    map._driverOverlay.clearLayers();
+    map._driverOrderKey=orderKey;
+    for(const o of (current?[current]:chosen?[chosen]:active)){
+      const popup='<strong>طلب #'+o.id+'</strong> · '+esc(o.area)+'<br>'+esc(o.address)+'<br><button type="button" onclick="openTrip('+o.id+')">تفاصيل الطلب</button>'+(o.status==='offered'?'<button type="button" onclick="act('+o.id+',\'accept_offer\')">قبول</button>':'');
+      if(o.pickup_lat!=null){point(map,o.pickup_lat,o.pickup_lon,'استلام من '+esc(o.shop_anywhere?o.pickup:o.merchant_name||o.pickup),'#2864c5',map._driverOverlay);positions.push([Number(o.pickup_lat),Number(o.pickup_lon)])}
+      if(o.latitude!=null&&o.longitude!=null){point(map,o.latitude,o.longitude,popup,'#e58029',map._driverOverlay);if(current)positions.push([Number(o.latitude),Number(o.longitude)])}
+    }
+  }else if(order){
+    if(order.pickup_lat!=null)positions.push([Number(order.pickup_lat),Number(order.pickup_lon)]);
+    if(current&&order.latitude!=null&&order.longitude!=null)positions.push([Number(order.latitude),Number(order.longitude)]);
   }
   const profile=state.driver_profile,driverPosition=profile?.lat!=null&&profile?.lon!=null?[Number(profile.lat),Number(profile.lon)]:null;
-  if(driverPosition){point(map,driverPosition[0],driverPosition[1],'موقعي الحالي','#087b5b',map._driverOverlay);positions.push(driverPosition)}
+  if(driverPosition){moveDriverBike(map,driverPosition);positions.push(driverPosition)}
+  else if(map._driverMarker){map.removeLayer(map._driverMarker);map._driverMarker=null}
   const target=current&&tripRouteTarget(current);
-  if(driverPosition&&target&&target.lat!=null&&target.lon!=null){const destination=[Number(target.lat),Number(target.lon)];map._driverRoute=L.polyline([driverPosition,destination],{color:'#f0642d',weight:6,opacity:.88,dashArray:'10 8',lineCap:'round'}).addTo(map._driverOverlay);positions.push(destination)}
+  if(target&&target.lat!=null&&target.lon!=null)positions.push([Number(target.lat),Number(target.lon)]);
   const viewKey=(current?current.id+':'+current.status:chosen?chosen.id+':'+chosen.status:'empty')+':gps'+Boolean(driverPosition);
   if(map._driverViewKey!==viewKey){showMapPoints(map,positions);map._driverViewKey=viewKey}
 }
