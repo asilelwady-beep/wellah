@@ -388,14 +388,23 @@ async function initMaps(){
     const map=baseMap('driver-map');if(!map)return;
     const positions=[];
     const active=state.orders.filter(x=>!['cancelled','delivered'].includes(x.status));
-    const chosen=active.find(o=>o.id===selectedTripId);
-    for(const o of (chosen?[chosen]:active)){
+    const current=active.find(o=>['assigned','ready','picked_up','on_way'].includes(o.status));
+    const chosen=active.find(o=>o.id===selectedTripId)||current||active.find(o=>o.status==='offered');
+    for(const o of (current?[current]:chosen?[chosen]:active)){
       const popup='<strong>طلب #'+o.id+'</strong> · '+esc(o.area)+'<br>'+esc(o.address)+'<br><button type="button" onclick="openTrip('+o.id+')">تفاصيل الطلب</button>'+(o.status==='offered'?'<button type="button" onclick="act('+o.id+',\'accept_offer\')">قبول</button>':'');
       if(o.pickup_lat!=null){point(map,o.pickup_lat,o.pickup_lon,'استلام من '+esc(o.shop_anywhere?o.pickup:o.merchant_name||o.pickup),'#2864c5');positions.push([o.pickup_lat,o.pickup_lon])}
-      if(o.latitude!=null&&o.longitude!=null){point(map,o.latitude,o.longitude,popup,'#e58029');positions.push([o.latitude,o.longitude])}
+      if(o.latitude!=null&&o.longitude!=null){point(map,o.latitude,o.longitude,popup,'#e58029');if(current)positions.push([o.latitude,o.longitude])}
     }
     const profile=state.driver_profile;
-    if(profile?.lat!=null&&profile?.lon!=null){point(map,profile.lat,profile.lon,'موقعي الحالي','#087b5b');if(!positions.length)positions.push([profile.lat,profile.lon])}
+    const driverPosition=profile?.lat!=null&&profile?.lon!=null?[Number(profile.lat),Number(profile.lon)]:null;
+    if(driverPosition){point(map,driverPosition[0],driverPosition[1],'موقعي الحالي','#087b5b');positions.push(driverPosition)}
+    const target=current&&tripRouteTarget(current);
+    if(map._driverRoute){map.removeLayer(map._driverRoute);map._driverRoute=null}
+    if(driverPosition&&target&&target.lat!=null&&target.lon!=null){
+      const destination=[Number(target.lat),Number(target.lon)];
+      map._driverRoute=L.polyline([driverPosition,destination],{color:'#f0642d',weight:6,opacity:.88,dashArray:'10 8',lineCap:'round'}).addTo(map);
+      positions.push(destination);
+    }
     showMapPoints(map,positions);
   }
 }
