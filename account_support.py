@@ -181,7 +181,7 @@ def feature_state(db, user):
     shift=dict(row) if user['role']=='driver' and (row:=db.execute('SELECT s.id,s.started_at,s.ended_at,s.second_photo_at FROM driver_shifts s JOIN drivers d ON d.id=s.driver_id WHERE d.user_id=? AND s.ended_at IS NULL',(user['id'],)).fetchone()) else None
     shifts=[dict(r) for r in db.execute('SELECT s.id,s.driver_id,s.started_at,s.ended_at,s.review_status,s.reviewed_at,s.restored_at,s.second_photo_at,s.second_review_status,s.second_reviewed_at,d.identity_blocked_shift,d.name,d.photo,u.email FROM driver_shifts s JOIN drivers d ON d.id=s.driver_id JOIN users u ON u.id=d.user_id ORDER BY s.id DESC LIMIT 100')] if user['role']=='admin' else []
     shift_required=user['role']=='driver' and (not shift or datetime.fromisoformat(shift['started_at']).timestamp()+86400<=time.time())
-    second_required=bool(shift and not shift_required and not shift['second_photo_at'] and datetime.fromisoformat(shift['started_at']).timestamp()+21600<=time.time())
+    second_required=bool(shift and not shift_required and not shift['second_photo_at'] and datetime.fromisoformat(shift['started_at']).timestamp()+14400<=time.time())
     rating=db.execute('SELECT ROUND(AVG(stars),2) AS average,COUNT(*) AS count FROM ratings WHERE target_id=?',(user['id'],)).fetchone()
     featured=[dict(r) for r in db.execute("""SELECT u.id,u.name,u.role,u.featured,ROUND(AVG(r.stars),2) AS average,COUNT(r.stars) AS rating_count,
         (SELECT COUNT(*) FROM orders o WHERE o.status='delivered' AND (o.user_id=u.id OR o.driver_id IN (SELECT id FROM drivers WHERE user_id=u.id))) AS completed,
