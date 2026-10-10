@@ -34,6 +34,8 @@ ROAD_LOCK = Lock()
 ROAD_STATE = {'last': 0.0, 'cache': {}}
 OSM_SEARCH_LOCK = Lock()
 OSM_SEARCH_STATE = {'last': 0.0}
+ORDER_CALL_CLEANUP_LOCK = Lock()
+ORDER_CALL_CLEANUP_STATE = {'last': 0.0}
 def osm_named_places(query):
     """Fallback for named map features missing from Photon; one bounded user search."""
     words=re.findall(r'[\\w\\u0600-\\u06ff]+',query.casefold())
@@ -136,6 +138,10 @@ def init():
         CREATE TABLE IF NOT EXISTS order_items (order_id INTEGER REFERENCES orders(id), product_id INTEGER REFERENCES products(id), name TEXT NOT NULL, quantity INTEGER NOT NULL, unit_price REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS order_messages (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders(id), driver_id INTEGER NOT NULL REFERENCES drivers(id), sender_id INTEGER NOT NULL REFERENCES users(id), request_id TEXT NOT NULL, body TEXT NOT NULL, at TEXT NOT NULL, UNIQUE(sender_id,request_id));
         CREATE INDEX IF NOT EXISTS order_messages_thread ON order_messages(order_id,driver_id,id);
+        CREATE TABLE IF NOT EXISTS order_calls (id TEXT PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders(id), driver_id INTEGER NOT NULL REFERENCES drivers(id), customer_id INTEGER NOT NULL REFERENCES users(id), caller_id INTEGER NOT NULL REFERENCES users(id), status TEXT NOT NULL, offer TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS order_calls_order_status ON order_calls(order_id,status,created_at);
+        CREATE TABLE IF NOT EXISTS order_call_signals (id INTEGER PRIMARY KEY, call_id TEXT NOT NULL REFERENCES order_calls(id) ON DELETE CASCADE, sender_id INTEGER NOT NULL REFERENCES users(id), kind TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS order_call_signals_thread ON order_call_signals(call_id,id);
         CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, order_id INTEGER REFERENCES orders(id), action TEXT NOT NULL, at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS driver_trip_points (driver_id INTEGER NOT NULL, order_id INTEGER NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, at TEXT NOT NULL, PRIMARY KEY(driver_id,order_id));
         CREATE TABLE IF NOT EXISTS driver_distance_daily (driver_id INTEGER NOT NULL, day TEXT NOT NULL, meters REAL NOT NULL DEFAULT 0, PRIMARY KEY(driver_id,day));
@@ -712,6 +718,28 @@ def redact_order_contacts(order, role):
         order['driver_phone'] = None
     return order
 
+def order_call_ice_config(user_id):
+    urls=[x.strip() for x in os.environ.get('WALLAHA_TURN_URL','').split(',') if x.strip()]
+    secret=os.environ.get('WALLAHA_TURN_SECRET','')
+    servers=[{'urls':'stun:stun.cloudflare.com:3478'}]
+    if urls and secret:
+        username=f'{int(time.time())+10800}:{int(user_id)}'
+        credential=base64.b64encode(hmac.new(secret.encode(),username.encode(),hashlib.sha1).digest()).decode()
+        servers.append({'urls':urls,'username':username,'credential':credential})
+        return servers,'relay'
+    return servers,'all'
+
+def cleanup_order_calls(db):
+    now_s=int(time.time())
+    if now_s-ORDER_CALL_CLEANUP_STATE['last']<60: return
+    with ORDER_CALL_CLEANUP_LOCK:
+        if now_s-ORDER_CALL_CLEANUP_STATE['last']<60: return
+        db.execute("UPDATE order_calls SET status='ended',offer='{}',updated_at=? WHERE status='ringing' AND created_at<=?",(now_s,now_s-90))
+        db.execute("UPDATE order_calls SET status='ended',offer='{}',updated_at=? WHERE status='connected' AND updated_at<=?",(now_s,now_s-7200))
+        db.execute("DELETE FROM order_call_signals WHERE call_id IN (SELECT id FROM order_calls WHERE status IN ('ended','rejected'))")
+        db.execute('DELETE FROM order_calls WHERE updated_at<?',(now_s-86400,))
+        ORDER_CALL_CLEANUP_STATE['last']=now_s
+
 
 def staff_state(view, permissions):
     allowed=set(permissions)
@@ -971,6 +999,7 @@ class Handler(BaseHTTPRequestHandler):
             user = self.user(db)
             if not user: return self.respond({'error':'سجل الدخول أولًا'}, 401)
             refresh_offers(db)
+            cleanup_order_calls(db)
             clause, args = ('', ()) if user['role']=='admin' else ((" WHERE o.user_id=? AND o.status NOT IN ('delivered','cancelled')", (user['id'],)) if user['role']=='customer' else (' WHERE d.user_id=?', (user['id'],)))
             if user['staff_permissions'] is not None and not set(json.loads(user['staff_permissions'])).intersection({'admin-orders','admin-driver-list','admin-map-section','admin-daily','admin-overview'}):
                 clause, args = ' WHERE 0', ()
@@ -1046,6 +1075,69 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond({'token':token,'role':u['role']})
                 user=self.user(db)
                 if not user: return self.respond({'error':'سجل الدخول أولًا'},401)
+                if path == '/api/order/call':
+                    oid=int(data.get('order_id',0))
+                    mode=str(data.get('mode','check'))
+                    order=db.execute('SELECT id,user_id,driver_id,status FROM orders WHERE id=?',(oid,)).fetchone()
+                    driver=db.execute('SELECT user_id FROM drivers WHERE id=?',(order['driver_id'],)).fetchone() if order and order['driver_id'] else None
+                    is_customer=bool(order and user['role']=='customer' and order['user_id']==user['id'])
+                    is_driver=bool(driver and user['role']=='driver' and driver['user_id']==user['id'])
+                    active_status=('assigned','ready','picked_up','on_way')
+                    if not order or not (is_customer or is_driver) or order['status'] not in active_status:
+                        return self.respond({'error':'الاتصال متاح للعميل والطيار المعيّن في الطلب الجاري فقط'},403)
+                    now_s=int(time.time())
+                    if mode=='ice':
+                        ice_servers,ice_policy=order_call_ice_config(user['id'])
+                        return self.respond({'ice_servers':ice_servers,'ice_policy':ice_policy})
+                    if mode=='start':
+                        offer=data.get('offer')
+                        if not isinstance(offer,dict) or offer.get('type')!='offer' or not isinstance(offer.get('sdp'),str) or len(offer['sdp'])>30000:
+                            raise ValueError('تعذر بدء المكالمة؛ بيانات الاتصال غير صالحة')
+                        db.execute('BEGIN IMMEDIATE')
+                        existing=db.execute("SELECT id FROM order_calls WHERE order_id=? AND status IN ('ringing','connected') AND created_at>? ORDER BY created_at DESC LIMIT 1",(oid,now_s-7200)).fetchone()
+                        if existing: return self.respond({'error':'فيه مكالمة جارية لهذا الطلب'},409)
+                        cid=secrets.token_urlsafe(24)
+                        db.execute('INSERT INTO order_calls(id,order_id,driver_id,customer_id,caller_id,status,offer,created_at,updated_at) VALUES (?,?,?,?,? ,\'ringing\',?,?,?)',(cid,oid,order['driver_id'],order['user_id'],user['id'],json.dumps(offer,separators=(',',':')),now_s,now_s))
+                        ice_servers,ice_policy=order_call_ice_config(user['id'])
+                        return self.respond({'call_id':cid,'status':'ringing','ice_servers':ice_servers,'ice_policy':ice_policy})
+                    if mode=='check':
+                        db.execute('BEGIN IMMEDIATE')
+                        db.execute("UPDATE order_calls SET status='ended',offer='{}',updated_at=? WHERE order_id=? AND status='ringing' AND created_at<=?",(now_s,oid,now_s-90))
+                        db.execute("UPDATE order_calls SET status='ended',offer='{}',updated_at=? WHERE order_id=? AND status='connected' AND updated_at<=?",(now_s,oid,now_s-7200))
+                        db.execute('DELETE FROM order_call_signals WHERE call_id IN (SELECT id FROM order_calls WHERE order_id=? AND status=\'ended\')',(oid,))
+                        db.execute('DELETE FROM order_calls WHERE updated_at<?',(now_s-86400,))
+                        call=db.execute("SELECT id,caller_id,status,offer FROM order_calls WHERE order_id=? AND status IN ('ringing','connected') ORDER BY created_at DESC LIMIT 1",(oid,)).fetchone()
+                        if not call: return self.respond({'call':None,'signals':[],'next_id':0})
+                        after=max(0,int(data.get('after_id',0)))
+                        signals=rows(db,'SELECT id,kind,payload FROM order_call_signals WHERE call_id=? AND sender_id<>? AND id>? ORDER BY id LIMIT 60',(call['id'],user['id'],after))
+                        for signal in signals: signal['payload']=json.loads(signal['payload'])
+                        next_id=db.execute('SELECT COALESCE(MAX(id),0) AS id FROM order_call_signals WHERE call_id=?',(call['id'],)).fetchone()['id']
+                        ice_servers,ice_policy=order_call_ice_config(user['id'])
+                        return self.respond({'call':{'id':call['id'],'caller_id':call['caller_id'],'status':call['status'],'offer':json.loads(call['offer']) if call['caller_id']!=user['id'] and call['status']=='ringing' else None},'signals':signals,'next_id':next_id,'ice_servers':ice_servers,'ice_policy':ice_policy})
+                    cid=str(data.get('call_id',''))
+                    call=db.execute('SELECT * FROM order_calls WHERE id=? AND order_id=?',(cid,oid)).fetchone()
+                    if not call or user['id'] not in (call['customer_id'],):
+                        if not call or not (is_driver and call['driver_id']==order['driver_id']):
+                            return self.respond({'error':'المكالمة غير موجودة أو غير مصرح بها'},403)
+                    if mode in ('end','reject'):
+                        if mode=='reject' and (call['caller_id']==user['id'] or call['status']!='ringing'):
+                            raise ValueError('لا يمكن رفض هذه المكالمة')
+                        db.execute('UPDATE order_calls SET status=?,updated_at=? WHERE id=? AND status IN (\'ringing\',\'connected\')',('rejected' if mode=='reject' else 'ended',now_s,cid))
+                        db.execute('UPDATE order_calls SET offer=\'{}\' WHERE id=?',(cid,))
+                        db.execute('DELETE FROM order_call_signals WHERE call_id=?',(cid,))
+                        return self.respond({'ok':True})
+                    if mode!='signal': raise ValueError('إجراء مكالمة غير معروف')
+                    kind=str(data.get('kind',''))
+                    payload=data.get('payload')
+                    if kind not in ('answer','candidate') or not isinstance(payload,dict) or len(json.dumps(payload,separators=(',',':')))>8000:
+                        raise ValueError('إشارة الاتصال غير صالحة')
+                    if call['status'] not in ('ringing','connected'): raise ValueError('انتهت المكالمة')
+                    if kind=='answer':
+                        if call['caller_id']==user['id'] or call['status']!='ringing' or payload.get('type')!='answer' or not isinstance(payload.get('sdp'),str) or len(payload['sdp'])>30000:
+                            raise ValueError('رد المكالمة غير صالح')
+                        db.execute('UPDATE order_calls SET status=\'connected\',updated_at=? WHERE id=?',(now_s,cid))
+                    db.execute('INSERT INTO order_call_signals(call_id,sender_id,kind,payload,at) VALUES (?,?,?,?,?)',(cid,user['id'],kind,json.dumps(payload,separators=(',',':')),now_s))
+                    return self.respond({'ok':True})
                 if path == '/api/admin/team':
                     if user['role']!='admin' or user['staff_permissions'] is not None: return self.respond({'error':'إدارة الفريق للمسؤول الرئيسي فقط'},403)
                     action=str(data.get('action',''))

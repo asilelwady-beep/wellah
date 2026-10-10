@@ -249,6 +249,39 @@ class AccountSupportTests(unittest.TestCase):
         self.assertTrue(any(o['id']==oid for o in self.state_for(self.at)['orders']))
         self.assertTrue(any(r['id']==oid for r in self.state_for(self.ct)['pending_ratings']))
 
+    def test_voice_call_signaling_is_private_to_assigned_order_participants(self):
+        oid=self.wallet_order('assigned')
+        dt=self.post('login',{'phone':'01000000003','password':'driver-password-123','expected_role':'driver'})[1]['token']
+        customer_order=next(o for o in self.state_for(self.ct)['orders'] if o['id']==oid)
+        driver_order=next(o for o in self.state_for(dt)['orders'] if o['id']==oid)
+        self.assertIsNone(customer_order['driver_phone']);self.assertIsNone(driver_order['phone'])
+        offer={'type':'offer','sdp':'v=0\\r\\n'+'x'*200}
+        status,started=self.post('order/call',{'mode':'start','order_id':oid,'offer':offer},self.ct)
+        self.assertEqual(status,200);self.assertEqual(started['status'],'ringing')
+        self.assertEqual(self.post('order/call',{'mode':'start','order_id':oid,'offer':offer},dt)[0],409)
+        incoming=self.post('order/call',{'mode':'check','order_id':oid},dt)[1]
+        self.assertEqual(incoming['call']['id'],started['call_id']);self.assertEqual(incoming['call']['offer'],offer)
+        answer={'type':'answer','sdp':'v=0\\r\\n'+'y'*200}
+        self.assertEqual(self.post('order/call',{'mode':'signal','order_id':oid,'call_id':started['call_id'],'kind':'answer','payload':answer},dt)[0],200)
+        candidate={'candidate':'candidate:1 1 UDP 1 127.0.0.1 9 typ host','sdpMid':'0','sdpMLineIndex':0}
+        self.assertEqual(self.post('order/call',{'mode':'signal','order_id':oid,'call_id':started['call_id'],'kind':'candidate','payload':candidate},dt)[0],200)
+        received=self.post('order/call',{'mode':'check','order_id':oid},self.ct)[1]
+        self.assertEqual(received['call']['status'],'connected')
+        self.assertEqual([s['kind'] for s in received['signals']],['answer','candidate'])
+        self.assertEqual(received['signals'][0]['payload'],answer)
+        self.assertEqual(self.post('order/call',{'mode':'check','order_id':oid},self.ot)[0],403)
+        self.assertEqual(self.post('order/call',{'mode':'check','order_id':oid},self.at)[0],403)
+        self.assertEqual(self.post('order/call',{'mode':'end','order_id':oid,'call_id':started['call_id']},self.ct)[0],200)
+        self.assertIsNone(self.post('order/call',{'mode':'check','order_id':oid},dt)[1]['call'])
+        with server.connect() as db: db.execute("UPDATE orders SET status='delivered' WHERE id=?",(oid,))
+        self.assertEqual(self.post('order/call',{'mode':'check','order_id':oid},self.ct)[0],403)
+
+    def test_voice_call_turn_credentials_are_short_lived_and_relay_only(self):
+        with patch.dict(os.environ,{'WALLAHA_TURN_URL':'turn:turn.example.test:3478','WALLAHA_TURN_SECRET':'private-test-secret'}):
+            servers,policy=server.order_call_ice_config(42)
+        self.assertEqual(policy,'relay');self.assertEqual(servers[1]['urls'],['turn:turn.example.test:3478'])
+        self.assertTrue(servers[1]['username'].endswith(':42'));self.assertTrue(servers[1]['credential'])
+
     def test_registration_requires_otp(self):
         code,result=self.post('register',{'name':'جديد','phone':'01000000004','password':'new-password-123','confirm_password':'new-password-123'})
         self.assertEqual(code,400);self.assertIn('رمز',result['error'])

@@ -46,7 +46,7 @@ function expandMap(map){
       panel.className='map-search-panel';
       panel.setAttribute('aria-label',pickup?'بحث وتحديد نقطة الاستلام':'بحث وتحديد نقطة الوصول');
       const title=document.createElement('h3');
-      title.textContent=pickup?'حدد نقطة الاستلام':'حدد نقطة الوصول';
+      title.textContent=pickup?(kind==='delivery'?'حدد مكان المرسل':'حدد نقطة الاستلام'):(kind==='delivery'?'حدد مكان المستلم':'حدد نقطة الوصول');
       const hint=document.createElement('p');
       hint.textContent='ابحث بالاسم، اختر النتيجة، ثم راجع الدبوس على الخريطة.';
       const done=document.createElement('button');
@@ -209,7 +209,7 @@ function baseMap(id,zoom=13){
   };
   external.addTo(map);
   const locate=L.control({position:'topleft'});
-  locate.onAdd=()=>{const button=L.DomUtil.create('button','map-locate');button.type='button';button.title='اعرض موقعي الحالي';button.setAttribute('aria-label','اعرض موقعي الحالي');button.textContent='⌖';L.DomEvent.disableClickPropagation(button);L.DomEvent.on(button,'click',()=>showMyLocationOnMap(id));return button};
+  locate.onAdd=()=>{const button=L.DomUtil.create('button','map-locate');button.type='button';button.title=id==='pickup-map'&&kind==='delivery'?'حدد مكان المرسل من موقعي الحالي':id==='customer-map'&&kind==='delivery'?'اعرض موقعي لمساعدتك في تحديد مكان المستلم':'اعرض موقعي الحالي';button.setAttribute('aria-label',button.title);button.textContent='⌖';L.DomEvent.disableClickPropagation(button);L.DomEvent.on(button,'click',()=>{if(id==='pickup-map'&&typeof window.pickupCurrentLocation==='function')window.pickupCurrentLocation();else if(id==='customer-map'&&typeof window.pickCurrentLocation==='function')window.pickCurrentLocation();else showMyLocationOnMap(id)});return button};
   locate.addTo(map);
   const expand=L.control({position:'topright'});
   expand.onAdd=()=>{const button=L.DomUtil.create('button','map-expand');button.type='button';button.title='تكبير الخريطة';button.setAttribute('aria-label','تكبير الخريطة');button.textContent='⛶';L.DomEvent.disableClickPropagation(button);L.DomEvent.on(button,'click',()=>{if(el.classList.contains('map-expanded'))closeExpandedMap();else expandMap(map)});return button};
@@ -345,8 +345,27 @@ async function initMaps(){
         if(!navigator.geolocation)return alert('تحديد الموقع غير مدعوم');
         navigator.geolocation.getCurrentPosition(p=>{
           if(!mapViews.includes(map))return;
-          const pos={lat:p.coords.latitude,lng:p.coords.longitude};choose(pos);map.flyTo(pos,17,{duration:0.7});
-        },()=>{const label=document.getElementById('selected-point');if(label)label.textContent='اسمح بالوصول إلى الموقع أو المس مكانك على الخريطة'}, {enableHighAccuracy:true,maximumAge:0,timeout:15000});
+          const pos={lat:p.coords.latitude,lng:p.coords.longitude};
+          if(kind==='delivery'){map.flyTo(pos,17,{duration:0.7});return}
+          choose(pos,'destination');
+          const address=document.getElementById('address'),destination=document.getElementById('destination');
+          if(address)address.value='موقعي الحالي على الخريطة';
+          map.flyTo(pos,17,{duration:0.7});
+        },()=>{const label=document.getElementById('selected-point');if(label)label.textContent='تعذر تحديد الموقع؛ فعّل GPS وإذن الموقع أو المس المكان الصحيح'}, {enableHighAccuracy:true,maximumAge:0,timeout:20000});
+      };
+      window.pickupCurrentLocation=()=>{
+        mapPinMode='pickup';
+        if(!pickupMap||!navigator.geolocation)return alert('تحديد الموقع غير متاح؛ فعّل GPS وإذن الموقع');
+        navigator.geolocation.getCurrentPosition(p=>{
+          if(!mapViews.includes(pickupMap))return;
+          const pos={lat:p.coords.latitude,lng:p.coords.longitude};
+          choose(pos,'pickup');
+          const input=document.getElementById('pickup');
+          if(input)input.value='موقعي الحالي على الخريطة';
+          const label=document.getElementById('selected-pickup');
+          if(label)label.textContent='📍 '+(kind==='delivery'?'مكان المرسل':'نقطة الاستلام')+': موقعي الحالي · دقة GPS نحو '+Math.round(p.coords.accuracy||0)+' متر';
+          pickupMap.flyTo(pos,17,{duration:0.7});
+        },()=>{const label=document.getElementById('selected-pickup');if(label)label.textContent='تعذر تحديد موقعك؛ فعّل GPS وإذن الموقع أو المس نقطة الاستلام على الخريطة'}, {enableHighAccuracy:true,maximumAge:0,timeout:20000});
       };
       if(customerView==='checkout'&&!autoCheckoutLocationAttempted){
         autoCheckoutLocationAttempted=true;
@@ -355,8 +374,8 @@ async function initMaps(){
           if(!mapViews.includes(map))return;
           const pos={lat:p.coords.latitude,lng:p.coords.longitude};
           if(kind==='products'){if(chosenPoint)return;choose(pos,'destination');map.flyTo(pos,17,{duration:0.7})}
-          else{if(chosenPickup)return;choose(pos,'pickup');pickupMap?.flyTo(pos,17,{duration:0.7})}
-        },()=>{const label=document.getElementById(kind==='products'?'selected-point':'selected-pickup');if(label)label.textContent='اسمح بالوصول إلى الموقع أو المس مكانك على الخريطة'}, {enableHighAccuracy:true,maximumAge:0,timeout:15000});
+          else{if(chosenPickup)return;choose(pos,'pickup');const input=document.getElementById('pickup');if(input)input.value='موقعي الحالي على الخريطة';const label=document.getElementById('selected-pickup');if(label)label.textContent='📍 '+(kind==='delivery'?'مكان المرسل':'نقطة الاستلام')+': موقعي الحالي · دقة GPS نحو '+Math.round(p.coords.accuracy||0)+' متر';pickupMap?.flyTo(pos,17,{duration:0.7})}
+        },()=>{const label=document.getElementById(kind==='products'?'selected-point':'selected-pickup');if(label)label.textContent='اسمح بالوصول إلى الموقع أو المس مكانك على الخريطة'}, {enableHighAccuracy:true,maximumAge:0,timeout:20000});
       }
     }
     const o=state.orders.find(x=>x.id===trackingOrderId);
