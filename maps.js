@@ -259,6 +259,56 @@ window.showNearbyMapRoads=async()=>{
 };
 let leafletReady=null,mapInitVersion=0;
 function ensureLeaflet(){if(window.L)return Promise.resolve();if(!leafletReady)leafletReady=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';script.onload=resolve;script.onerror=()=>{script.remove();leafletReady=null;reject(new Error('تعذر تحميل الخريطة'))};document.head.append(script)});return leafletReady}
+function requestDriverRoadRoute(map,origin,target){
+  if(!origin||!target||target.lat==null||target.lon==null){
+    map._driverRouteController?.abort();
+    if(map._driverRouteLayer){map.removeLayer(map._driverRouteLayer);map._driverRouteLayer=null}
+    map._driverRouteTargetKey='';
+    map._driverRouteOrigin=null;
+    return;
+  }
+  const destination=[Number(target.lat),Number(target.lon)];
+  if(!destination.every(Number.isFinite))return;
+  const targetKey=destination.map(v=>v.toFixed(5)).join(',')+':'+(target.label||'');
+  const changedTarget=map._driverRouteTargetKey!==targetKey;
+  if(changedTarget){
+    map._driverRouteController?.abort();
+    if(map._driverRouteLayer){map.removeLayer(map._driverRouteLayer);map._driverRouteLayer=null}
+    map._driverRouteTargetKey=targetKey;
+    map._driverRouteOrigin=null;
+    map._driverRouteLastAt=0;
+  }
+  if(map._driverRouteBusy)return;
+  const originLatLng=L.latLng(origin[0],origin[1]),last=map._driverRouteOrigin;
+  const moved=!last||map.distance(last,originLatLng)>=80;
+  const now=Date.now();
+  if(!changedTarget&&now-map._driverRouteLastAt<25000)return;
+  if(!changedTarget&&!moved&&now-map._driverRouteLastAt<45000)return;
+  map._driverRouteLastAt=now;
+  map._driverRouteOrigin=originLatLng;
+  map._driverRouteBusy=true;
+  const controller=new AbortController();
+  map._driverRouteController=controller;
+  const coords=origin[1]+','+origin[0]+';'+destination[1]+','+destination[0];
+  const url='https://router.project-osrm.org/route/v1/driving/'+coords+'?overview=full&geometries=geojson&steps=false&alternatives=false';
+  fetch(url,{signal:controller.signal,mode:'cors',credentials:'omit'})
+    .then(response=>{if(!response.ok)throw Error('route request failed');return response.json()})
+    .then(data=>{
+      if(controller.signal.aborted||map._driverRouteTargetKey!==targetKey)return;
+      const coordinates=data?.routes?.[0]?.geometry?.coordinates;
+      if(!Array.isArray(coordinates)||coordinates.length<2)throw Error('route geometry unavailable');
+      const points=coordinates.map(pair=>[Number(pair[1]),Number(pair[0])]).filter(pair=>pair.every(Number.isFinite));
+      if(points.length<2)throw Error('invalid route geometry');
+      const layer=L.layerGroup();
+      L.polyline(points,{color:'#fff',weight:10,opacity:.96,lineCap:'round',lineJoin:'round'}).addTo(layer);
+      L.polyline(points,{color:'#e84b36',weight:6,opacity:.96,lineCap:'round',lineJoin:'round'}).addTo(layer);
+      layer.addTo(map);
+      if(map._driverRouteLayer)map.removeLayer(map._driverRouteLayer);
+      map._driverRouteLayer=layer;
+    })
+    .catch(error=>{if(error.name!=='AbortError')console.warn('تعذر تحديث مسار الطيار',error)})
+    .finally(()=>{if(map._driverRouteController===controller){map._driverRouteBusy=false;map._driverRouteController=null}});
+}
 function moveDriverBike(map,position){
   if(!position||!position.every(Number.isFinite))return;
   if(!map._driverMarker){
@@ -292,7 +342,7 @@ function updateDriverMap(){
     map._driverOverlay.clearLayers();
     map._driverOrderKey=orderKey;
     for(const o of (current?[current]:chosen?[chosen]:active)){
-      const popup='<strong>طلب #'+o.id+'</strong> · '+esc(o.area)+'<br>'+esc(o.address)+'<br><button type="button" onclick="openTrip('+o.id+')">تفاصيل الطلب</button>'+(o.status==='offered'?'<button type="button" onclick="act('+o.id+',\'accept_offer\')">قبول</button>':'');
+      const popup='<strong>طلب #'+o.id+'</strong> · '+esc(o.area)+'<br>'+esc(o.address)+'<br><button type="button" onclick="openTrip('+o.id+')">تفاصيل الطلب</button>'+(o.status==='offered'?'<button type="button" onclick="act('+o.id+',&#39;accept_offer&#39;)">قبول</button>':'');
       if(o.pickup_lat!=null){point(map,o.pickup_lat,o.pickup_lon,'استلام من '+esc(o.shop_anywhere?o.pickup:o.merchant_name||o.pickup),'#2864c5',map._driverOverlay);positions.push([Number(o.pickup_lat),Number(o.pickup_lon)])}
       if(o.latitude!=null&&o.longitude!=null){point(map,o.latitude,o.longitude,popup,'#e58029',map._driverOverlay);if(current)positions.push([Number(o.latitude),Number(o.longitude)])}
     }
@@ -305,6 +355,7 @@ function updateDriverMap(){
   else if(map._driverMarker){map.removeLayer(map._driverMarker);map._driverMarker=null}
   const target=current&&tripRouteTarget(current);
   if(target&&target.lat!=null&&target.lon!=null)positions.push([Number(target.lat),Number(target.lon)]);
+  requestDriverRoadRoute(map,driverPosition,target);
   const viewKey=(current?current.id+':'+current.status:chosen?chosen.id+':'+chosen.status:'empty')+':gps'+Boolean(driverPosition);
   if(map._driverViewKey!==viewKey){showMapPoints(map,positions);map._driverViewKey=viewKey}
 }
