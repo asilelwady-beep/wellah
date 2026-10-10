@@ -178,12 +178,10 @@ def feature_state(db, user):
     ratings = [dict(r) for r in db.execute('SELECT r.*,u.name AS sender_name,t.name AS target_name FROM ratings r JOIN users u ON u.id=r.sender_id JOIN users t ON t.id=r.target_id' + clause + ' ORDER BY r.at DESC LIMIT 500', args)]
     tickets = [dict(r) for r in db.execute('SELECT s.*,u.name FROM support_tickets s JOIN users u ON u.id=s.user_id' + ('' if user['role'] == 'admin' else ' WHERE s.user_id=?') + ' ORDER BY s.id DESC LIMIT 100', args)]
     pending=[dict(r) for r in db.execute("SELECT o.id,o.driver_id,'delivered' AS status FROM orders o WHERE o.user_id=? AND o.status='delivered' AND o.driver_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ratings r WHERE r.order_id=o.id AND r.sender_id=?) ORDER BY o.id DESC LIMIT 3",(user['id'],user['id']))] if user['role']=='customer' else []
-    shift=dict(row) if user['role']=='driver' and (row:=db.execute('SELECT s.id,s.started_at,s.ended_at,s.second_photo_at,s.second_review_status FROM driver_shifts s JOIN drivers d ON d.id=s.driver_id WHERE d.user_id=? AND s.ended_at IS NULL',(user['id'],)).fetchone()) else None
+    shift=dict(row) if user['role']=='driver' and (row:=db.execute('SELECT s.id,s.started_at,s.ended_at,s.second_photo_at FROM driver_shifts s JOIN drivers d ON d.id=s.driver_id WHERE d.user_id=? AND s.ended_at IS NULL',(user['id'],)).fetchone()) else None
     shifts=[dict(r) for r in db.execute('SELECT s.id,s.driver_id,s.started_at,s.ended_at,s.review_status,s.reviewed_at,s.restored_at,s.second_photo_at,s.second_review_status,s.second_reviewed_at,d.identity_blocked_shift,d.name,d.photo,u.email FROM driver_shifts s JOIN drivers d ON d.id=s.driver_id JOIN users u ON u.id=d.user_id ORDER BY s.id DESC LIMIT 100')] if user['role']=='admin' else []
-    shift_expired=bool(shift and datetime.fromisoformat(shift['started_at']).timestamp()+86400<=time.time())
-    second_required=bool(shift and not shift_expired and not shift['second_photo_at'] and datetime.fromisoformat(shift['started_at']).timestamp()+21600<=time.time())
-    shift_review_pending=bool(shift and not shift_expired and shift['second_photo_at'] and shift['second_review_status']=='pending')
-    shift_required=user['role']=='driver' and (not shift or shift_expired or second_required or shift_review_pending)
+    shift_required=user['role']=='driver' and (not shift or datetime.fromisoformat(shift['started_at']).timestamp()+86400<=time.time())
+    second_required=bool(shift and not shift_required and not shift['second_photo_at'] and datetime.fromisoformat(shift['started_at']).timestamp()+21600<=time.time())
     rating=db.execute('SELECT ROUND(AVG(stars),2) AS average,COUNT(*) AS count FROM ratings WHERE target_id=?',(user['id'],)).fetchone()
     featured=[dict(r) for r in db.execute("""SELECT u.id,u.name,u.role,u.featured,ROUND(AVG(r.stars),2) AS average,COUNT(r.stars) AS rating_count,
         (SELECT COUNT(*) FROM orders o WHERE o.status='delivered' AND (o.user_id=u.id OR o.driver_id IN (SELECT id FROM drivers WHERE user_id=u.id))) AS completed,
@@ -198,7 +196,7 @@ def feature_state(db, user):
     chat_threads=[dict(r) for r in db.execute('''SELECT m.order_id,o.customer,o.status,d.name AS driver_name,COUNT(*) AS message_count,MAX(m.id) AS last_message_id,MAX(m.at) AS last_at
         FROM order_messages m JOIN orders o ON o.id=m.order_id LEFT JOIN drivers d ON d.id=o.driver_id
         GROUP BY m.order_id ORDER BY last_message_id DESC''')] if user['role']=='admin' else []
-    return {'shift_required':shift_required,'shift_second_required':second_required,'shift_review_pending':shift_review_pending,'driver_shift':shift,'driver_shifts':shifts,'my_rating':dict(rating),'featured_people':featured,'featured_rewards':rewards,'driver_complaints':complaints,'pending_ratings':pending,'ratings': ratings, 'support_tickets': tickets, 'chat_counts':chat_counts, 'daily_distances':daily_distances, 'daily_resets':daily_resets, 'chat_threads':chat_threads, 'email_otp_ready': mail_ready(), 'sms_otp_ready': sms_ready(), 'ai_ready': bool(os.environ.get('OPENAI_API_KEY'))}
+    return {'shift_required':shift_required,'shift_second_required':second_required,'driver_shift':shift,'driver_shifts':shifts,'my_rating':dict(rating),'featured_people':featured,'featured_rewards':rewards,'driver_complaints':complaints,'pending_ratings':pending,'ratings': ratings, 'support_tickets': tickets, 'chat_counts':chat_counts, 'daily_distances':daily_distances, 'daily_resets':daily_resets, 'chat_threads':chat_threads, 'email_otp_ready': mail_ready(), 'sms_otp_ready': sms_ready(), 'ai_ready': bool(os.environ.get('OPENAI_API_KEY'))}
 
 
 def cairo_day_window(day):
