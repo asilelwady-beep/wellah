@@ -268,7 +268,7 @@ function updateDriverMap(){
   const current=active.find(o=>['assigned','ready','picked_up','on_way'].includes(o.status));
   const chosen=active.find(o=>o.id===selectedTripId)||current||active.find(o=>o.status==='offered');
   for(const o of (current?[current]:chosen?[chosen]:active)){
-    const popup='<strong>طلب #'+o.id+'</strong> · '+esc(o.area)+'<br>'+esc(o.address)+'<br><button type="button" onclick="openTrip('+o.id+')">تفاصيل الطلب</button>'+(o.status==='offered'?'<button type="button" onclick="act('+o.id+',\\'accept_offer\\')">قبول</button>':'');
+    const popup='<strong>طلب #'+o.id+'</strong> · '+esc(o.area)+'<br>'+esc(o.address)+'<br><button type="button" onclick="openTrip('+o.id+')">تفاصيل الطلب</button>'+(o.status==='offered'?'<button type="button" onclick="act('+o.id+',\'accept_offer\')">قبول</button>':'');
     if(o.pickup_lat!=null){point(map,o.pickup_lat,o.pickup_lon,'استلام من '+esc(o.shop_anywhere?o.pickup:o.merchant_name||o.pickup),'#2864c5',map._driverOverlay);positions.push([o.pickup_lat,o.pickup_lon])}
     if(o.latitude!=null&&o.longitude!=null){point(map,o.latitude,o.longitude,popup,'#e58029',map._driverOverlay);if(current)positions.push([o.latitude,o.longitude])}
   }
