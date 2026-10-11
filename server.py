@@ -1197,7 +1197,15 @@ class Handler(BaseHTTPRequestHandler):
                     shift=db.execute('SELECT * FROM driver_shifts WHERE id=?',(int(data.get('id',0)),)).fetchone()
                     if not shift: raise ValueError('الشيفت غير موجود')
                     action=data.get('action')
-                    if action=='restore':
+                    if action=='delete_photo':
+                        second=bool(data.get('second'))
+                        if second:
+                            if not shift['second_selfie']: raise ValueError('الصورة الثانية محذوفة بالفعل')
+                            db.execute("UPDATE driver_shifts SET second_selfie=NULL,second_photo_at=NULL,second_review_status='deleted',second_reviewed_at=?,reviewed_by=? WHERE id=?",(now(),user['id'],shift['id']))
+                        else:
+                            if not shift['selfie']: raise ValueError('صورة بداية الشيفت محذوفة بالفعل')
+                            db.execute("UPDATE driver_shifts SET selfie='',review_status='deleted',reviewed_at=?,reviewed_by=? WHERE id=?",(now(),user['id'],shift['id']))
+                    elif action=='restore':
                         blocked=db.execute('SELECT identity_blocked_shift FROM drivers WHERE id=?',(shift['driver_id'],)).fetchone()['identity_blocked_shift']
                         if blocked!=shift['id']: raise ValueError('هذا الإنذار ليس سبب الإيقاف الحالي')
                         db.execute('UPDATE drivers SET identity_blocked_shift=NULL,available=0 WHERE id=?',(shift['driver_id'],))
