@@ -1419,6 +1419,8 @@ class Handler(BaseHTTPRequestHandler):
                     if user['role']!='admin' or user['staff_permissions'] is not None: return self.respond({'error':'استيراد المنتجات للمسؤول الرئيسي فقط'},403)
                     items=data.get('rows')
                     if not isinstance(items,list) or not items or len(items)>10000: raise ValueError('الملف يجب أن يحتوي من منتج واحد وحتى 10000 منتج')
+                    category_scope=str(data.get('category') or '').strip()
+                    if category_scope and not db.execute('SELECT 1 FROM categories WHERE name=?',(category_scope,)).fetchone(): raise ValueError('القسم المحدد غير موجود')
                     seen=set()
                     prepared=[]
                     for row in items:
@@ -1429,6 +1431,7 @@ class Handler(BaseHTTPRequestHandler):
                         seen.add(product_id)
                         old=db.execute('SELECT id,name,category,price,stock,active,merchant_id FROM products WHERE id=?',(product_id,)).fetchone()
                         if not old: raise ValueError('المنتج رقم '+str(product_id)+' غير موجود؛ لم يتم تطبيق أي تعديل')
+                        if category_scope and old['category']!=category_scope: raise ValueError('المنتج رقم '+str(product_id)+' ليس من القسم المحدد')
                         if str(row.get('name','')).strip()!=old['name'] or str(row.get('category','')).strip()!=old['category']:
                             raise ValueError('اسم أو قسم المنتج رقم '+str(product_id)+' مختلف عن بيانات النظام')
                         price=None
