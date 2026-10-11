@@ -1415,6 +1415,52 @@ class Handler(BaseHTTPRequestHandler):
                         values.append(str(amount.quantize(Decimal('0.01'),rounding=ROUND_HALF_UP)))
                     for suffix,value in zip(('_base','_extra'),values):
                         db.execute('UPDATE settings SET value=? WHERE key=?',(value,key+suffix))
+                elif path == '/api/products/import-csv':
+                    if user['role']!='admin' or user['staff_permissions'] is not None: return self.respond({'error':'استيراد المنتجات للمسؤول الرئيسي فقط'},403)
+                    items=data.get('rows')
+                    if not isinstance(items,list) or not items or len(items)>10000: raise ValueError('الملف يجب أن يحتوي من منتج واحد وحتى 10000 منتج')
+                    seen=set()
+                    prepared=[]
+                    for row in items:
+                        if not isinstance(row,dict): raise ValueError('تنسيق صفوف الملف غير صحيح')
+                        try: product_id=int(row.get('id'))
+                        except (TypeError,ValueError): raise ValueError('رقم منتج غير صحيح')
+                        if product_id in seen: raise ValueError('يوجد رقم منتج مكرر في الملف: '+str(product_id))
+                        seen.add(product_id)
+                        old=db.execute('SELECT id,name,category,price,stock,active,merchant_id FROM products WHERE id=?',(product_id,)).fetchone()
+                        if not old: raise ValueError('المنتج رقم '+str(product_id)+' غير موجود؛ لم يتم تطبيق أي تعديل')
+                        if str(row.get('name','')).strip()!=old['name'] or str(row.get('category','')).strip()!=old['category']:
+                            raise ValueError('اسم أو قسم المنتج رقم '+str(product_id)+' مختلف عن بيانات النظام')
+                        price=None
+                        if 'price' in row:
+                            try: price=Decimal(str(row['price']).strip())
+                            except (InvalidOperation,ValueError): raise ValueError('سعر غير صحيح للمنتج رقم '+str(product_id))
+                            if not price.is_finite() or price<0 or price>Decimal('10000000'): raise ValueError('سعر غير مسموح للمنتج رقم '+str(product_id))
+                        stock=None
+                        if 'stock' in row:
+                            try:
+                                raw_stock=str(row['stock']).strip()
+                                if not re.fullmatch(r'\d+',raw_stock): raise ValueError()
+                                stock=int(raw_stock)
+                            except (TypeError,ValueError): raise ValueError('كمية غير صحيحة للمنتج رقم '+str(product_id))
+                            if stock>10000000: raise ValueError('كمية غير مسموح بها للمنتج رقم '+str(product_id))
+                        active=row.get('active',None)
+                        if active is not None and not isinstance(active,bool): raise ValueError('حالة النشر غير صحيحة للمنتج رقم '+str(product_id))
+                        final_active=old['active'] if active is None else int(active)
+                        final_stock=old['stock'] if stock is None else stock
+                        if final_active and final_stock<=0: raise ValueError('المنتج رقم '+str(product_id)+' لا يمكن نشره بدون مخزون')
+                        if final_active:
+                            if not db.execute('SELECT 1 FROM merchants WHERE id=? AND category=? AND active=1',(old['merchant_id'],old['category'])).fetchone(): raise ValueError('المنتج رقم '+str(product_id)+' يحتاج محلًا نشطًا من نفس القسم قبل نشره')
+                            if not db.execute('SELECT 1 FROM categories WHERE name=? AND active=1',(old['category'],)).fetchone(): raise ValueError('قسم المنتج رقم '+str(product_id)+' غير نشط')
+                        prepared.append((product_id,price,stock,active))
+                    for product_id,price,stock,active in prepared:
+                        updates=[]; values=[]
+                        if price is not None:
+                            updates.extend(['price=?','price_pending=0']);values.append(str(price.quantize(Decimal('0.01'),rounding=ROUND_HALF_UP)))
+                        if stock is not None: updates.append('stock=?');values.append(stock)
+                        if active is not None: updates.append('active=?');values.append(int(active))
+                        if updates: db.execute('UPDATE products SET '+','.join(updates)+' WHERE id=?',(*values,product_id))
+                    return self.respond({'ok':True,'updated':len(prepared)})
                 elif path == '/api/products/import-names':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     merchant=db.execute("SELECT id FROM merchants WHERE id=? AND category='سوبر ماركت' AND active=1",(int(data.get('merchant_id') or 0),)).fetchone()
