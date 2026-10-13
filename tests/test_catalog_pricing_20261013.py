@@ -30,6 +30,7 @@ class CatalogPricingTests(unittest.TestCase):
             INSERT INTO products VALUES (2,'سعر صاحب المحل','سوبر ماركت',12.50,0,8,1,7,1,'/photo.jpg',NULL);
             INSERT INTO products VALUES (3,'منتج عدل صاحبه اسمه','سوبر ماركت',0,1,0,0,NULL,1,'/photo.jpg',NULL);
         ''')
+        self.db.execute('ALTER TABLE products ADD COLUMN requires_prescription INTEGER DEFAULT 0')
 
     def tearDown(self):
         self.db.close()
