@@ -442,6 +442,8 @@ def init():
                 db.execute('INSERT INTO catalog_imports VALUES (?,?)',(market_price_import_key,now()))
                 print('Verified market prices imported once: '+str(len(pending_market_prices))+' products')
         apply_verified_catalog_prices(db)
+        from catalog_expansion import apply_catalog_expansion
+        apply_catalog_expansion(db, ROOT, now)
         if not db.execute("SELECT 1 FROM products").fetchone():
             db.executemany("INSERT INTO products(name,category,price,stock) VALUES (?,?,?,?)", [("منتج تجريبي: أرز 1 كجم", "سوبر ماركت", 40, 20), ("منتج تجريبي: خضار مشكل", "خضار", 35, 15), ("منتج تجريبي: وجبة", "مطاعم", 85, 10)])
         if not db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
