@@ -57,7 +57,7 @@ def apply_catalog_expansion(db, root, now):
                 skipped += 1
                 continue
             else:
-                pid = db.execute('INSERT INTO products(name,category,price,stock,active,merchant_id,catalog_preview,price_pending,image) VALUES (?,?,?,0,0,NULL,1,0,?)', (item['name'],item['category'],price,item['image'])).lastrowid
+                pid = db.execute('INSERT INTO products(name,category,price,stock,active,merchant_id,catalog_preview,price_pending,image) VALUES (?,?,?,100,0,NULL,1,0,?)', (item['name'],item['category'],price,item['image'])).lastrowid
                 images.add(image_key)
                 added += 1
             db.execute('INSERT INTO catalog_source_records VALUES (?,?,?,?,?)', (item['source_sku'],pid,item['source'],item['observed_on'],price))

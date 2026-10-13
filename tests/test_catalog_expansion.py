@@ -16,7 +16,7 @@ class ExpansionTests(CatalogPricingTests):
     def test_new_priced_product_and_idempotency(self):
         self.batch([self.entry_new()]);self.apply();self.apply()
         p=self.db.execute('SELECT * FROM products WHERE id=4').fetchone()
-        self.assertEqual(p['price'],159.5);self.assertEqual(p['stock'],0);self.assertEqual(p['active'],0);self.assertEqual(p['price_pending'],0)
+        self.assertEqual(p['price'],159.5);self.assertEqual(p['stock'],100);self.assertEqual(p['active'],0);self.assertEqual(p['price_pending'],0)
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM products').fetchone()[0],4)
     def test_preserves_existing_owner_price(self):
         self.batch([self.entry_new('سعر صاحب المحل')]);self.apply()
