@@ -85,6 +85,8 @@ class SafeMapsRedirect(HTTPRedirectHandler):
 
 
 def sold_by_weight(product):
+    if 'price_basis_weight_kg' in product.keys() and product['price_basis_weight_kg'] and product['price_basis_weight_kg'] > 0:
+        return True
     name, category = product['name'], product['category']
     if re.search(r'علبة|عبوة|باكت|معلب|مجمد|مجمّد|Frozen|Pack|حزمة|ربطة|قطعة|قطعتين|حبة|سبريد|شرائح جاهزة', name, re.I):
         return False
@@ -95,7 +97,7 @@ def sold_by_weight(product):
 def weight_basis(product):
     match = re.search(r'(\d+(?:[.]\d+)?)\s*(كجم|كيلو|kg|جرام|غرام|جم|g)\b', product['name'], re.I)
     if not match:
-        return 1.0
+        return float(product['price_basis_weight_kg'] or 1) if 'price_basis_weight_kg' in product.keys() else 1.0
     value = float(match[1])
     return (value / 1000 if match[2].lower() in ('جرام','غرام','جم','g') else value) or 1.0
 
@@ -120,6 +122,69 @@ def connect():
 
 
 MARKET_PRICE_IMPORT = [{"id":5775,"name":"فانتا برتقال - 320 مل","category":"سوبر ماركت","price":"14.50","source":"سبينيس مصر — فانتا برتقال 320 مل — https://spinneys-egypt.com/en/category/special-offers","observed_on":"2026-10-11"},{"id":5766,"name":"قهوة تركي بن فاتح محوج من ابو عوف - 200 جم","category":"سوبر ماركت","price":"369.95","source":"طلبات مارت — Abu Auf Special Light Coffee with Cardamom, 200g — https://www.talabat.com/egypt/talabat-mart/product/abu-auf-medium-roast-with-cardamom-turkish-coffee-200g/s/903584","observed_on":"2026-10-11"},{"id":5659,"name":"أبو عوف قهوة تركي غامق محوج - 200 جرام","category":"سوبر ماركت","price":"365.00","source":"طلبات مارت — Abu Auf Dark Roasted Blended Turkish Coffee, 200g — https://www.talabat.com/egypt/talabat-mart/product/abu-auf-dark-roasted-blended-turkish-coffee-200g/s/903582","observed_on":"2026-10-11"},{"id":5653,"name":"قهوة تركي بن وسط محوج من ابو عوف - 200 جم","category":"سوبر ماركت","price":"288.00","source":"طلبات مارت — Abu Auf Special Medium Blended Turkish Coffee, 200g — https://www.talabat.com/egypt/talabat-mart/product/abu-auf-medium-roast-with-cardamom-turkish-coffee-200g/s/903584","observed_on":"2026-10-11"},{"id":5541,"name":"كوكاكولا مشروب غازي - 300 مل","category":"سوبر ماركت","price":"11.99","source":"مترو ماركت — مشروبات غازية عبوة 300 مل — https://www.metro-markets.com/categoryl1/%D9%85%D8%B4%D8%B1%D9%88%D8%A8%D8%A7%D8%AA/22?page=5","observed_on":"2026-10-11"},{"id":5531,"name":"قهوة تركي ابو عوف بن وسط سادة - 200 جم","category":"سوبر ماركت","price":"399.00","source":"طلبات مارت — Abu Auf Plain Medium Turkish Coffee, 200g — https://www.talabat.com/egypt/talabat-mart/product/abu-auf-plain-medium-turkish-coffee-200g/s/903587","observed_on":"2026-10-11"},{"id":5413,"name":"أبو عوف بن تركي بالهيل - 200جم","category":"سوبر ماركت","price":"370.00","source":"طلبات مارت — Abu Auf Medium Roast with Cardamom Turkish Coffee, 200g — https://www.talabat.com/egypt/talabat-mart/product/abu-auf-medium-roast-with-cardamom-turkish-coffee-200g/s/903584","observed_on":"2026-10-11"},{"id":5395,"name":"قهوة أبو عوف تركي غامق سادة - 200 جرام","category":"سوبر ماركت","price":"359.95","source":"طلبات مارت — Abu Auf Plain Dark Turkish Coffee, 200g — https://www.talabat.com/egypt/talabat-mart/product/abu-auf-medium-roast-with-cardamom-turkish-coffee-200g/s/903584","observed_on":"2026-10-11"},{"id":5256,"name":"فانتا برتقال زجاجة بلاستيك - 300 مل","category":"سوبر ماركت","price":"11.99","source":"مترو ماركت — مشروبات غازية عبوة 300 مل — https://www.metro-markets.com/categoryl1/%D9%85%D8%B4%D8%B1%D9%88%D8%A8%D8%A7%D8%AA/22?page=5","observed_on":"2026-10-11"},{"id":5245,"name":"جبنة أبيض طبيعي عبور لاند جولد - 250 جرام","category":"سوبر ماركت","price":"53.99","source":"كارفور مصر — https://www.carrefouregypt.com/mafegy/en/c/52790","observed_on":"2026-10-11"},{"id":5219,"name":"جبنة عبور لاند فلامنك سبريد - 50 جم","category":"سوبر ماركت","price":"12.50","source":"كارفور مصر — https://www.carrefouregypt.com/mafegy/en/c/52790","observed_on":"2026-10-11"},{"id":5116,"name":"عبور لاند جبنة فيتا - 1 كجم","category":"سوبر ماركت","price":"94.99","source":"كارفور مصر — https://www.carrefouregypt.com/mafegy/en/c/52790","observed_on":"2026-10-11"},{"id":4723,"name":"ويندكس أوريجينال منظف زجاج برائحة الياسمين - 500 مل","category":"منظفات","price":"73.99","source":"كارفور — ويندكس ياسمين 500 مل — https://www.carrefouregypt.com/mafegy/en/c/NFEGY3020502","observed_on":"2026-10-11"},{"id":4722,"name":"ويندكس أوريجينال منظف زجاج برائحة اللافندر - 500 مل","category":"منظفات","price":"73.99","source":"كارفور — ويندكس لافندر 500 مل — https://www.carrefouregypt.com/mafegy/en/c/NFEGY3020502","observed_on":"2026-10-11"},{"id":4721,"name":"ويندكس أوريجينال منظف زجاج - 500 مل","category":"منظفات","price":"73.99","source":"كارفور — ويندكس أصلي 500 مل — https://www.carrefouregypt.com/mafegy/en/c/NFEGY3020502","observed_on":"2026-10-11"},{"id":4720,"name":"ويندكس أوريجينال عبوة اعادة تعبئة منظف زجاج برائحة الليمون - 500 مل","category":"منظفات","price":"54.99","source":"كارفور — عبوة إعادة تعبئة ويندكس ليمون 500 مل — https://www.carrefouregypt.com/mafegy/en/c/NFEGY3020502","observed_on":"2026-10-11"},{"id":4719,"name":"ويندكس أوريجينال عبوة اعادة تعبئة منظف زجاج برائحة اللافندر - 500 مل","category":"منظفات","price":"54.99","source":"كارفور — عبوة إعادة تعبئة ويندكس لافندر 500 مل — https://www.carrefouregypt.com/mafegy/en/c/NFEGY3020502","observed_on":"2026-10-11"},{"id":4718,"name":"ويندكس أوريجينال عبوة اعادة تعبئة منظف زجاج - 500 مل","category":"منظفات","price":"54.99","source":"كارفور — عبوة إعادة تعبئة ويندكس أصلية 500 مل — https://www.carrefouregypt.com/mafegy/en/c/NFEGY3020502","observed_on":"2026-10-11"},{"id":4706,"name":"وي منظف زجاج - رائحة الياسمين - 500 مللي","category":"منظفات","price":"39.99","source":"كارفور — Hui منظف زجاج ياسمين 500 مل — https://www.carrefouregypt.com/mafegy/en/c/NFEGY3020502","observed_on":"2026-10-11"},{"id":4408,"name":"مبيض قهوة نستله كوفي ميت - 400 جرام","category":"سوبر ماركت","price":"179.00","source":"طلبات مارت — Nestle Coffee Mate, 400g — https://www.talabat.com/egypt/talabat-mart/product/nestle-coffee-mate-400g/s/904065","observed_on":"2026-10-11"},{"id":4279,"name":"لبن المراعي كامل الدسم - 1 لتر","category":"سوبر ماركت","price":"55.00","source":"طلبات مارت — Almarai Plain Milk Full Fat Bottle 1L — https://www.talabat.com/egypt/talabat-mart/product/almarai-plain-milk-full-fat-bottle-1l/s/900392","observed_on":"2026-10-11"},{"id":4156,"name":"كريستال زيت عباد الشمس - 700 مل","category":"سوبر ماركت","price":"77.50","source":"كارفور — كريستال زيت عباد الشمس 700 مل — https://www.carrefouregypt.com/mafegy/en/c/FEGY1760406","observed_on":"2026-10-11"},{"id":4063,"name":"قهوة سادة وسط ابو عوف - 200 جم","category":"سوبر ماركت","price":"399.00","source":"طلبات مارت — Abu Auf Plain Medium Turkish Coffee, 200g — https://www.talabat.com/egypt/talabat-mart/product/abu-auf-plain-medium-turkish-coffee-200g/s/903587","observed_on":"2026-10-11"},{"id":4051,"name":"قهوة أبو عوف تركي فاتح سادة - 200 جرام","category":"سوبر ماركت","price":"292.50","source":"طلبات مارت — Abu Auf Plain Light Turkish Coffee, 200g — https://www.talabat.com/egypt/talabat-mart/product/abu-auf-plain-light-turkish-coffee-200g/s/903586","observed_on":"2026-10-11"},{"id":3493,"name":"زيت عباد شمس سلايت - 1.5 لتر","category":"سوبر ماركت","price":"157.99","source":"كارفور — سلايت زيت عباد الشمس 1.5 لتر — https://www.carrefouregypt.com/mafegy/en/c/FEGY1760406","observed_on":"2026-10-11"},{"id":3477,"name":"زيت دوار الشمس عافية - 0.7 لتر","category":"سوبر ماركت","price":"77.50","source":"كارفور — عافية زيت عباد الشمس 700 مل — https://www.carrefouregypt.com/mafegy/en/c/FEGY1760406","observed_on":"2026-10-11"},{"id":2520,"name":"ليمون أداليا - 1 كيلو","category":"خضار","price":"28.00","source":"كارفور — ليمون أداليا 500 جم بسعر 14.00، مضروب ×2 لوزن 1 كجم — https://www.carrefouregypt.com/mafegy/en/c/fruits-vegetables","observed_on":"2026-10-11"},{"id":2499,"name":"طماطم درجة أولي - 500 جم","category":"خضار","price":"13.25","source":"كارفور — طماطم بلدي 500 جم، سعر العبوة المطابق للوزن — https://www.carrefouregypt.com/mafegy/AR/c/FEGY1660000","observed_on":"2026-10-11"},{"id":2498,"name":"طماطم درجة أولي - 1 كجم","category":"خضار","price":"26.50","source":"كارفور — طماطم بلدي 500 جم بسعر 13.25، مضروب ×2 لوزن 1 كجم — https://www.carrefouregypt.com/mafegy/AR/c/FEGY1660000","observed_on":"2026-10-11"},{"id":2430,"name":"بطاطس للقلي - 3 كجم","category":"خضار","price":"88.50","source":"كارفور — بطاطس للقلي 500 جم بسعر 14.75، مضروب ×6 لوزن 3 كجم — https://www.carrefouregypt.com/mafegy/AR/c/FEGY1660000","observed_on":"2026-10-11"},{"id":2429,"name":"بطاطس للقلي - 1 كجم","category":"خضار","price":"29.50","source":"كارفور — بطاطس للقلي 500 جم بسعر 14.75، مضروب ×2 لوزن 1 كجم — https://www.carrefouregypt.com/mafegy/AR/c/FEGY1660000","observed_on":"2026-10-11"},{"id":2409,"name":"Zyrtec 10mg 20 tab","category":"أدوية","price":"100.00","source":"صيدليات السعيد — زيرتك 10 مجم 20 قرص، متوفر وقت التحقق — https://elsaeedpharmacyeg.com/product/zyrtec-10mg-20-tab-%D8%B2%D9%8A%D8%B1%D8%AA%D9%83-10%D9%85%D8%AC%D9%85-20-%D9%82%D8%B1%D8%B5/","observed_on":"2026-10-11"},{"id":2405,"name":"ZYLORIC 100 MG 30 TAB","category":"أدوية","price":"21.00","source":"Doctor M Pharmacy — زيلوريك 100 مجم 30 قرص، سعر مرجعي بالفرع — https://doctormpharmacy.com/products/zyloric-100-mg-30-tab","observed_on":"2026-10-11"},{"id":2391,"name":"ZITHROKAN 500 MG 3 CAP","category":"أدوية","price":"60.00","source":"صيدلية الشطوري — زيثروكان 500 مجم 3 كبسولات، عرض — https://elshatoury.com/shop/06423","observed_on":"2026-10-11"},{"id":2371,"name":"YASMIN 21 TAB","category":"أدوية","price":"205.00","source":"Doctor M Pharmacy — ياسمين 21 قرص، متوفر بالفرع — https://doctormpharmacy.com/products/yasmin-21-tab","observed_on":"2026-10-11"},{"id":474,"name":"شبت - 50 جم","category":"خضار","price":"4.50","source":"كارفور — شبت 50 جم — https://www.carrefouregypt.com/mafegy/en/c/fruits-vegetables","observed_on":"2026-10-11"},{"id":473,"name":"كزبرة - 50جم","category":"خضار","price":"4.50","source":"كارفور — كزبرة 50 جم — https://www.carrefouregypt.com/mafegy/en/c/fruits-vegetables","observed_on":"2026-10-11"},{"id":426,"name":"خيار - 1 كجم","category":"خضار","price":"28.50","source":"كارفور — خيار 500 جم بسعر 14.25، مضروب ×2 لوزن 1 كجم — https://www.carrefouregypt.com/mafegy/AR/c/FEGY1660000","observed_on":"2026-10-11"},{"id":371,"name":"مشروب غازي سبرايت، 300 مل","category":"سوبر ماركت","price":"11.99","source":"مترو ماركت — مشروبات غازية عبوة 300 مل — https://www.metro-markets.com/categoryl1/%D9%85%D8%B4%D8%B1%D9%88%D8%A8%D8%A7%D8%AA/22?page=5","observed_on":"2026-10-11"},{"id":319,"name":"كريستال زيت عباد الشمس - 1 لتر","category":"سوبر ماركت","price":"107.50","source":"كارفور — كريستال زيت عباد الشمس 1 لتر — https://www.carrefouregypt.com/mafegy/en/c/FEGY1760406","observed_on":"2026-10-11"},{"id":231,"name":"ارز مصري الضحى - 5 كجم","category":"سوبر ماركت","price":"209.99","source":"كارفور — الضحى أرز مصري 5 كجم — https://www.carrefouregypt.com/mafegy/en/c/FEGY1701200","observed_on":"2026-10-11"},{"id":204,"name":"سكر أبيض المزاج - 1 كجم","category":"سوبر ماركت","price":"27.50","source":"كارفور — المزاج سكر أبيض 1 كجم — https://www.carrefouregypt.com/mafegy/en/c/FEGY1700000","observed_on":"2026-10-11"},{"id":106,"name":"جزر — 1 كجم","category":"خضار","price":"40.00","source":"كارفور — جزر 500 جم بسعر 20.00، مضروب ×2 لوزن 1 كجم — https://www.carrefouregypt.com/mafegy/en/c/fruits-vegetables","observed_on":"2026-10-11"},{"id":104,"name":"خيار — 1 كجم","category":"خضار","price":"28.50","source":"كارفور — خيار 500 جم بسعر 14.25، مضروب ×2 لوزن 1 كجم — https://www.carrefouregypt.com/mafegy/AR/c/FEGY1660000","observed_on":"2026-10-11"},{"id":102,"name":"بصل أحمر — 1 كجم","category":"خضار","price":"26.00","source":"كارفور — بصل أحمر 500 جم بسعر 13.00، مضروب ×2 لوزن 1 كجم — https://www.carrefouregypt.com/mafegy/AR/c/FEGY1660000","observed_on":"2026-10-11"},{"id":4,"name":"أرز مصري الضحى — 1 كجم","category":"سوبر ماركت","price":"39.99","source":"كارفور — الضحى أرز مصري 1 كجم — https://www.carrefouregypt.com/mafegy/en/c/FEGY1701200","observed_on":"2026-10-11"}]
+
+def apply_verified_catalog_prices(db):
+    """Fill existing unpriced catalog rows from exact source matches, once per batch."""
+    price_file = ROOT / 'verified-market-prices-20261013.json.gz'
+    if not price_file.is_file():
+        return
+    try:
+        raw = price_file.read_bytes()
+        batch = json.loads(gzip.decompress(raw))
+        if not isinstance(batch, list):
+            raise ValueError('Expected a product price list')
+        key = 'matched-market-prices-20261013-' + hashlib.sha256(raw).hexdigest()[:16]
+        if db.execute('SELECT 1 FROM catalog_imports WHERE key=?', (key,)).fetchone():
+            return
+        validated = []
+        seen = set()
+        for item in batch:
+            pid = int(item['id'])
+            price = Decimal(str(item['price']))
+            if pid in seen or pid <= 0 or not price.is_finite() or not 0 < price <= 10000000:
+                raise ValueError('Invalid or duplicate product price')
+            if price != price.quantize(Decimal('0.01')):
+                raise ValueError('Price must have at most two decimal places')
+            if not isinstance(item.get('name'), str) or not isinstance(item.get('category'), str):
+                raise ValueError('Missing product identity')
+            source = urlparse(item['source'])
+            if source.scheme != 'https' or source.hostname not in ('www.carrefouregypt.com', 'elsaeedpharmacyeg.com', 'www.bloompharmacy.com'):
+                raise ValueError('Unexpected price source')
+            if item.get('observed_on') != '2026-10-13':
+                raise ValueError('Missing observation date')
+            basis = item.get('weight_basis_kg')
+            if basis is not None:
+                basis = Decimal(str(basis))
+                if not basis.is_finite() or not 0 < basis <= 100000:
+                    raise ValueError('Invalid price weight basis')
+                basis = float(basis)
+            seen.add(pid)
+            validated.append((item, format(price, '.2f'), basis))
+    except (ValueError, TypeError, KeyError, OSError, EOFError, InvalidOperation) as error:
+        print('Catalog price batch skipped: ' + str(error))
+        return
+    db.execute('SAVEPOINT verified_catalog_prices')
+    try:
+        db.execute('CREATE TABLE IF NOT EXISTS product_price_import_history (import_key TEXT NOT NULL, product_id INTEGER NOT NULL, name TEXT NOT NULL, old_price REAL NOT NULL, new_price REAL NOT NULL, source TEXT NOT NULL, observed_on TEXT NOT NULL, applied_at TEXT NOT NULL, PRIMARY KEY(import_key,product_id))')
+        applied = 0
+        for item, price, basis in validated:
+            product = db.execute('SELECT id,name,category,price,price_pending FROM products WHERE id=?', (item['id'],)).fetchone()
+            if not product or product['name'] != item['name'] or product['category'] != item['category']:
+                continue
+            if product['price'] != 0 or not product['price_pending']:
+                continue
+            changed = db.execute('UPDATE products SET price=?,price_pending=0,price_basis_weight_kg=? WHERE id=? AND name=? AND category=? AND price=0 AND price_pending=1', (price,basis,item['id'],item['name'],item['category'])).rowcount
+            if changed:
+                db.execute('INSERT INTO product_price_import_history VALUES (?,?,?,?,?,?,?,?)', (key,item['id'],item['name'],product['price'],price,item['source'],item['observed_on'],now()))
+                applied += 1
+        db.execute('INSERT INTO catalog_imports VALUES (?,?)', (key,now()))
+        db.execute('RELEASE verified_catalog_prices')
+        print('Matched catalog prices applied: ' + str(applied) + ' existing products')
+    except (sqlite3.Error, ValueError, TypeError) as error:
+        db.execute('ROLLBACK TO verified_catalog_prices')
+        db.execute('RELEASE verified_catalog_prices')
+        print('Catalog price update rolled back: ' + str(error))
+
 
 def init():
     with connect() as db:
@@ -160,7 +225,7 @@ def init():
         for ride_key in RIDE_RATE_KEYS.values():
             db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(ride_key+'_base',''))
             db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(ride_key+'_extra',''))
-        for table,column,definition in [('orders','route_km','REAL'),('orders','km_rate','REAL'),('products','price_pending','INTEGER NOT NULL DEFAULT 0'),('order_items','unit',"TEXT NOT NULL DEFAULT 'قطعة'"),('order_items','stock_quantity','REAL')]:
+        for table,column,definition in [('orders','route_km','REAL'),('orders','km_rate','REAL'),('products','price_pending','INTEGER NOT NULL DEFAULT 0'),('products','price_basis_weight_kg','REAL'),('order_items','unit',"TEXT NOT NULL DEFAULT 'قطعة'"),('order_items','stock_quantity','REAL')]:
             if column not in {x['name'] for x in db.execute(f'PRAGMA table_info({table})')}:
                 db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
         for column,definition in [('driver_earning_cents' ,'INTEGER NOT NULL DEFAULT 0'),('driver_earning_paid','INTEGER NOT NULL DEFAULT 0'),('commission_percent','REAL NOT NULL DEFAULT 0'),('commission_cents','INTEGER NOT NULL DEFAULT 0'),('commission_locked','INTEGER NOT NULL DEFAULT 0')]:
@@ -376,6 +441,7 @@ def init():
                     db.execute('UPDATE products SET price=?,price_pending=0 WHERE id=?',(price_text,product['id']))
                 db.execute('INSERT INTO catalog_imports VALUES (?,?)',(market_price_import_key,now()))
                 print('Verified market prices imported once: '+str(len(pending_market_prices))+' products')
+        apply_verified_catalog_prices(db)
         if not db.execute("SELECT 1 FROM products").fetchone():
             db.executemany("INSERT INTO products(name,category,price,stock) VALUES (?,?,?,?)", [("منتج تجريبي: أرز 1 كجم", "سوبر ماركت", 40, 20), ("منتج تجريبي: خضار مشكل", "خضار", 35, 15), ("منتج تجريبي: وجبة", "مطاعم", 85, 10)])
         if not db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
@@ -704,7 +770,7 @@ def warehouse_for_category(db, category):
 
 
 def preview_catalog(db):
-    return rows(db,"SELECT p.id,p.name,p.category,CASE WHEN p.image<>'' THEN p.image ELSE '/product-illustration/' || p.id || '.svg' END AS image FROM products p JOIN categories c ON c.name=p.category WHERE p.catalog_preview=1 AND p.price_pending=1 AND c.active=1 ORDER BY CASE WHEN p.image<>'' AND (p.name LIKE '%لانشون%فراخ%بالوزن' OR p.name LIKE '%لانشون%دجاج%بالوزن') THEN 0 WHEN p.image<>'' AND (p.name LIKE '%لانشون%بالوزن' OR p.name LIKE '%سلامي%بالوزن') THEN 1 WHEN p.name IN ('ثوم بلدي طازج','ثوم صيني طازج') THEN 2 ELSE 3 END,(p.image LIKE '/product-photo-%') DESC,c.sort_order,p.category,p.id")
+    return rows(db,"SELECT p.id,p.name,p.category,p.price,p.price_pending,p.price_basis_weight_kg,p.stock,p.active,p.merchant_id,CASE WHEN p.image<>'' THEN p.image ELSE '/product-illustration/' || p.id || '.svg' END AS image FROM products p JOIN categories c ON c.name=p.category WHERE p.catalog_preview=1 AND c.active=1 ORDER BY CASE WHEN p.price_pending=0 AND p.price>0 THEN 0 ELSE 1 END,CASE WHEN p.image<>'' AND (p.name LIKE '%لانشون%فراخ%بالوزن' OR p.name LIKE '%لانشون%دجاج%بالوزن') THEN 0 WHEN p.image<>'' AND (p.name LIKE '%لانشون%بالوزن' OR p.name LIKE '%سلامي%بالوزن') THEN 1 WHEN p.name IN ('ثوم بلدي طازج','ثوم صيني طازج') THEN 2 ELSE 3 END,(p.image LIKE '/product-photo-%') DESC,c.sort_order,p.category,p.id")
 
 
 def rows(db, sql, args=()):
@@ -1847,3 +1913,4 @@ if __name__ == "__main__":
     port=int(os.environ.get('WALLAHA_PORT',os.environ.get('PORT','8080')))
     print(f"Wallaha development server: http://{host}:{port}")
     ThreadingHTTPServer((host,port), Handler).serve_forever()
+
