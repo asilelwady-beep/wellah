@@ -444,6 +444,15 @@ def init():
         apply_verified_catalog_prices(db)
         from catalog_expansion import apply_catalog_expansion
         apply_catalog_expansion(db, ROOT, now)
+        stock_key = 'owner-stock-100-all-products-20261013-v1'
+        if not db.execute('SELECT 1 FROM catalog_imports WHERE key=?', (stock_key,)).fetchone():
+            db.execute('CREATE TABLE IF NOT EXISTS product_stock_import_history (import_key TEXT NOT NULL,product_id INTEGER NOT NULL,old_stock REAL NOT NULL,new_stock REAL NOT NULL,applied_at TEXT NOT NULL,PRIMARY KEY(import_key,product_id))')
+            applied_at = now()
+            db.execute('INSERT INTO product_stock_import_history SELECT ?,id,stock,100,? FROM products', (stock_key,applied_at))
+            changed = db.execute('UPDATE products SET stock=100').rowcount
+            db.execute('INSERT INTO catalog_imports VALUES (?,?)', (stock_key,applied_at))
+            print('Owner stock baseline applied: ' + str(changed) + ' products set to 100')
+
         if not db.execute("SELECT 1 FROM products").fetchone():
             db.executemany("INSERT INTO products(name,category,price,stock) VALUES (?,?,?,?)", [("منتج تجريبي: أرز 1 كجم", "سوبر ماركت", 40, 20), ("منتج تجريبي: خضار مشكل", "خضار", 35, 15), ("منتج تجريبي: وجبة", "مطاعم", 85, 10)])
         if not db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
