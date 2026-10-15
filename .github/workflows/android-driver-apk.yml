@@ -1,0 +1,35 @@
+name: Build Walla3ha driver APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'android-app/**'
+      - '.github/workflows/android-driver-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-driver:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Build driver APK
+        working-directory: android-app
+        run: gradle --no-daemon :app:assembleDriverDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: walla3ha-driver-1.0.8
+          path: android-app/app/build/outputs/apk/driver/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
