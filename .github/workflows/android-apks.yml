@@ -64,14 +64,18 @@ jobs:
             adb shell am start -n com.wallah.management/com.wallah.app.MainActivity
             adb shell am start -n com.wallah.courier/com.wallah.app.MainActivity
             adb shell am start -n com.wallah.customer/com.wallah.app.MainActivity
-            for package in com.wallah.courier com.wallah.customer; do
-              adb shell am force-stop "$package"
-              adb shell am start -n "$package/com.wallah.app.MainActivity"
-              sleep 8
-              adb shell input keyevent 4
-              sleep 1
-              adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | grep -Fq "$package/com.wallah.app.MainActivity"
-            done
+            adb shell am force-stop com.wallah.courier
+            adb shell am start -n com.wallah.courier/com.wallah.app.MainActivity
+            sleep 8
+            adb shell input keyevent 4
+            sleep 1
+            adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | grep -Fq 'com.wallah.courier/com.wallah.app.MainActivity'
+            adb shell am force-stop com.wallah.customer
+            adb shell am start -n com.wallah.customer/com.wallah.app.MainActivity
+            sleep 8
+            adb shell input keyevent 4
+            sleep 1
+            adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | grep -Fq 'com.wallah.customer/com.wallah.app.MainActivity'
             adb shell pm list packages | grep -E 'com.wallah.(customer.debug|customer|management|courier)'
       - uses: actions/upload-artifact@v4
         with:
