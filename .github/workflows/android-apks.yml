@@ -25,7 +25,7 @@ jobs:
         run: gradle :app:assembleCustomerDebug :app:assembleAdminDebug :app:assembleDriverDebug --no-daemon
       - name: Build release packages
         working-directory: android-app
-        run: gradle :app:assembleAdminRelease :app:assembleDriverRelease --no-daemon
+        run: gradle :app:assembleCustomerRelease :app:assembleAdminRelease :app:assembleDriverRelease --no-daemon
       - name: Sign release packages
         shell: bash
         run: |
@@ -35,7 +35,7 @@ jobs:
           export SIGN_PASS
           keytool -genkeypair -keystore "$RUNNER_TEMP/wallah.jks" -storepass "$SIGN_PASS" -keypass "$SIGN_PASS" -alias wallah -keyalg RSA -keysize 3072 -validity 10000 -dname "CN=Wallah, OU=Android, O=Wallah, C=EG"
           mkdir -p signed-apks
-          for role in admin driver; do
+          for role in customer admin driver; do
             unsigned="android-app/app/build/outputs/apk/$role/release/app-$role-release-unsigned.apk"
             aligned="$RUNNER_TEMP/$role-aligned.apk"
             "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -p 4 "$unsigned" "$aligned"
@@ -60,9 +60,19 @@ jobs:
             adb install android-app/app/build/outputs/apk/driver/debug/app-driver-debug.apk
             adb install signed-apks/wallah-admin-release.apk
             adb install signed-apks/wallah-driver-release.apk
+            adb install signed-apks/wallah-customer-release.apk
             adb shell am start -n com.wallah.management/com.wallah.app.MainActivity
             adb shell am start -n com.wallah.courier/com.wallah.app.MainActivity
-            adb shell pm list packages | grep -E 'com.wallah.(customer.debug|management|courier)'
+            adb shell am start -n com.wallah.customer/com.wallah.app.MainActivity
+            for package in com.wallah.courier com.wallah.customer; do
+              adb shell am force-stop "$package"
+              adb shell am start -n "$package/com.wallah.app.MainActivity"
+              sleep 8
+              adb shell input keyevent 4
+              sleep 1
+              adb shell dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity' | grep -Fq "$package/com.wallah.app.MainActivity"
+            done
+            adb shell pm list packages | grep -E 'com.wallah.(customer.debug|customer|management|courier)'
       - uses: actions/upload-artifact@v4
         with:
           name: wallah-signed-release-apks

@@ -18,8 +18,6 @@ import android.webkit.JavascriptInterface;
 import android.widget.Toast;
 import android.os.Build;
 import android.os.SystemClock;
-import android.window.OnBackInvokedCallback;
-import android.window.OnBackInvokedDispatcher;
 import java.net.URLDecoder;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -43,7 +41,6 @@ public class MainActivity extends Activity {
     private GeolocationPermissions.Callback locationCallback;
     private String locationOrigin;
     private long lastBackPressAt;
-    private OnBackInvokedCallback backInvokedCallback;
     private Intent pendingDriverServiceIntent;
     private static final Pattern COORDS = Pattern.compile("^\\s*(-?\\d+(?:\\.\\d+)?)\\s*,\\s*(-?\\d+(?:\\.\\d+)?)(?:\\s*\\(([^)]*)\\))?\\s*$");
 
@@ -135,11 +132,6 @@ public class MainActivity extends Activity {
             }
         });
         web.addJavascriptInterface(new DriverBridge(), "WallahaNative");
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            backInvokedCallback = this::handleBackPressed;
-            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
-                OnBackInvokedDispatcher.PRIORITY_DEFAULT, backInvokedCallback);
-        }
         pendingDestination = incomingLocation(getIntent());
         pendingState = state;
         loadInitialPage();
@@ -207,7 +199,7 @@ public class MainActivity extends Activity {
             return;
         }
         long now = SystemClock.elapsedRealtime();
-        if (now - lastBackPressAt <= BACK_PRESS_WINDOW_MS) {
+        if (lastBackPressAt != 0 && now - lastBackPressAt <= BACK_PRESS_WINDOW_MS) {
             finish();
             return;
         }
@@ -243,10 +235,6 @@ public class MainActivity extends Activity {
     }
 
     @Override protected void onDestroy() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && backInvokedCallback != null) {
-            getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backInvokedCallback);
-            backInvokedCallback = null;
-        }
         if (fileCallback != null) fileCallback.onReceiveValue(null);
         if (cameraRequest != null) { cameraRequest.deny(); cameraRequest = null; }
         web.destroy();
