@@ -1127,10 +1127,8 @@ class Handler(BaseHTTPRequestHandler):
                 clause,args='',()
             elif user['role']=='customer':
                 clause,args=" WHERE o.user_id=? AND o.status NOT IN ('delivered','cancelled')",(user['id'],)
-            elif driver_state_view=='settings':
-                clause,args=' WHERE 0',()
             elif driver_state_view=='history':
-                clause,args=" WHERE d.user_id=? AND o.status IN ('delivered','cancelled')",(user['id'],)
+                clause,args=' WHERE d.user_id=?',(user['id'],)
             else:
                 clause,args=" WHERE d.user_id=? AND o.status NOT IN ('delivered','cancelled')",(user['id'],)
             if user['staff_permissions'] is not None and not set(json.loads(user['staff_permissions'])).intersection({'admin-orders','admin-driver-list','admin-map-section','admin-daily','admin-overview'}):
