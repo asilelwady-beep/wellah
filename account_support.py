@@ -124,8 +124,8 @@ def set_recovery_answer(db, user_id, value):
 
 
 def recover_account(db, data, remote):
-    phone=str(data.get('phone','')).strip()[:64]
     limit(db,'account-recovery-ip',remote,600,10)
+    phone=normalized_mobile(data.get('phone',''))
     limit(db,'account-recovery-phone',phone,600,5)
     user=db.execute("SELECT id,recovery_salt,recovery_hash FROM users WHERE phone=? AND role IN ('customer','driver') AND disabled=0",(phone,)).fetchone()
     answer=normalize_recovery_answer(data.get('recovery_answer'))
