@@ -1121,7 +1121,18 @@ class Handler(BaseHTTPRequestHandler):
             if not user: return self.respond({'error':'سجل الدخول أولًا'}, 401)
             refresh_offers(db)
             cleanup_order_calls(db)
-            clause, args = ('', ()) if user['role']=='admin' else ((" WHERE o.user_id=? AND o.status NOT IN ('delivered','cancelled')", (user['id'],)) if user['role']=='customer' else (' WHERE d.user_id=?', (user['id'],)))
+            driver_state_view=parse_qs(urlparse(self.path).query).get('driver_view',['active'])[0]
+            if driver_state_view not in ('active','history','settings'): driver_state_view='active'
+            if user['role']=='admin':
+                clause,args='',()
+            elif user['role']=='customer':
+                clause,args=" WHERE o.user_id=? AND o.status NOT IN ('delivered','cancelled')",(user['id'],)
+            elif driver_state_view=='settings':
+                clause,args=' WHERE 0',()
+            elif driver_state_view=='history':
+                clause,args=" WHERE d.user_id=? AND o.status IN ('delivered','cancelled')",(user['id'],)
+            else:
+                clause,args=" WHERE d.user_id=? AND o.status NOT IN ('delivered','cancelled')",(user['id'],)
             if user['staff_permissions'] is not None and not set(json.loads(user['staff_permissions'])).intersection({'admin-orders','admin-driver-list','admin-map-section','admin-daily','admin-overview'}):
                 clause, args = ' WHERE 0', ()
             orders = rows(db, "SELECT o.*,d.name AS driver_name,d.phone AS driver_phone,d.photo AS driver_photo,d.lat AS driver_lat,d.lon AS driver_lon,d.location_at AS driver_location_at,m.name AS merchant_name,m.address AS merchant_address FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id LEFT JOIN merchants m ON m.id=o.merchant_id"+clause+" ORDER BY o.id DESC", args)
