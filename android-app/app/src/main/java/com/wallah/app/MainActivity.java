@@ -14,6 +14,10 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.JavascriptInterface;
+import android.widget.Toast;
+import android.os.Build;
+import android.os.SystemClock;
 import java.net.URLDecoder;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -26,6 +30,7 @@ public class MainActivity extends Activity {
     private static final int LOCATION_REQUEST = 41;
     private static final int FILE_REQUEST = 42;
     private static final int CAMERA_REQUEST = 43;
+    private static final long BACK_PRESS_WINDOW_MS = 2000;
     private PermissionRequest cameraRequest;
     private WebView web;
     private boolean driverPageLoaded = false;
@@ -35,6 +40,8 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> fileCallback;
     private GeolocationPermissions.Callback locationCallback;
     private String locationOrigin;
+    private long lastBackPressAt;
+    private Intent pendingDriverServiceIntent;
     private static final Pattern COORDS = Pattern.compile("^\\s*(-?\\d+(?:\\.\\d+)?)\\s*,\\s*(-?\\d+(?:\\.\\d+)?)(?:\\s*\\(([^)]*)\\))?\\s*$");
 
     private String incomingLocation(Intent intent) {
@@ -124,6 +131,7 @@ public class MainActivity extends Activity {
                 catch (Exception e) { fileCallback = null; callback.onReceiveValue(null); return false; }
             }
         });
+        web.addJavascriptInterface(new DriverBridge(), "WallahaNative");
         pendingDestination = incomingLocation(getIntent());
         pendingState = state;
         loadInitialPage();
@@ -159,6 +167,11 @@ public class MainActivity extends Activity {
             locationCallback.invoke(locationOrigin, allowed, false);
             locationCallback = null;
             locationOrigin = null;
+            if (allowed) startPendingDriverService();
+            else {
+                pendingDriverServiceIntent = null;
+                if (web != null) web.evaluateJavascript("clearBackgroundTrackingToken()", null);
+            }
         }
     }
 
@@ -176,8 +189,45 @@ public class MainActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
-        if (web.canGoBack()) web.goBack();
-        else super.onBackPressed();
+        if (web.canGoBack()) {
+            web.goBack();
+            lastBackPressAt = 0;
+            return;
+        }
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastBackPressAt <= BACK_PRESS_WINDOW_MS) {
+            super.onBackPressed();
+            return;
+        }
+        lastBackPressAt = now;
+        Toast.makeText(this, "اضغط مرة ثانية للخروج", Toast.LENGTH_SHORT).show();
+    }
+
+    private final class DriverBridge {
+        @JavascriptInterface public void startDriverTracking(String token, String baseUrl) {
+            if (!"driver".equals(BuildConfig.FLAVOR) || token == null || token.trim().isEmpty()) return;
+            Uri base = Uri.parse(baseUrl == null ? "" : baseUrl);
+            if (!"https".equals(base.getScheme()) || !isAppHost(base.getHost())) return;
+            pendingDriverServiceIntent = new Intent(MainActivity.this, DriverLocationService.class)
+                .putExtra(DriverLocationService.EXTRA_TOKEN, token)
+                .putExtra(DriverLocationService.EXTRA_BASE_URL, base.buildUpon().path("").clearQuery().fragment(null).build().toString());
+            startPendingDriverService();
+        }
+
+        @JavascriptInterface public void stopDriverTracking() {
+            if ("driver".equals(BuildConfig.FLAVOR)) {
+                pendingDriverServiceIntent = null;
+                stopService(new Intent(MainActivity.this, DriverLocationService.class));
+            }
+        }
+    }
+
+    private void startPendingDriverService() {
+        if (pendingDriverServiceIntent == null ||
+            (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+             checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED)) return;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(pendingDriverServiceIntent);
+        else startService(pendingDriverServiceIntent);
     }
 
     @Override protected void onDestroy() {
