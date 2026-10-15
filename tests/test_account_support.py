@@ -108,11 +108,19 @@ class AccountSupportTests(unittest.TestCase):
         token=self.post('login',{'phone':phone,'password':'recovery-old-pass'})[1]['token']
         bad=self.post('auth/recover',{'phone':phone,'recovery_answer':'إجابة غلط','password':'recovery-new-pass','confirm_password':'recovery-new-pass'})
         self.assertEqual(bad[0],400)
-        recovered=self.post('auth/recover',{'phone':phone,'recovery_answer':'  خالتي   سعاد ','password':'recovery-new-pass','confirm_password':'recovery-new-pass'})
+        recovered=self.post('auth/recover',{'phone':'+20 1000000126','recovery_answer':'  خالتي   سعاد ','password':'recovery-new-pass','confirm_password':'recovery-new-pass'})
         self.assertEqual(recovered[0],200,recovered[1])
         self.assertEqual(self.post('logout',{},token)[0],401)
         self.assertEqual(self.post('login',{'phone':phone,'password':'recovery-old-pass'})[0],401)
         self.assertEqual(self.post('login',{'phone':phone,'password':'recovery-new-pass'})[0],200)
+
+    def test_recovery_rejects_short_phone_with_clear_error(self):
+        phone='01000000128'
+        status,_=self.post('register',{'name':'عميل رقم هاتف','phone':phone,'password':'short-phone-pass','confirm_password':'short-phone-pass','recovery_answer':'إجابة سرية'})
+        self.assertEqual(status,200)
+        failed=self.post('auth/recover',{'phone':'0115114402','recovery_answer':'إجابة سرية','password':'recovery-new-pass','confirm_password':'recovery-new-pass'})
+        self.assertEqual(failed[0],400)
+        self.assertIn('11 رقمًا',failed[1]['error'])
 
     def test_signed_in_customer_can_save_recovery_answer(self):
         phone='01000000127'
