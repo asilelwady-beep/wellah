@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode
 from urllib.request import urlopen, Request, build_opener, HTTPRedirectHandler
-from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
+from decimal import Decimal, ROUND_HALF_UP, ROUND_CEILING, InvalidOperation
 from threading import Lock
 from wallet_controls import init_wallet_controls, wallet_post, unlocked, verify_owner, redact_wallet
 from account_support import init_features, feature_post, feature_state, normalized_username, complete_registration, set_recovery_answer
@@ -230,13 +230,24 @@ def init():
         if not db.execute("SELECT 1 FROM settings WHERE key='wallet'").fetchone():
             db.executemany("INSERT INTO settings VALUES (?,?)", [("wallet", os.environ.get('WALLAHA_WALLET','')), ("whatsapp", os.environ.get('WALLAHA_WHATSAPP','')), ("delivery_fee", "20")])
         db.execute("INSERT OR IGNORE INTO settings VALUES ('per_km_rate','')")
+        for pricing_key,default_value in (('delivery_base_km','3'),('delivery_base_fee',''),('delivery_extra_rate','')):
+            db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(pricing_key,default_value))
+        legacy_rate=db.execute("SELECT value FROM settings WHERE key='per_km_rate'").fetchone()[0]
+        if legacy_rate:
+            current=dict(db.execute("SELECT key,value FROM settings WHERE key IN ('delivery_base_fee','delivery_extra_rate')"))
+            if not current.get('delivery_base_fee') and not current.get('delivery_extra_rate'):
+                legacy=Decimal(legacy_rate)
+                db.execute("UPDATE settings SET value=? WHERE key='delivery_base_fee'",(str((legacy*Decimal('3')).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP)),))
+                db.execute("UPDATE settings SET value=? WHERE key='delivery_extra_rate'",(str(legacy.quantize(Decimal('0.01'),rounding=ROUND_HALF_UP)),))
+            db.execute("UPDATE settings SET value='' WHERE key='per_km_rate'")
         db.execute("INSERT OR IGNORE INTO settings VALUES ('quote_secret',?)",(secrets.token_hex(32),))
         for commission_key in ('products','delivery','custom',*RIDE_RATE_KEYS.values()):
             db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",('commission_'+commission_key,'0'))
         for ride_key in RIDE_RATE_KEYS.values():
+            db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(ride_key+'_base_km','3'))
             db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(ride_key+'_base',''))
             db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(ride_key+'_extra',''))
-        for table,column,definition in [('orders','route_km','REAL'),('orders','km_rate','REAL'),('products','price_pending','INTEGER NOT NULL DEFAULT 0'),('products','price_basis_weight_kg','REAL'),('order_items','unit',"TEXT NOT NULL DEFAULT 'قطعة'"),('order_items','stock_quantity','REAL')]:
+        for table,column,definition in [('orders','route_km','REAL'),('orders','km_rate','REAL'),('orders','km_base_km','REAL'),('orders','km_base_fee','REAL'),('products','price_pending','INTEGER NOT NULL DEFAULT 0'),('products','price_basis_weight_kg','REAL'),('order_items','unit',"TEXT NOT NULL DEFAULT 'قطعة'"),('order_items','stock_quantity','REAL')]:
             if column not in {x['name'] for x in db.execute(f'PRAGMA table_info({table})')}:
                 db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
         for column,definition in [('driver_earning_cents' ,'INTEGER NOT NULL DEFAULT 0'),('driver_earning_paid','INTEGER NOT NULL DEFAULT 0'),('commission_percent','REAL NOT NULL DEFAULT 0'),('commission_cents','INTEGER NOT NULL DEFAULT 0'),('commission_locked','INTEGER NOT NULL DEFAULT 0')]:
@@ -630,6 +641,13 @@ def road_km(points):
         raise ValueError('تعذر حساب طريق الشوارع. حاول مرة أخرى؛ لم تُحسب رسوم بديلة')
 
 
+def calculate_distance_fee(km, base_km, base_fee, extra_rate):
+    distance=Decimal(str(km))
+    threshold=Decimal(str(base_km))
+    extra_km=max(0,int((distance-threshold).to_integral_value(rounding=ROUND_CEILING)))
+    return (Decimal(str(base_fee))+Decimal(str(extra_rate))*extra_km).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP)
+
+
 def quote_delivery(db,user_id,data):
     kind=data.get('kind')
     vehicle=str(data.get('vehicle',''))
@@ -637,25 +655,24 @@ def quote_delivery(db,user_id,data):
         key=RIDE_RATE_KEYS.get(vehicle)
         if not key or not db.execute('SELECT 1 FROM services WHERE key=? AND active=1',(key,)).fetchone():
             raise ValueError('المركبة غير متاحة')
-        prices={r['key']:r['value'] for r in db.execute("SELECT key,value FROM settings WHERE key IN (?,?)",(key+'_base',key+'_extra'))}
-        if not prices.get(key+'_base') or not prices.get(key+'_extra'):
+        prices={r['key']:r['value'] for r in db.execute("SELECT key,value FROM settings WHERE key IN (?,?,?)",(key+'_base_km',key+'_base',key+'_extra'))}
+        if not all(prices.get(key+suffix) for suffix in ('_base_km','_base','_extra')):
             raise ValueError('لم تحدد الإدارة تسعيرة هذه المركبة بعد')
+        base_km=Decimal(prices[key+'_base_km'])
         base=Decimal(prices[key+'_base'])
         extra=Decimal(prices[key+'_extra'])
-        rate=extra
     else:
-        saved=db.execute("SELECT value FROM settings WHERE key='per_km_rate'").fetchone()[0]
-        if not saved: raise ValueError('لم تُفعّل الإدارة تسعير الكيلومتر بعد')
-        rate=Decimal(saved)
+        prices={r['key']:r['value'] for r in db.execute("SELECT key,value FROM settings WHERE key IN ('delivery_base_km','delivery_base_fee','delivery_extra_rate')")}
+        if not all(prices.get(k) for k in ('delivery_base_km','delivery_base_fee','delivery_extra_rate')):
+            raise ValueError('لم تُفعّل الإدارة تسعير الكيلومتر بعد')
+        base_km=Decimal(prices['delivery_base_km'])
+        base=Decimal(prices['delivery_base_fee'])
+        extra=Decimal(prices['delivery_extra_rate'])
     points=delivery_points(db,data)
     km=road_km(points)
-    if kind=='ride':
-        additional=max(0,math.ceil(Decimal(str(km))-Decimal('3')))
-        fee=float((base+extra*additional).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP))
-    else:
-        fee=float((Decimal(str(km))*rate).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP))
-    payload={'user_id':user_id,'kind':kind,'points':points,'km':km,'rate':float(rate),'fee':fee,'expires':int(time.time())+600}
-    if kind=='ride': payload.update({'vehicle':vehicle,'base':float(base),'extra':float(extra)})
+    fee=float(calculate_distance_fee(km,base_km,base,extra))
+    payload={'user_id':user_id,'kind':kind,'points':points,'km':km,'rate':float(extra),'base_km':float(base_km),'base_fee':float(base),'fee':fee,'expires':int(time.time())+600}
+    if kind=='ride': payload['vehicle']=vehicle
     body=base64.urlsafe_b64encode(json.dumps(payload,separators=(',',':')).encode()).decode()
     secret=db.execute("SELECT value FROM settings WHERE key='quote_secret'").fetchone()[0]
     signature=hmac.new(secret.encode(),body.encode(),hashlib.sha256).hexdigest()
@@ -879,7 +896,7 @@ def staff_state(view, permissions):
     if 'admin-delivery-rate' not in allowed: view['area_fees']={}
     if 'admin-orders' not in allowed and 'admin-driver-list' not in allowed: view['chat_threads']=[];view['chat_counts']={}
     view['driver_wallets']={};view['wallet_unlocked']=False
-    view['settings']={k:v for k,v in view['settings'].items() if (k.startswith('commission_') and 'admin-commission' in allowed) or (k in ('delivery_fee','per_km_rate') and 'admin-delivery-rate' in allowed)}
+    view['settings']={k:v for k,v in view['settings'].items() if (k.startswith('commission_') and 'admin-commission' in allowed) or ((k in ('delivery_fee','per_km_rate','delivery_base_km','delivery_base_fee','delivery_extra_rate') or k.startswith('ride_')) and 'admin-delivery-rate' in allowed)}
     view['staff_permissions']=list(allowed)
     return view
 
@@ -1535,19 +1552,40 @@ class Handler(BaseHTTPRequestHandler):
                     db.execute('INSERT INTO services(key,name) VALUES (?,?)',('custom_'+secrets.token_hex(6),name))
                 elif path == '/api/delivery-rate':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
-                    rate=str(data.get('per_km_rate','')).strip()
-                    if rate:
-                        number=float(rate)
-                        if not math.isfinite(number) or not 0<number<=10000: raise ValueError('سعر الكيلومتر يجب أن يكون أكبر من صفر وحتى 10000 جنيه')
-                        rate=str(Decimal(rate).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP))
-                        if Decimal(rate)<=0: raise ValueError('سعر الكيلومتر صغير جدًا')
-                    db.execute("UPDATE settings SET value=? WHERE key='per_km_rate'",(rate,))
+                    legacy=data.get('per_km_rate')
+                    base_km=str(data.get('base_km','3')).strip() or '3'
+                    base=str(data.get('base_fee','')).strip()
+                    extra=str(data.get('extra_rate','')).strip()
+                    if legacy is not None and 'base_fee' not in data:
+                        legacy=str(legacy).strip()
+                        if legacy:
+                            old_rate=Decimal(legacy)
+                            if not old_rate.is_finite() or old_rate<=0 or old_rate>10000: raise ValueError('سعر الكيلومتر يجب أن يكون أكبر من صفر وحتى 10000 جنيه')
+                            base_km='3';base=str(old_rate*3);extra=str(old_rate)
+                    threshold=Decimal(base_km)
+                    if not threshold.is_finite() or threshold<=0 or threshold>10000: raise ValueError('المسافة الأساسية يجب أن تكون أكبر من صفر وحتى 10000 كم')
+                    if bool(base)!=bool(extra): raise ValueError('أدخل السعر الأساسي وسعر الكيلومتر الإضافي معًا')
+                    values=[]
+                    for value,allow_zero in ((base,True),(extra,True)):
+                        if not value:
+                            values.append('')
+                            continue
+                        amount=Decimal(value)
+                        if not amount.is_finite() or amount<0 or amount>100000: raise ValueError('السعر يجب أن يكون من صفر وحتى 100000 جنيه')
+                        values.append(str(amount.quantize(Decimal('0.01'),rounding=ROUND_HALF_UP)))
+                    db.execute("UPDATE settings SET value=? WHERE key='delivery_base_km'",(str(threshold.normalize()),))
+                    db.execute("UPDATE settings SET value=? WHERE key='delivery_base_fee'",(values[0],))
+                    db.execute("UPDATE settings SET value=? WHERE key='delivery_extra_rate'",(values[1],))
+                    db.execute("UPDATE settings SET value=? WHERE key='per_km_rate'",(values[1],))
                 elif path == '/api/ride-rates':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     key=RIDE_RATE_KEYS.get(str(data.get('vehicle','')))
                     if not key: raise ValueError('المركبة غير معروفة')
+                    base_km=str(data.get('base_km','3')).strip() or '3'
                     base=str(data.get('base','')).strip()
                     extra=str(data.get('extra','')).strip()
+                    threshold=Decimal(base_km)
+                    if not threshold.is_finite() or threshold<=0 or threshold>10000: raise ValueError('المسافة الأساسية يجب أن تكون أكبر من صفر وحتى 10000 كم')
                     if bool(base)!=bool(extra): raise ValueError('أدخل السعر الأساسي وزيادة الكيلومتر معًا')
                     values=[]
                     for value in (base,extra):
@@ -1555,8 +1593,9 @@ class Handler(BaseHTTPRequestHandler):
                             values.append('')
                             continue
                         amount=Decimal(value)
-                        if not amount.is_finite() or amount<=0 or amount>10000: raise ValueError('السعر يجب أن يكون أكبر من صفر وحتى 10000 جنيه')
+                        if not amount.is_finite() or amount<0 or amount>100000: raise ValueError('السعر يجب أن يكون من صفر وحتى 100000 جنيه')
                         values.append(str(amount.quantize(Decimal('0.01'),rounding=ROUND_HALF_UP)))
+                    db.execute('UPDATE settings SET value=? WHERE key=?',(str(threshold.normalize()),key+'_base_km'))
                     for suffix,value in zip(('_base','_extra'),values):
                         db.execute('UPDATE settings SET value=? WHERE key=?',(value,key+suffix))
                 elif path == '/api/products/import-csv':
@@ -1798,10 +1837,12 @@ class Handler(BaseHTTPRequestHandler):
                     # Service prices require admin review; fee is shown only for catalog orders.
                     if kind != "products": fee = 0
                     km_quote=None
-                    rate=db.execute("SELECT value FROM settings WHERE key='per_km_rate'").fetchone()[0]
+                    delivery_pricing={r['key']:r['value'] for r in db.execute("SELECT key,value FROM settings WHERE key IN ('delivery_base_km','delivery_base_fee','delivery_extra_rate')")}
+                    delivery_priced=all(delivery_pricing.get(k) for k in ('delivery_base_km','delivery_base_fee','delivery_extra_rate'))
                     ride_rate_key=RIDE_RATE_KEYS.get(data.get('vehicle','')) if kind=='ride' else None
-                    ride_priced=bool(ride_rate_key and db.execute("SELECT value FROM settings WHERE key=?",(ride_rate_key+'_base',)).fetchone()[0])
-                    if (rate and not prescription_only and kind in ('products','delivery') and not (kind=='products' and shop_anywhere)) or (kind=='ride' and ride_priced):
+                    ride_prices={r['key']:r['value'] for r in db.execute("SELECT key,value FROM settings WHERE key IN (?,?,?)",(ride_rate_key+'_base_km',ride_rate_key+'_base',ride_rate_key+'_extra'))} if ride_rate_key else {}
+                    ride_priced=bool(ride_rate_key and all(ride_prices.get(ride_rate_key+suffix) for suffix in ('_base_km','_base','_extra')))
+                    if (delivery_priced and not prescription_only and kind in ('products','delivery') and not (kind=='products' and shop_anywhere)) or (kind=='ride' and ride_priced):
                         km_quote=verify_delivery_quote(db,user['id'],data)
                         fee=km_quote['fee']
                     ps = "confirmed" if payment == "cash" else "pending"
@@ -1817,7 +1858,7 @@ class Handler(BaseHTTPRequestHandler):
                             log(db,oid,f'خصم مميز بقيمة {cents/100:.2f} جنيه')
                     if prescription_only: db.execute('UPDATE orders SET prescription_only=1,total=0,delivery_fee=0,quote_accepted=0 WHERE id=?',(oid,))
                     if km_quote:
-                        db.execute('UPDATE orders SET route_km=?,km_rate=? WHERE id=?',(km_quote['km'],km_quote['rate'],oid))
+                        db.execute('UPDATE orders SET route_km=?,km_rate=?,km_base_km=?,km_base_fee=? WHERE id=?',(km_quote['km'],km_quote['rate'],km_quote['base_km'],km_quote['base_fee'],oid))
                         if kind in ('delivery','ride'): db.execute("UPDATE orders SET status=?,quote_accepted=1 WHERE id=?",('new' if payment=='cash' else 'payment_review',oid))
                         log(db,oid,f"رسوم الطريق: {km_quote['km']} كم، {km_quote.get('vehicle','توصيل')} = {fee} ج")
                     if parcel:
