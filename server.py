@@ -22,7 +22,7 @@ from urllib.request import urlopen, Request, build_opener, HTTPRedirectHandler
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from threading import Lock
 from wallet_controls import init_wallet_controls, wallet_post, unlocked, verify_owner, redact_wallet
-from account_support import init_features, feature_post, feature_state, normalized_username, complete_registration
+from account_support import init_features, feature_post, feature_state, normalized_username, complete_registration, set_recovery_answer
 
 ROOT = Path(__file__).parent
 DB = Path(os.environ.get('WALLAHA_DB_PATH', str(ROOT / 'wallaha.sqlite3')))
@@ -836,12 +836,7 @@ def staff_access(user, section):
     return user['staff_permissions'] is None or section in json.loads(user['staff_permissions'])
 
 def redact_order_contacts(order, role):
-    """Personal contact fields stay on the server for the owner dashboard."""
-    if role == 'driver':
-        for key in ('phone', 'sender_phone', 'recipient_phone'):
-            order[key] = None
-    if role in ('driver', 'customer'):
-        order['driver_phone'] = None
+    """Keep customer, driver, sender, and recipient contacts on their order."""
     return order
 
 def order_call_ice_config(user_id):
@@ -1175,7 +1170,13 @@ class Handler(BaseHTTPRequestHandler):
                 if wallet_post(self,db,path,data,self.user(db),now,driver_wallet): return
                 if feature_post(self, db, path, data, self.user(db), create_user, AREAS, now): return
                 if path == '/api/register':
-                    uid=complete_registration(db,data,create_user)
+                    if data.get('challenge_id') or data.get('code'):
+                        uid=complete_registration(db,data,create_user)
+                        return self.respond({'ok':True,'id':uid})
+                    if data.get('password') != data.get('confirm_password'):
+                        raise ValueError('كلمتا المرور غير متطابقتين')
+                    uid=create_user(db,str(data.get('name','')),str(data.get('phone','')),'customer',str(data.get('password','')))
+                    set_recovery_answer(db,uid,data.get('recovery_answer'))
                     return self.respond({'ok':True,'id':uid})
                 if path in ('/api/login','/api/admin/login'):
                     phone=str(data.get('phone','')).strip()[:64]

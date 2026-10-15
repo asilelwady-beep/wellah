@@ -92,6 +92,48 @@ class AccountSupportTests(unittest.TestCase):
         self.assertEqual(status,200)
         self.assertEqual(self.post('auth/reset-password',{'challenge_id':response['challenge_id'],'code':send.call_args.args[1],'password':'changed-mobile-password','confirm_password':'changed-mobile-password'})[0],200)
 
+    def test_customer_registration_needs_no_otp(self):
+        phone='01000000124'
+        status,result=self.post('register',{'name':'عميل بدون رمز','phone':phone,'password':'simple-password-123','confirm_password':'simple-password-123','recovery_answer':'خالد والبحر'})
+        self.assertEqual(status,200,result)
+        with server.connect() as db:
+            account=db.execute('SELECT recovery_salt,recovery_hash FROM users WHERE phone=?',(phone,)).fetchone()
+            self.assertTrue(account['recovery_salt']);self.assertNotEqual(account['recovery_hash'],'خالد والبحر')
+        self.assertEqual(self.post('login',{'phone':phone,'password':'simple-password-123'})[0],200)
+
+    def test_recovery_answer_resets_password_and_revokes_sessions(self):
+        phone='01000000126'
+        status,_=self.post('register',{'name':'عميل استرداد','phone':phone,'password':'recovery-old-pass','confirm_password':'recovery-old-pass','recovery_answer':'خالتي سعاد'})
+        self.assertEqual(status,200)
+        token=self.post('login',{'phone':phone,'password':'recovery-old-pass'})[1]['token']
+        bad=self.post('auth/recover',{'phone':phone,'recovery_answer':'إجابة غلط','password':'recovery-new-pass','confirm_password':'recovery-new-pass'})
+        self.assertEqual(bad[0],400)
+        recovered=self.post('auth/recover',{'phone':phone,'recovery_answer':'  خالتي   سعاد ','password':'recovery-new-pass','confirm_password':'recovery-new-pass'})
+        self.assertEqual(recovered[0],200,recovered[1])
+        self.assertEqual(self.post('logout',{},token)[0],401)
+        self.assertEqual(self.post('login',{'phone':phone,'password':'recovery-old-pass'})[0],401)
+        self.assertEqual(self.post('login',{'phone':phone,'password':'recovery-new-pass'})[0],200)
+
+    def test_signed_in_customer_can_save_recovery_answer(self):
+        phone='01000000127'
+        status,_=self.post('register',{'name':'عميل يضيف إجابة','phone':phone,'password':'account-old-pass','confirm_password':'account-old-pass','recovery_answer':'إجابتي الأولى'})
+        self.assertEqual(status,200)
+        token=self.post('login',{'phone':phone,'password':'account-old-pass'})[1]['token']
+        self.assertEqual(self.post('account/recovery-answer',{'current_password':'wrong-password','recovery_answer':'إجابتي الجديدة'},token)[0],403)
+        self.assertEqual(self.post('account/recovery-answer',{'current_password':'account-old-pass','recovery_answer':'إجابتي الجديدة'},token)[0],200)
+
+    def test_order_contacts_are_visible_to_customer_and_assigned_driver(self):
+        oid=self.wallet_order('assigned')
+        with server.connect() as db:
+            db.execute("UPDATE orders SET sender_name='المرسل',sender_phone='01000000401',recipient_name='المستلم',recipient_phone='01000000402' WHERE id=?",(oid,))
+        customer=next(o for o in self.state_for(self.ct)['orders'] if o['id']==oid)
+        dt=self.post('login',{'phone':'01000000003','password':'driver-password-123'})[1]['token']
+        driver=next(o for o in self.state_for(dt)['orders'] if o['id']==oid)
+        self.assertEqual(customer['driver_phone'],'01000000003')
+        self.assertEqual(driver['phone'],'01000000001')
+        self.assertEqual(driver['sender_phone'],'01000000401')
+        self.assertEqual(driver['recipient_phone'],'01000000402')
+
     def test_sms_unconfigured_does_not_create_challenge(self):
         with patch.object(features,'sms_ready',return_value=False):
             self.assertEqual(self.post('auth/send-code',{'phone':'01000000123','purpose':'register'})[0],400)
@@ -254,7 +296,7 @@ class AccountSupportTests(unittest.TestCase):
         dt=self.post('login',{'phone':'01000000003','password':'driver-password-123','expected_role':'driver'})[1]['token']
         customer_order=next(o for o in self.state_for(self.ct)['orders'] if o['id']==oid)
         driver_order=next(o for o in self.state_for(dt)['orders'] if o['id']==oid)
-        self.assertIsNone(customer_order['driver_phone']);self.assertIsNone(driver_order['phone'])
+        self.assertEqual(customer_order['driver_phone'],'01000000003');self.assertEqual(driver_order['phone'],'01000000001')
         offer={'type':'offer','sdp':'v=0\\r\\n'+'x'*200}
         status,started=self.post('order/call',{'mode':'start','order_id':oid,'offer':offer},self.ct)
         self.assertEqual(status,200);self.assertEqual(started['status'],'ringing')
@@ -282,9 +324,9 @@ class AccountSupportTests(unittest.TestCase):
         self.assertEqual(policy,'relay');self.assertEqual(servers[1]['urls'],['turn:turn.example.test:3478'])
         self.assertTrue(servers[1]['username'].endswith(':42'));self.assertTrue(servers[1]['credential'])
 
-    def test_registration_requires_otp(self):
-        code,result=self.post('register',{'name':'جديد','phone':'01000000004','password':'new-password-123','confirm_password':'new-password-123'})
-        self.assertEqual(code,400);self.assertIn('رمز',result['error'])
+    def test_registration_without_otp(self):
+        code,result=self.post('register',{'name':'جديد','phone':'01000000125','password':'new-password-123','confirm_password':'new-password-123','recovery_answer':'إجابة سرية'})
+        self.assertEqual(code,200,result)
 
     def test_otp_registration_single_use_and_password_reset(self):
         sent={}

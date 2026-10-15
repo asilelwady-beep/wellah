@@ -17,7 +17,7 @@ from urllib.request import Request, urlopen
 
 
 def init_features(db):
-    for name, definition in [('email', 'TEXT'), ('verified_phone', 'TEXT'), ('disabled', 'INTEGER NOT NULL DEFAULT 0')]:
+    for name, definition in [('email', 'TEXT'), ('verified_phone', 'TEXT'), ('disabled', 'INTEGER NOT NULL DEFAULT 0'), ('recovery_salt','TEXT'), ('recovery_hash','TEXT')]:
         if name not in {r['name'] for r in db.execute('PRAGMA table_info(users)')}:
             db.execute(f'ALTER TABLE users ADD COLUMN {name} {definition}')
     db.execute('CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(email) WHERE email IS NOT NULL')
@@ -107,6 +107,43 @@ def normalized_mobile(value):
     if not re.fullmatch(r'01[0125][0-9]{8}',value):
         raise ValueError('اكتب رقم موبايل مصري صحيح من 11 رقمًا')
     return value
+
+
+def normalize_recovery_answer(value):
+    answer=' '.join(str(value or '').strip().casefold().split())
+    if len(answer)<3 or len(answer)>120:
+        raise ValueError('اكتب إجابة استرداد من 3 إلى 120 حرفًا')
+    return answer
+
+
+def set_recovery_answer(db, user_id, value):
+    answer=normalize_recovery_answer(value)
+    salt=secrets.token_hex(16)
+    digest=hashlib.scrypt(answer.encode(),salt=bytes.fromhex(salt),n=2**14,r=8,p=1).hex()
+    db.execute('UPDATE users SET recovery_salt=?,recovery_hash=? WHERE id=?',(salt,digest,user_id))
+
+
+def recover_account(db, data, remote):
+    phone=str(data.get('phone','')).strip()[:64]
+    limit(db,'account-recovery-ip',remote,600,10)
+    limit(db,'account-recovery-phone',phone,600,5)
+    user=db.execute("SELECT id,recovery_salt,recovery_hash FROM users WHERE phone=? AND role IN ('customer','driver') AND disabled=0",(phone,)).fetchone()
+    answer=normalize_recovery_answer(data.get('recovery_answer'))
+    if not user or not user['recovery_salt'] or not user['recovery_hash']:
+        raise ValueError('تعذر استرداد الحساب بهذه البيانات؛ راجع رقم الهاتف أو تواصل مع الدعم')
+    candidate=hashlib.scrypt(answer.encode(),salt=bytes.fromhex(user['recovery_salt']),n=2**14,r=8,p=1).hex()
+    if not hmac.compare_digest(candidate,user['recovery_hash']):
+        raise ValueError('تعذر استرداد الحساب بهذه البيانات؛ راجع الإجابة وحاول لاحقًا')
+    password=str(data.get('password',''))
+    if password!=str(data.get('confirm_password','')):
+        raise ValueError('كلمتا المرور غير متطابقتين')
+    if len(password)<10:
+        raise ValueError('كلمة المرور لازم تكون 10 أحرف على الأقل')
+    salt=secrets.token_hex(16)
+    digest=hashlib.scrypt(password.encode(),salt=bytes.fromhex(salt),n=2**14,r=8,p=1).hex()
+    db.execute('UPDATE users SET salt=?,password_hash=? WHERE id=?',(salt,digest,user['id']))
+    db.execute('DELETE FROM sessions WHERE user_id=?',(user['id'],))
+    return True
 
 
 def sms_ready():
@@ -223,6 +260,23 @@ def admin_activity(db, data):
 
 
 def feature_post(handler, db, path, data, user, create_user, areas, now):
+    if path == '/api/auth/recover':
+        recover_account(db,data,handler.client_address[0])
+        handler.respond({'ok':True})
+        return True
+    if path == '/api/account/recovery-answer':
+        if not user or user['role'] not in ('customer','driver'):
+            handler.respond({'error':'سجّل الدخول أولًا لتحديث إجابة الاسترداد'},401)
+            return True
+        account=db.execute('SELECT salt,password_hash FROM users WHERE id=?',(user['id'],)).fetchone()
+        current=str(data.get('current_password',''))
+        digest=hashlib.scrypt(current.encode(),salt=bytes.fromhex(account['salt']),n=2**14,r=8,p=1).hex()
+        if not hmac.compare_digest(digest,account['password_hash']):
+            handler.respond({'error':'كلمة المرور الحالية غير صحيحة'},403)
+            return True
+        set_recovery_answer(db,user['id'],data.get('recovery_answer'))
+        handler.respond({'ok':True})
+        return True
     if path in ('/api/admin/activity','/api/admin/daily/reset'):
         if not user or user['role']!='admin':
             handler.respond({'error':'خاص بالإدارة فقط'},403)
