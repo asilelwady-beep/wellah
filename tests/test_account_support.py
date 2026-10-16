@@ -123,6 +123,45 @@ class AccountSupportTests(unittest.TestCase):
         code,result=self.post('auth/admin-recover',{'username':'unconfigured_owner','recovery_answer':'wrong answer','password':'new-password-123','confirm_password':'new-password-123'})
         self.assertIn('محاولات كثيرة',result['error'])
 
+    def test_delete_category_and_products_preserves_orders_and_other_sections(self):
+        name='قسم اختبار الحذف'
+        with server.connect() as db:
+            db.execute('INSERT INTO categories(name) VALUES (?)',(name,))
+            pid=db.execute('INSERT INTO products(name,category,price,stock) VALUES (?,?,?,?)',('منتج للحذف',name,25,7)).lastrowid
+            oid=db.execute("INSERT INTO orders(user_id,kind,customer,phone,area,address,payment,payment_status,status,total,created_at) VALUES (?,'products','عميل تاريخي','01000000001',?,'عنوان','cash','confirmed','delivered',25,?)",(self.customer,server.AREAS[0],server.now())).lastrowid
+            db.execute('INSERT INTO order_items(order_id,product_id,name,quantity,unit_price) VALUES (?,?,?,?,?)',(oid,pid,'منتج للحذف',1,25))
+            untouched=db.execute('SELECT price,stock,active FROM products WHERE id=?',(self.pid,)).fetchone()
+        payload={'name':name,'confirm_name':name,'delete_products':True,'expected_count':1}
+        self.assertEqual(self.post('category/delete',payload,self.ct)[0],403)
+        self.assertEqual(self.post('category/delete',{**payload,'confirm_name':'قسم آخر'},self.at)[0],400)
+        self.assertEqual(self.post('category/delete',{**payload,'expected_count':2},self.at)[0],400)
+        self.assertTrue(any(c['name']==name for c in self.state_for(self.at)['categories']))
+        code,result=self.post('category/delete',payload,self.at)
+        self.assertEqual(code,200,result);self.assertEqual(result['deleted_products'],1)
+        view=self.state_for(self.at)
+        self.assertFalse(any(c['name']==name for c in view['categories']))
+        self.assertFalse(any(p['id']==pid for p in view['products']))
+        history=next(o for o in view['orders'] if o['id']==oid)
+        self.assertEqual(history['items'][0]['name'],'منتج للحذف');self.assertEqual(history['total'],25)
+        with server.connect() as db:
+            self.assertEqual(tuple(db.execute('SELECT price,stock,active FROM products WHERE id=?',(self.pid,)).fetchone()),tuple(untouched))
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM category_deletion_log WHERE category=?',(name,)).fetchone()[0],1)
+        self.assertEqual(self.post('category/delete',payload,self.at)[0],400)
+        self.assertEqual(self.post('category/create',{'name':name},self.at)[0],200)
+        self.assertFalse(any(p['id']==pid for p in self.state_for(self.at)['products']))
+        self.assertEqual(self.post('product/update',{'id':pid,'price':25,'stock':7,'active':True},self.at)[0],400)
+        server.init()
+        with server.connect() as db:
+            self.assertEqual(db.execute('SELECT deleted,active FROM products WHERE id=?',(pid,)).fetchone()['deleted'],1)
+
+    def test_delete_empty_category_is_permanent_across_restart(self):
+        name='قسم فارغ للحذف'
+        self.assertEqual(self.post('category/create',{'name':name},self.at)[0],200)
+        data={'name':name,'confirm_name':name,'delete_products':True,'expected_count':0}
+        self.assertEqual(self.post('category/delete',data,self.at)[0],200)
+        server.init()
+        self.assertFalse(any(c['name']==name for c in self.state_for(self.at)['categories']))
+
     def test_customer_registration_needs_no_otp(self):
         phone='01000000124'
         status,result=self.post('register',{'name':'عميل بدون رمز','phone':phone,'password':'simple-password-123','confirm_password':'simple-password-123','recovery_answer':'خالد والبحر'})

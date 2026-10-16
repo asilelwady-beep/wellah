@@ -224,6 +224,10 @@ def init():
         CREATE TABLE IF NOT EXISTS driver_trip_points (driver_id INTEGER NOT NULL, order_id INTEGER NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, at TEXT NOT NULL, PRIMARY KEY(driver_id,order_id));
         CREATE TABLE IF NOT EXISTS driver_distance_daily (driver_id INTEGER NOT NULL, day TEXT NOT NULL, meters REAL NOT NULL DEFAULT 0, PRIMARY KEY(driver_id,day));
         """)
+        for table in ('categories','products'):
+            if 'deleted' not in {r['name'] for r in db.execute(f'PRAGMA table_info({table})')}:
+                db.execute(f'ALTER TABLE {table} ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0')
+        db.execute('CREATE TABLE IF NOT EXISTS category_deletion_log (id INTEGER PRIMARY KEY,category TEXT NOT NULL,product_count INTEGER NOT NULL,admin_id INTEGER NOT NULL,at TEXT NOT NULL)')
         init_features(db)
         init_wallet_controls(db)
         db.execute('CREATE TABLE IF NOT EXISTS staff_members (user_id INTEGER PRIMARY KEY REFERENCES users(id), permissions TEXT NOT NULL, created_by INTEGER NOT NULL REFERENCES users(id))')
@@ -818,7 +822,7 @@ def warehouse_for_category(db, category):
 
 
 def preview_catalog(db):
-    return rows(db,"SELECT p.id,p.name,p.category,p.price,p.price_pending,p.price_basis_weight_kg,p.stock,p.active,p.merchant_id,p.catalog_preview,p.requires_prescription,CASE WHEN p.image<>'' THEN p.image ELSE '/product-illustration/' || p.id || '.svg' END AS image FROM products p JOIN categories c ON c.name=p.category WHERE p.catalog_preview=1 AND c.active=1 ORDER BY CASE WHEN p.price_pending=0 AND p.price>0 THEN 0 ELSE 1 END,CASE WHEN p.image<>'' AND (p.name LIKE '%لانشون%فراخ%بالوزن' OR p.name LIKE '%لانشون%دجاج%بالوزن') THEN 0 WHEN p.image<>'' AND (p.name LIKE '%لانشون%بالوزن' OR p.name LIKE '%سلامي%بالوزن') THEN 1 WHEN p.name IN ('ثوم بلدي طازج','ثوم صيني طازج') THEN 2 ELSE 3 END,(p.image LIKE '/product-photo-%') DESC,c.sort_order,p.category,p.id")
+    return rows(db,"SELECT p.id,p.name,p.category,p.price,p.price_pending,p.price_basis_weight_kg,p.stock,p.active,p.merchant_id,p.catalog_preview,p.requires_prescription,CASE WHEN p.image<>'' THEN p.image ELSE '/product-illustration/' || p.id || '.svg' END AS image FROM products p JOIN categories c ON c.name=p.category WHERE p.deleted=0 AND p.catalog_preview=1 AND c.active=1 ORDER BY CASE WHEN p.price_pending=0 AND p.price>0 THEN 0 ELSE 1 END,CASE WHEN p.image<>'' AND (p.name LIKE '%لانشون%فراخ%بالوزن' OR p.name LIKE '%لانشون%دجاج%بالوزن') THEN 0 WHEN p.image<>'' AND (p.name LIKE '%لانشون%بالوزن' OR p.name LIKE '%سلامي%بالوزن') THEN 1 WHEN p.name IN ('ثوم بلدي طازج','ثوم صيني طازج') THEN 2 ELSE 3 END,(p.image LIKE '/product-photo-%') DESC,c.sort_order,p.category,p.id")
 
 
 def rows(db, sql, args=()):
@@ -1180,7 +1184,7 @@ class Handler(BaseHTTPRequestHandler):
                         o.pop('driver_earning_cents',None);o.pop('driver_earning_paid',None)
             profile=db.execute('SELECT id,name,phone,photo,area,vehicle_type,available,break_until,lat,lon,location_at,identity_blocked_shift FROM drivers WHERE user_id=?',(user['id'],)).fetchone() if user['role']=='driver' else None
             wallets={str(d['id']):driver_wallet(db,d['id']) for d in db.execute('SELECT id FROM drivers')} if user['role']=='admin' and unlocked(self,db) else {}
-            view={**feature_state(db,user),"draft_catalog":preview_catalog(db) if user['role'] in ('customer','admin') else [],"driver_profile":dict(profile) if profile else None,"wallet_unlocked":unlocked(self,db) if user['role']=='admin' else False,"driver_wallet":redact_wallet(driver_wallet(db,profile['id'])) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username,u.disabled,u.email FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}}
+            view={**feature_state(db,user),"draft_catalog":preview_catalog(db) if user['role'] in ('customer','admin') else [],"driver_profile":dict(profile) if profile else None,"wallet_unlocked":unlocked(self,db) if user['role']=='admin' else False,"driver_wallet":redact_wallet(driver_wallet(db,profile['id'])) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories WHERE deleted=0 ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products WHERE deleted=0 ORDER BY id DESC") if user['role']!='driver' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username,u.disabled,u.email FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}}
             if user['staff_permissions'] is not None: staff_state(view,json.loads(user['staff_permissions']))
             else: view['staff_permissions']=None
             if user['role']=='admin' and user['staff_permissions'] is None: view['staff_members']=[dict(r) for r in db.execute("SELECT u.id,u.name,u.username,u.disabled,s.permissions FROM staff_members s JOIN users u ON u.id=s.user_id ORDER BY u.id DESC")]
@@ -1495,7 +1499,7 @@ class Handler(BaseHTTPRequestHandler):
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     price,stock=float(data['price']),int(data['stock'])
                     if price<0 or stock<0: raise ValueError('السعر والكمية يجب أن يكونا غير سالبين')
-                    old=db.execute('SELECT category FROM products WHERE id=?',(int(data['id']),)).fetchone()
+                    old=db.execute('SELECT category FROM products WHERE id=? AND deleted=0',(int(data['id']),)).fetchone()
                     if not old: raise ValueError('المنتج غير موجود')
                     merchant_id=int(data.get('merchant_id') or 0) or (warehouse_for_category(db,old['category']) if data.get('active') else None)
                     if data.get('active') and not db.execute('SELECT 1 FROM merchants WHERE id=? AND category=? AND active=1',(merchant_id,old['category'])).fetchone(): raise ValueError('حدد موقع المخزن مرة واحدة من قسم المحلات، أو اختر محلًا نشطًا من نفس القسم')
@@ -1511,7 +1515,9 @@ class Handler(BaseHTTPRequestHandler):
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     name=str(data.get('name','')).strip()
                     if not 2<=len(name)<=50: raise ValueError('اسم القسم من 2 إلى 50 حرفًا')
-                    db.execute('INSERT INTO categories(name,sort_order) VALUES (?,COALESCE((SELECT MAX(sort_order)+1 FROM categories),0))',(name,))
+                    existing=db.execute('SELECT deleted FROM categories WHERE name=?',(name,)).fetchone()
+                    if existing and not existing['deleted']: raise ValueError('القسم موجود بالفعل')
+                    db.execute('INSERT INTO categories(name,sort_order) VALUES (?,COALESCE((SELECT MAX(sort_order)+1 FROM categories),0)) ON CONFLICT(name) DO UPDATE SET deleted=0,active=1',(name,))
                 elif path == '/api/merchant/create':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     name=str(data.get('name','')).strip();category=str(data.get('category','')).strip()
@@ -1554,13 +1560,29 @@ class Handler(BaseHTTPRequestHandler):
                         db.execute('UPDATE merchants SET active=?,name=?,category=?,area=?,address=?,lat=?,lon=? WHERE id=?',(active,name,category,area,address,lat,lon,int(data['id'])))
                     else:
                         db.execute('UPDATE merchants SET active=? WHERE id=?',(active,int(data['id'])))
+                elif path == '/api/category/delete':
+                    if user['role']!='admin' or user['staff_permissions'] is not None:
+                        return self.respond({'error':'حذف الأقسام للمسؤول الرئيسي فقط'},403)
+                    name=str(data.get('name','')).strip()
+                    if data.get('confirm_name')!=name or data.get('delete_products') is not True:
+                        raise ValueError('أكد اسم القسم وحذف منتجاته أولًا')
+                    db.execute('BEGIN IMMEDIATE')
+                    category=db.execute('SELECT name FROM categories WHERE name=? AND deleted=0',(name,)).fetchone()
+                    if not category: raise ValueError('القسم غير موجود أو تم حذفه بالفعل')
+                    count=db.execute('SELECT COUNT(*) AS n FROM products WHERE category=? AND deleted=0',(name,)).fetchone()['n']
+                    if data.get('expected_count')!=count:
+                        raise ValueError('عدد منتجات القسم اتغير؛ حدّث الصفحة وراجع العدد قبل الحذف')
+                    db.execute('UPDATE products SET deleted=1,active=0,catalog_preview=0 WHERE category=? AND deleted=0',(name,))
+                    db.execute('UPDATE categories SET deleted=1,active=0 WHERE name=?',(name,))
+                    db.execute('INSERT INTO category_deletion_log(category,product_count,admin_id,at) VALUES (?,?,?,?)',(name,count,user['id'],now()))
+                    return self.respond({'ok':True,'deleted_category':name,'deleted_products':count})
                 elif path == '/api/category/update':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     name=str(data.get('name','')).strip()
                     active=bool(data.get('active'))
                     if not active and db.execute('SELECT 1 FROM products WHERE category=? AND active=1 LIMIT 1',(name,)).fetchone():
                         raise ValueError('أخفِ المنتجات الظاهرة في القسم أولًا')
-                    if not db.execute('UPDATE categories SET active=? WHERE name=?',(int(active),name)).rowcount: raise ValueError('القسم غير موجود')
+                    if not db.execute('UPDATE categories SET active=? WHERE name=? AND deleted=0',(int(active),name)).rowcount: raise ValueError('القسم غير موجود')
                 elif path == '/api/service/create':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     name=str(data.get('name','')).strip()
@@ -1628,7 +1650,7 @@ class Handler(BaseHTTPRequestHandler):
                         except (TypeError,ValueError): raise ValueError('رقم منتج غير صحيح')
                         if product_id in seen: raise ValueError('يوجد رقم منتج مكرر في الملف: '+str(product_id))
                         seen.add(product_id)
-                        old=db.execute('SELECT id,name,category,price,stock,active,merchant_id FROM products WHERE id=?',(product_id,)).fetchone()
+                        old=db.execute('SELECT id,name,category,price,stock,active,merchant_id FROM products WHERE id=? AND deleted=0',(product_id,)).fetchone()
                         if not old: raise ValueError('المنتج رقم '+str(product_id)+' غير موجود؛ لم يتم تطبيق أي تعديل')
                         if category_scope and old['category']!=category_scope: raise ValueError('المنتج رقم '+str(product_id)+' ليس من القسم المحدد')
                         if str(row.get('name','')).strip()!=old['name'] or str(row.get('category','')).strip()!=old['category']:
