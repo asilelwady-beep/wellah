@@ -208,11 +208,11 @@ def init():
         CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, price REAL NOT NULL CHECK(price >= 0), stock INTEGER NOT NULL CHECK(stock >= 0), image TEXT DEFAULT '', active INTEGER DEFAULT 1, requires_prescription INTEGER DEFAULT 0);
         CREATE TABLE IF NOT EXISTS categories (name TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS services (key TEXT PRIMARY KEY, name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1);
-        CREATE TABLE IF NOT EXISTS merchants (id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, area TEXT NOT NULL, address TEXT NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, active INTEGER NOT NULL DEFAULT 1, image TEXT NOT NULL DEFAULT '');
+        CREATE TABLE IF NOT EXISTS merchants (id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, area TEXT NOT NULL, address TEXT NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, active INTEGER NOT NULL DEFAULT 1, image TEXT NOT NULL DEFAULT '', deleted INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS order_declines (order_id INTEGER NOT NULL, driver_id INTEGER NOT NULL, PRIMARY KEY(order_id,driver_id));
         CREATE TABLE IF NOT EXISTS order_offer_timeouts (order_id INTEGER NOT NULL REFERENCES orders(id), driver_id INTEGER NOT NULL REFERENCES drivers(id), retry_after INTEGER NOT NULL, PRIMARY KEY(order_id,driver_id));
         CREATE TABLE IF NOT EXISTS drivers (id INTEGER PRIMARY KEY, user_id INTEGER UNIQUE REFERENCES users(id), name TEXT NOT NULL, phone TEXT DEFAULT '', area TEXT NOT NULL, available INTEGER DEFAULT 1, lat REAL, lon REAL, location_at TEXT);
-        CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), client_request_id TEXT, kind TEXT NOT NULL, customer TEXT NOT NULL, phone TEXT NOT NULL, area TEXT NOT NULL, address TEXT NOT NULL, details TEXT DEFAULT '', vehicle TEXT DEFAULT '', pickup TEXT DEFAULT '', destination TEXT DEFAULT '', payment TEXT NOT NULL, proof TEXT DEFAULT '', reference TEXT DEFAULT '', prescription TEXT DEFAULT '', medicine_review INTEGER DEFAULT 0, cash_collected INTEGER DEFAULT 0, cash_settled INTEGER DEFAULT 0, payment_status TEXT NOT NULL, status TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, delivery_fee REAL NOT NULL DEFAULT 0, quote_accepted INTEGER DEFAULT 0, driver_id INTEGER REFERENCES drivers(id), created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), client_request_id TEXT, kind TEXT NOT NULL, customer TEXT NOT NULL, phone TEXT NOT NULL, area TEXT NOT NULL, address TEXT NOT NULL, details TEXT DEFAULT '', vehicle TEXT DEFAULT '', pickup TEXT DEFAULT '', destination TEXT DEFAULT '', payment TEXT NOT NULL, proof TEXT DEFAULT '', reference TEXT DEFAULT '', prescription TEXT DEFAULT '', medicine_review INTEGER DEFAULT 0, cash_collected INTEGER DEFAULT 0, cash_settled INTEGER DEFAULT 0, payment_status TEXT NOT NULL, status TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, delivery_fee REAL NOT NULL DEFAULT 0, quote_accepted INTEGER DEFAULT 0, driver_id INTEGER REFERENCES drivers(id), pickup_photo TEXT NOT NULL DEFAULT '', delivery_photo TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS order_items (order_id INTEGER REFERENCES orders(id), product_id INTEGER REFERENCES products(id), name TEXT NOT NULL, quantity INTEGER NOT NULL, unit_price REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS order_messages (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders(id), driver_id INTEGER NOT NULL REFERENCES drivers(id), sender_id INTEGER NOT NULL REFERENCES users(id), request_id TEXT NOT NULL, body TEXT NOT NULL, at TEXT NOT NULL, UNIQUE(sender_id,request_id));
         CREATE INDEX IF NOT EXISTS order_messages_thread ON order_messages(order_id,driver_id,id);
@@ -253,7 +253,7 @@ def init():
             db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(ride_key+'_base_km','3'))
             db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(ride_key+'_base',''))
             db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(ride_key+'_extra',''))
-        for table,column,definition in [('orders','route_km','REAL'),('orders','km_rate','REAL'),('orders','km_base_km','REAL'),('orders','km_base_fee','REAL'),('products','price_pending','INTEGER NOT NULL DEFAULT 0'),('products','price_basis_weight_kg','REAL'),('order_items','unit',"TEXT NOT NULL DEFAULT 'قطعة'"),('order_items','stock_quantity','REAL')]:
+        for table,column,definition in [('orders','route_km','REAL'),('orders','km_rate','REAL'),('orders','km_base_km','REAL'),('orders','km_base_fee','REAL'),('orders','pickup_photo',"TEXT NOT NULL DEFAULT ''"),('orders','delivery_photo',"TEXT NOT NULL DEFAULT ''"),('merchants','deleted','INTEGER NOT NULL DEFAULT 0'),('products','price_pending','INTEGER NOT NULL DEFAULT 0'),('products','price_basis_weight_kg','REAL'),('order_items','unit',"TEXT NOT NULL DEFAULT 'قطعة'"),('order_items','stock_quantity','REAL')]:
             if column not in {x['name'] for x in db.execute(f'PRAGMA table_info({table})')}:
                 db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
         for column,definition in [('driver_earning_cents' ,'INTEGER NOT NULL DEFAULT 0'),('driver_earning_paid','INTEGER NOT NULL DEFAULT 0'),('commission_percent','REAL NOT NULL DEFAULT 0'),('commission_cents','INTEGER NOT NULL DEFAULT 0'),('commission_locked','INTEGER NOT NULL DEFAULT 0')]:
@@ -1168,6 +1168,10 @@ class Handler(BaseHTTPRequestHandler):
                 for event in rows(db, "SELECT order_id,action,at FROM events WHERE order_id IN ("+order_scope+") ORDER BY id", args):
                     event_groups.setdefault(event.pop('order_id'), []).append(event)
             for o in orders:
+                o["has_pickup_photo"] = bool(o.get("pickup_photo"))
+                o["has_delivery_photo"] = bool(o.get("delivery_photo"))
+                o.pop("pickup_photo", None)
+                o.pop("delivery_photo", None)
                 redact_order_contacts(o, user['role'])
                 o["items"] = item_groups.get(o['id'], [])
                 o["events"] = event_groups.get(o['id'], [])
@@ -1551,20 +1555,34 @@ class Handler(BaseHTTPRequestHandler):
                     db.execute("UPDATE products SET active=1 WHERE catalog_preview=1 AND price_pending=0 AND price>0 AND stock>0 AND merchant_id IN (SELECT id FROM merchants WHERE active=1) AND category IN (SELECT name FROM categories WHERE active=1)")
                 elif path == '/api/merchant/update':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
-                    merchant=db.execute('SELECT * FROM merchants WHERE id=?',(int(data['id']),)).fetchone()
+                    merchant=db.execute('SELECT * FROM merchants WHERE id=? AND deleted=0',(int(data['id']),)).fetchone()
                     if not merchant: raise ValueError('المحل غير موجود')
                     active=int(bool(data.get('active',merchant['active'])))
-                    if any(k in data for k in ('name','category','area','address','lat','lon')):
-                        name=str(data.get('name',merchant['name'])).strip()
-                        category=str(data.get('category',merchant['category'])).strip()
-                        area=str(data.get('area',merchant['area'])).strip()
-                        address=str(data.get('address',merchant['address'])).strip()
-                        lat=float(data.get('lat',merchant['lat']));lon=float(data.get('lon',merchant['lon']))
-                        if not (2<=len(name)<=70 and 3<=len(address)<=200 and area in AREAS and -90<=lat<=90 and -180<=lon<=180): raise ValueError('بيانات المحل أو موقعه غير صحيحة')
-                        if not db.execute('SELECT 1 FROM categories WHERE name=? AND active=1',(category,)).fetchone(): raise ValueError('قسم غير نشط')
-                        db.execute('UPDATE merchants SET active=?,name=?,category=?,area=?,address=?,lat=?,lon=? WHERE id=?',(active,name,category,area,address,lat,lon,int(data['id'])))
-                    else:
-                        db.execute('UPDATE merchants SET active=? WHERE id=?',(active,int(data['id'])))
+                    name=str(data.get('name',merchant['name'])).strip()
+                    category=str(data.get('category',merchant['category'])).strip()
+                    area=str(data.get('area',merchant['area'])).strip()
+                    address=str(data.get('address',merchant['address'])).strip()
+                    lat=float(data.get('lat',merchant['lat']));lon=float(data.get('lon',merchant['lon']))
+                    image=str(data.get('image',merchant['image']) or '').strip()
+                    if image and (len(image)>800_000 or not re.fullmatch(r'data:image/jpeg;base64,[A-Za-z0-9+/]*={0,2}',image)):
+                        raise ValueError('اختر صورة JPEG صالحة بحجم مناسب')
+                    if not (2<=len(name)<=70 and 3<=len(address)<=200 and area in AREAS and -90<=lat<=90 and -180<=lon<=180): raise ValueError('بيانات المحل أو موقعه غير صحيحة')
+                    if category!=merchant['category'] and not db.execute('SELECT 1 FROM categories WHERE name=? AND active=1',(category,)).fetchone(): raise ValueError('القسم الجديد غير نشط')
+                    db.execute('UPDATE merchants SET active=?,name=?,category=?,area=?,address=?,lat=?,lon=?,image=? WHERE id=?',(active,name,category,area,address,lat,lon,image,int(data['id'])))
+                    if category!=merchant['category']:
+                        db.execute('UPDATE products SET category=? WHERE merchant_id=? AND deleted=0',(category,int(data['id'])))
+                elif path == '/api/merchant/delete':
+                    if user['role']!='admin' or user['staff_permissions'] is not None: return self.respond({'error':'حذف المحلات للمسؤول الرئيسي فقط'},403)
+                    mid=int(data.get('id',0)); db.execute('BEGIN IMMEDIATE')
+                    merchant=db.execute('SELECT id,name,deleted FROM merchants WHERE id=?',(mid,)).fetchone()
+                    if not merchant or merchant['deleted']: raise ValueError('المحل غير موجود أو تم حذفه بالفعل')
+                    if data.get('confirm_name')!=merchant['name']: raise ValueError('اسم المحل غير مطابق للتأكيد')
+                    product_count=db.execute('SELECT COUNT(*) AS n FROM products WHERE merchant_id=? AND deleted=0',(mid,)).fetchone()['n']
+                    if data.get('expected_products')!=product_count: raise ValueError('عدد منتجات المحل اتغير؛ حدّث الصفحة وراجع العدد قبل الحذف')
+                    db.execute('UPDATE products SET active=0 WHERE merchant_id=? AND deleted=0',(mid,))
+                    db.execute('UPDATE merchants SET active=0,deleted=1 WHERE id=?',(mid,))
+                    log(db,None,'حذف المسؤول محلًا وإخفاء منتجاته مع الاحتفاظ بالطلبات السابقة')
+                    return self.respond({'ok':True,'deleted_merchant':mid,'hidden_products':product_count})
                 elif path == '/api/category/delete':
                     if user['role']!='admin' or user['staff_permissions'] is not None:
                         return self.respond({'error':'حذف الأقسام للمسؤول الرئيسي فقط'},403)
@@ -1933,6 +1951,9 @@ class Handler(BaseHTTPRequestHandler):
                     oid, action = int(data["id"]), data["action"]
                     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
                     if not o: raise ValueError("الطلب غير موجود")
+                    if action=='get_delivery_photos':
+                        if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                        return self.respond({'pickup_photo':o['pickup_photo'],'delivery_photo':o['delivery_photo']})
                     if action=='submit_proof':
                         if user['role']!='customer' or o['user_id']!=user['id']: return self.respond({'error':'غير مصرح'},403)
                     elif action in ('accept_quote','decline_quote'):
@@ -2000,6 +2021,10 @@ class Handler(BaseHTTPRequestHandler):
                         log(db,oid,'اعتذر المندوب عن الطلب')
                         assign(db,oid)
                     elif action in ("picked_up", "on_way", "delivered") and o["driver_id"] and o["status"] in ({'picked_up': ('assigned','ready'),'on_way':('picked_up',),'delivered':('on_way',)}[action]):
+                        pickup_photo=str(data.get('pickup_photo',''))
+                        delivery_photo=str(data.get('delivery_photo',''))
+                        if action=='picked_up' and not valid_image(pickup_photo,1_000_000): raise ValueError('ارفع صورة واضحة لمكان استلام الطلب')
+                        if action=='delivered' and not valid_image(delivery_photo,1_000_000): raise ValueError('ارفع صورة واضحة لمكان تسليم الطلب')
                         if action=='delivered' and o['payment']=='cash' and data.get('cash_collected') is not True: raise ValueError('أكد تحصيل المبلغ النقدي أولًا')
                         if action=='delivered' and not o['commission_locked']:
                             driver=db.execute('SELECT vehicle_type FROM drivers WHERE id=?',(o['driver_id'],)).fetchone()
@@ -2015,9 +2040,11 @@ class Handler(BaseHTTPRequestHandler):
                                 if not all(math.isfinite(x) for x in (plat,plon)) or not (-90<=plat<=90 and -180<=plon<=180): raise ValueError('موقع الشراء غير صحيح')
                                 db.execute('UPDATE orders SET pickup_lat=?,pickup_lon=? WHERE id=?',(plat,plon,oid))
                             db.execute('UPDATE orders SET pickup=? WHERE id=?',(shop,oid))
-                        db.execute("UPDATE orders SET status=? WHERE id=?", (action, oid))
+                        if action=='picked_up': db.execute("UPDATE orders SET pickup_photo=?,status=? WHERE id=?",(pickup_photo,action,oid))
+                        elif action=='delivered': db.execute("UPDATE orders SET delivery_photo=?,status=? WHERE id=?",(delivery_photo,action,oid))
+                        else: db.execute("UPDATE orders SET status=? WHERE id=?",(action,oid))
                         if action=='delivered' and o['payment']=='cash': db.execute('UPDATE orders SET cash_collected=1 WHERE id=?',(oid,))
-                        log(db, oid, {"picked_up": "استلم المندوب الطلب", "on_way": "المندوب في الطريق", "delivered": "تم التسليم"}[action])
+                        log(db, oid, {"picked_up": "استلم المندوب الطلب وأرفق صورة الاستلام", "on_way": "المندوب في الطريق", "delivered": "تم التسليم وأرفق الطيار صورة المكان"}[action])
                     elif action=='settle_cash' and o['payment']=='cash' and o['status']=='delivered' and o['cash_collected'] and not o['cash_settled']:
                         if not unlocked(self,db): raise ValueError('افتح المحفظة بكلمة السر أولًا')
                         verify_owner(self,db,user,data.get('wallet_password'))
