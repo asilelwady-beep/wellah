@@ -11,7 +11,8 @@ def records(path, price_col):
     for n,row in enumerate(ws.iter_rows(values_only=True),1):
         values=list(row[:20])+[None]*max(0,20-len(row))
         name=values[1]
-        if not isinstance(name,str) or not name.strip(): raise ValueError(f'row {n}: missing name')
+        if all(v is None or str(v).strip().upper()=='NULL' for v in values): continue
+        if not isinstance(name,str) or not name.strip() or name.strip().upper()=='NULL': raise ValueError(f'row {n}: missing name')
         raw=values[price_col-1]
         try: price=Decimal(str(raw))
         except (InvalidOperation,TypeError): raise ValueError(f'row {n}: invalid price in column {price_col}')
@@ -21,7 +22,7 @@ def records(path, price_col):
 def main():
     p=argparse.ArgumentParser()
     p.add_argument('xlsx');p.add_argument('--db',required=True)
-    p.add_argument('--price-column',type=int,required=True,choices=range(1,21),metavar='1..20')
+    p.add_argument('--price-column',type=int,default=10,choices=range(1,21),metavar='1..20')
     p.add_argument('--apply',action='store_true');p.add_argument('--merchant-id',type=int)
     a=p.parse_args()
     dbpath=Path(a.db); assert dbpath.is_file(),'Database file not found'
