@@ -1540,7 +1540,20 @@ class Handler(BaseHTTPRequestHandler):
                     db.execute("UPDATE products SET active=1 WHERE catalog_preview=1 AND price_pending=0 AND price>0 AND stock>0 AND merchant_id IN (SELECT id FROM merchants WHERE active=1) AND category IN (SELECT name FROM categories WHERE active=1)")
                 elif path == '/api/merchant/update':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
-                    if not db.execute('UPDATE merchants SET active=? WHERE id=?',(int(bool(data.get('active'))),int(data['id']))).rowcount: raise ValueError('المحل غير موجود')
+                    merchant=db.execute('SELECT * FROM merchants WHERE id=?',(int(data['id']),)).fetchone()
+                    if not merchant: raise ValueError('المحل غير موجود')
+                    active=int(bool(data.get('active',merchant['active'])))
+                    if any(k in data for k in ('name','category','area','address','lat','lon')):
+                        name=str(data.get('name',merchant['name'])).strip()
+                        category=str(data.get('category',merchant['category'])).strip()
+                        area=str(data.get('area',merchant['area'])).strip()
+                        address=str(data.get('address',merchant['address'])).strip()
+                        lat=float(data.get('lat',merchant['lat']));lon=float(data.get('lon',merchant['lon']))
+                        if not (2<=len(name)<=70 and 3<=len(address)<=200 and area in AREAS and -90<=lat<=90 and -180<=lon<=180): raise ValueError('بيانات المحل أو موقعه غير صحيحة')
+                        if not db.execute('SELECT 1 FROM categories WHERE name=? AND active=1',(category,)).fetchone(): raise ValueError('قسم غير نشط')
+                        db.execute('UPDATE merchants SET active=?,name=?,category=?,area=?,address=?,lat=?,lon=? WHERE id=?',(active,name,category,area,address,lat,lon,int(data['id'])))
+                    else:
+                        db.execute('UPDATE merchants SET active=? WHERE id=?',(active,int(data['id'])))
                 elif path == '/api/category/update':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     name=str(data.get('name','')).strip()
