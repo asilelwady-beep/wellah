@@ -208,7 +208,7 @@ def init():
         CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, price REAL NOT NULL CHECK(price >= 0), stock INTEGER NOT NULL CHECK(stock >= 0), image TEXT DEFAULT '', active INTEGER DEFAULT 1, requires_prescription INTEGER DEFAULT 0);
         CREATE TABLE IF NOT EXISTS categories (name TEXT PRIMARY KEY, active INTEGER NOT NULL DEFAULT 1, sort_order INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS services (key TEXT PRIMARY KEY, name TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1);
-        CREATE TABLE IF NOT EXISTS merchants (id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, area TEXT NOT NULL, address TEXT NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, active INTEGER NOT NULL DEFAULT 1);
+        CREATE TABLE IF NOT EXISTS merchants (id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL, area TEXT NOT NULL, address TEXT NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, active INTEGER NOT NULL DEFAULT 1, image TEXT NOT NULL DEFAULT '');
         CREATE TABLE IF NOT EXISTS order_declines (order_id INTEGER NOT NULL, driver_id INTEGER NOT NULL, PRIMARY KEY(order_id,driver_id));
         CREATE TABLE IF NOT EXISTS order_offer_timeouts (order_id INTEGER NOT NULL REFERENCES orders(id), driver_id INTEGER NOT NULL REFERENCES drivers(id), retry_after INTEGER NOT NULL, PRIMARY KEY(order_id,driver_id));
         CREATE TABLE IF NOT EXISTS drivers (id INTEGER PRIMARY KEY, user_id INTEGER UNIQUE REFERENCES users(id), name TEXT NOT NULL, phone TEXT DEFAULT '', area TEXT NOT NULL, available INTEGER DEFAULT 1, lat REAL, lon REAL, location_at TEXT);
@@ -227,6 +227,8 @@ def init():
         for table in ('categories','products'):
             if 'deleted' not in {r['name'] for r in db.execute(f'PRAGMA table_info({table})')}:
                 db.execute(f'ALTER TABLE {table} ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0')
+        if 'image' not in {r['name'] for r in db.execute('PRAGMA table_info(merchants)')}:
+            db.execute("ALTER TABLE merchants ADD COLUMN image TEXT NOT NULL DEFAULT ''")
         db.execute('CREATE TABLE IF NOT EXISTS category_deletion_log (id INTEGER PRIMARY KEY,category TEXT NOT NULL,product_count INTEGER NOT NULL,admin_id INTEGER NOT NULL,at TEXT NOT NULL)')
         init_features(db)
         init_wallet_controls(db)
@@ -1523,9 +1525,12 @@ class Handler(BaseHTTPRequestHandler):
                     name=str(data.get('name','')).strip();category=str(data.get('category','')).strip()
                     area=str(data.get('area','')).strip();address=str(data.get('address','')).strip()
                     lat,lon=float(data['lat']),float(data['lon'])
+                    image=str(data.get('image') or '').strip()
+                    if image and (len(image)>800_000 or not re.fullmatch(r'data:image/jpeg;base64,[A-Za-z0-9+/]*={0,2}',image)):
+                        raise ValueError('اختر صورة JPEG صالحة بحجم مناسب')
                     if not (2<=len(name)<=70 and 3<=len(address)<=200 and area in AREAS and -90<=lat<=90 and -180<=lon<=180): raise ValueError('بيانات المحل أو موقعه غير صحيحة')
                     if not db.execute('SELECT 1 FROM categories WHERE name=? AND active=1',(category,)).fetchone(): raise ValueError('قسم غير نشط')
-                    db.execute('INSERT INTO merchants(name,category,area,address,lat,lon) VALUES (?,?,?,?,?,?)',(name,category,area,address,lat,lon))
+                    db.execute('INSERT INTO merchants(name,category,area,address,lat,lon,image) VALUES (?,?,?,?,?,?,?)',(name,category,area,address,lat,lon,image))
                 elif path == '/api/warehouse/setup':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     area=str(data.get('area','')).strip();address=str(data.get('address','')).strip()
