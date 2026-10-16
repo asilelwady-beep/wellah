@@ -17,7 +17,7 @@ from urllib.request import Request, urlopen
 
 
 def init_features(db):
-    for name, definition in [('email', 'TEXT'), ('verified_phone', 'TEXT'), ('disabled', 'INTEGER NOT NULL DEFAULT 0'), ('recovery_salt','TEXT'), ('recovery_hash','TEXT')]:
+    for name, definition in [('email', 'TEXT'), ('verified_phone', 'TEXT'), ('disabled', 'INTEGER NOT NULL DEFAULT 0'), ('recovery_salt','TEXT'), ('recovery_hash','TEXT'), ('recovery_question','TEXT')]:
         if name not in {r['name'] for r in db.execute('PRAGMA table_info(users)')}:
             db.execute(f'ALTER TABLE users ADD COLUMN {name} {definition}')
     db.execute('CREATE UNIQUE INDEX IF NOT EXISTS users_email_unique ON users(email) WHERE email IS NOT NULL')
@@ -146,6 +146,33 @@ def recover_account(db, data, remote):
     return True
 
 
+def admin_recovery_account(db, username):
+    identifier=str(username or '').strip()[:64]
+    return db.execute("SELECT u.* FROM users u LEFT JOIN staff_members sm ON sm.user_id=u.id WHERE (u.username=? OR u.phone=?) AND u.role='admin' AND u.disabled=0 AND sm.user_id IS NULL",(identifier,identifier)).fetchone()
+
+
+def recover_admin_by_answer(db, data, remote):
+    limit(db,'admin-answer-ip',remote,900,10)
+    identifier=str(data.get('username','')).strip()[:64]
+    limit(db,'admin-answer-account',identifier.casefold(),900,5)
+    account=admin_recovery_account(db,identifier)
+    answer=normalize_recovery_answer(data.get('recovery_answer'))
+    # Do the same expensive comparison for unknown or unconfigured accounts.
+    salt=account['recovery_salt'] if account and account['recovery_salt'] else '0'*32
+    expected=account['recovery_hash'] if account and account['recovery_hash'] else '0'*128
+    candidate=hashlib.scrypt(answer.encode(),salt=bytes.fromhex(salt),n=2**14,r=8,p=1).hex()
+    if not hmac.compare_digest(candidate,expected) or not account or not account['recovery_question']:
+        raise ValueError('تعذر الاسترداد؛ راجع اسم المستخدم والإجابة السرية. يجب إعداد سؤال الاسترداد مسبقًا من الإعدادات.')
+    password=str(data.get('password',''))
+    if len(password)<10 or password!=str(data.get('confirm_password','')):
+        raise ValueError('اكتب كلمة مرور من 10 أحرف على الأقل وأكدها بنفس القيمة')
+    salt=secrets.token_hex(16)
+    digest=hashlib.scrypt(password.encode(),salt=bytes.fromhex(salt),n=2**14,r=8,p=1).hex()
+    db.execute('UPDATE users SET salt=?,password_hash=? WHERE id=?',(salt,digest,account['id']))
+    db.execute('DELETE FROM sessions WHERE user_id=?',(account['id'],))
+    db.execute('DELETE FROM login_attempts WHERE phone IN (?,?)',(account['phone'],account['username']))
+
+
 def sms_ready():
     return bool(re.fullmatch(r'AC[0-9a-fA-F]{32}',os.environ.get('TWILIO_ACCOUNT_SID','')) and os.environ.get('TWILIO_AUTH_TOKEN') and (os.environ.get('TWILIO_MESSAGING_SERVICE_SID') or os.environ.get('TWILIO_SMS_FROM')))
 
@@ -233,7 +260,7 @@ def feature_state(db, user):
     chat_threads=[dict(r) for r in db.execute('''SELECT m.order_id,o.customer,o.status,d.name AS driver_name,COUNT(*) AS message_count,MAX(m.id) AS last_message_id,MAX(m.at) AS last_at
         FROM order_messages m JOIN orders o ON o.id=m.order_id LEFT JOIN drivers d ON d.id=o.driver_id
         GROUP BY m.order_id ORDER BY last_message_id DESC''')] if user['role']=='admin' else []
-    return {'shift_required':shift_required,'shift_second_required':second_required,'driver_shift':shift,'driver_shifts':shifts,'my_rating':dict(rating),'featured_people':featured,'featured_rewards':rewards,'driver_complaints':complaints,'pending_ratings':pending,'ratings': ratings, 'support_tickets': tickets, 'chat_counts':chat_counts, 'daily_distances':daily_distances, 'daily_resets':daily_resets, 'chat_threads':chat_threads, 'email_otp_ready': mail_ready(), 'sms_otp_ready': sms_ready(), 'ai_ready': bool(os.environ.get('OPENAI_API_KEY'))}
+    return {'admin_recovery_question': (db.execute('SELECT recovery_question FROM users WHERE id=?',(user['id'],)).fetchone()['recovery_question'] or '') if user['role']=='admin' else '', 'shift_required':shift_required,'shift_second_required':second_required,'driver_shift':shift,'driver_shifts':shifts,'my_rating':dict(rating),'featured_people':featured,'featured_rewards':rewards,'driver_complaints':complaints,'pending_ratings':pending,'ratings': ratings, 'support_tickets': tickets, 'chat_counts':chat_counts, 'daily_distances':daily_distances, 'daily_resets':daily_resets, 'chat_threads':chat_threads, 'email_otp_ready': mail_ready(), 'sms_otp_ready': sms_ready(), 'ai_ready': bool(os.environ.get('OPENAI_API_KEY'))}
 
 
 def cairo_day_window(day):
@@ -260,6 +287,36 @@ def admin_activity(db, data):
 
 
 def feature_post(handler, db, path, data, user, create_user, areas, now):
+    if path == '/api/auth/admin-recovery-question':
+        limit(db,'admin-question-ip',handler.client_address[0],900,30)
+        account=admin_recovery_account(db,data.get('username'))
+        question=account['recovery_question'] if account and account['recovery_hash'] and account['recovery_question'] else 'ما إجابة الاسترداد السرية التي حفظتها في إعدادات حسابك؟'
+        handler.respond({'question':question})
+        return True
+    if path == '/api/auth/admin-recover':
+        recover_admin_by_answer(db,data,handler.client_address[0])
+        handler.respond({'ok':True})
+        return True
+    if path == '/api/account/admin-recovery-question':
+        if not user or user['role']!='admin' or user['staff_permissions'] is not None:
+            handler.respond({'error':'هذا الإعداد للمسؤول الرئيسي فقط'},403)
+            return True
+        limit(db,'admin-question-setup',str(user['id']),900,5)
+        account=db.execute('SELECT salt,password_hash FROM users WHERE id=?',(user['id'],)).fetchone()
+        digest=hashlib.scrypt(str(data.get('current_password','')).encode(),salt=bytes.fromhex(account['salt']),n=2**14,r=8,p=1).hex()
+        if not hmac.compare_digest(digest,account['password_hash']):
+            handler.respond({'error':'كلمة المرور الحالية غير صحيحة'},403)
+            return True
+        question=' '.join(str(data.get('question','')).split())
+        if not 8<=len(question)<=180:
+            raise ValueError('اكتب سؤالًا من 8 إلى 180 حرفًا')
+        answer=normalize_recovery_answer(data.get('recovery_answer'))
+        if answer!=normalize_recovery_answer(data.get('confirm_answer')):
+            raise ValueError('الإجابتان غير متطابقتين')
+        set_recovery_answer(db,user['id'],answer)
+        db.execute('UPDATE users SET recovery_question=? WHERE id=?',(question,user['id']))
+        handler.respond({'ok':True})
+        return True
     if path == '/api/auth/recover':
         recover_account(db,data,handler.client_address[0])
         handler.respond({'ok':True})

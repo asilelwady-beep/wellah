@@ -92,6 +92,37 @@ class AccountSupportTests(unittest.TestCase):
         self.assertEqual(status,200)
         self.assertEqual(self.post('auth/reset-password',{'challenge_id':response['challenge_id'],'code':send.call_args.args[1],'password':'changed-mobile-password','confirm_password':'changed-mobile-password'})[0],200)
 
+    def test_admin_security_question_recovery(self):
+        with server.connect() as db:
+            uid=server.create_user(db,'مسؤول استرداد','01000000971','admin','old-admin-password','question_owner')
+        token=self.post('admin/login',{'phone':'question_owner','password':'old-admin-password'})[1]['token']
+        setup={'question':'ما العبارة السرية الخاصة بي؟','recovery_answer':'عبارة طويلة خاصة','confirm_answer':'عبارة طويلة خاصة','current_password':'old-admin-password'}
+        self.assertEqual(self.post('account/admin-recovery-question',setup,self.ct)[0],403)
+        bad={**setup,'current_password':'incorrect-password'}
+        self.assertEqual(self.post('account/admin-recovery-question',bad,token)[0],403)
+        self.assertEqual(self.post('account/admin-recovery-question',setup,token)[0],200)
+        with server.connect() as db:
+            saved=db.execute('SELECT recovery_hash,recovery_question FROM users WHERE id=?',(uid,)).fetchone()
+            self.assertNotEqual(saved['recovery_hash'],setup['recovery_answer'])
+            self.assertEqual(saved['recovery_question'],setup['question'])
+        code,result=self.post('auth/admin-recovery-question',{'username':'question_owner'})
+        self.assertEqual(code,200);self.assertEqual(result['question'],setup['question'])
+        reset={'username':'question_owner','recovery_answer':'غلط تماما','password':'new-admin-password','confirm_password':'new-admin-password'}
+        self.assertEqual(self.post('auth/admin-recover',reset)[0],400)
+        self.assertEqual(self.post('admin/login',{'phone':'question_owner','password':'old-admin-password'})[0],200)
+        reset['recovery_answer']='  عبارة   طويلة خاصة  '
+        self.assertEqual(self.post('auth/admin-recover',reset)[0],200)
+        self.assertEqual(self.post('logout',{},token)[0],401)
+        self.assertEqual(self.post('admin/login',{'phone':'question_owner','password':'old-admin-password'})[0],401)
+        self.assertEqual(self.post('admin/login',{'phone':'question_owner','password':'new-admin-password'})[0],200)
+
+    def test_admin_security_question_attempt_limit_and_missing_setup(self):
+        for i in range(5):
+            code,result=self.post('auth/admin-recover',{'username':'unconfigured_owner','recovery_answer':'wrong answer','password':'new-password-123','confirm_password':'new-password-123'})
+            self.assertEqual(code,400)
+        code,result=self.post('auth/admin-recover',{'username':'unconfigured_owner','recovery_answer':'wrong answer','password':'new-password-123','confirm_password':'new-password-123'})
+        self.assertIn('محاولات كثيرة',result['error'])
+
     def test_customer_registration_needs_no_otp(self):
         phone='01000000124'
         status,result=self.post('register',{'name':'عميل بدون رمز','phone':phone,'password':'simple-password-123','confirm_password':'simple-password-123','recovery_answer':'خالد والبحر'})
