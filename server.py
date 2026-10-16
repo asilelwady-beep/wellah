@@ -1579,10 +1579,26 @@ class Handler(BaseHTTPRequestHandler):
                 elif path == '/api/category/update':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     name=str(data.get('name','')).strip()
-                    active=bool(data.get('active'))
-                    if not active and db.execute('SELECT 1 FROM products WHERE category=? AND active=1 LIMIT 1',(name,)).fetchone():
-                        raise ValueError('أخفِ المنتجات الظاهرة في القسم أولًا')
-                    if not db.execute('UPDATE categories SET active=? WHERE name=? AND deleted=0',(int(active),name)).rowcount: raise ValueError('القسم غير موجود')
+                    category=db.execute('SELECT name FROM categories WHERE name=? AND deleted=0',(name,)).fetchone()
+                    if not category: raise ValueError('القسم غير موجود')
+                    if 'new_name' in data:
+                        if user['staff_permissions'] is not None:
+                            return self.respond({'error':'تعديل الأقسام للمسؤول الرئيسي فقط'},403)
+                        new_name=str(data.get('new_name','')).strip()
+                        if not 2<=len(new_name)<=50: raise ValueError('اسم القسم من 2 إلى 50 حرفًا')
+                        if new_name!=name:
+                            if db.execute('SELECT 1 FROM categories WHERE name=?',(new_name,)).fetchone():
+                                raise ValueError('اسم القسم مستخدم بالفعل')
+                            db.execute('UPDATE categories SET name=? WHERE name=? AND deleted=0',(new_name,name))
+                            db.execute('UPDATE products SET category=? WHERE category=?',(new_name,name))
+                            db.execute('UPDATE merchants SET category=? WHERE category=?',(new_name,name))
+                            name=new_name
+                    if 'active' in data:
+                        active=bool(data.get('active'))
+                        if not active and db.execute('SELECT 1 FROM products WHERE category=? AND active=1 LIMIT 1',(name,)).fetchone():
+                            raise ValueError('أخفِ المنتجات الظاهرة في القسم أولًا')
+                        db.execute('UPDATE categories SET active=? WHERE name=? AND deleted=0',(int(active),name))
+                    return self.respond({'ok':True,'category':name})
                 elif path == '/api/service/create':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     name=str(data.get('name','')).strip()
