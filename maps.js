@@ -11,6 +11,8 @@ let chosenPoint=null;
 let chosenPickup=null;
 let mapPinMode='destination';
 let merchantPoint=null;
+let merchantEditorDraft=null;
+let merchantMapView=null;
 let trackingOrderId=null;
 const mapCenter=[29.8513,31.2744];
 window.pickCurrentLocation=()=>alert('الخريطة لم تُحمّل بعد. تحقق من الاتصال ثم حدّث الصفحة.');
@@ -186,7 +188,7 @@ function baseMap(id,zoom=13){
   const map=L.map(el,{scrollWheelZoom:false,zoomControl:false,zoomAnimation:true,fadeAnimation:true,preferCanvas:true}).setView(mapCenter,zoom);
   L.control.zoom({position:'bottomleft'}).addTo(map);
   const baseLayer=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
-    maxZoom:19,updateWhenIdle:true,updateWhenZooming:false,keepBuffer:2,attribution:'&copy; OpenStreetMap contributors'
+    maxNativeZoom:19,maxZoom:21,updateWhenIdle:true,updateWhenZooming:false,keepBuffer:2,attribution:'&copy; OpenStreetMap contributors'
   }).addTo(map);
   el.dataset.mapProvider='openstreetmap';
   // Keep the lightweight map available while the configured Google layer loads.
@@ -487,19 +489,7 @@ async function initMaps(){
       showMapPoints(track,positions);
     }
   }else if(tab==='admin'){
-    const merchantMap=baseMap('merchant-map');
-    if(merchantMap){
-      let marker=null;
-      const choose=latlng=>{
-        merchantPoint={lat:latlng.lat,lon:latlng.lng};
-        if(marker)marker.setLatLng(latlng);
-        else marker=point(merchantMap,latlng.lat,latlng.lng,'مكان المحل','#2864c5');
-        const label=document.getElementById('merchant-point');
-        if(label)label.textContent='تم تحديد موقع المحل على الخريطة';
-      };
-      merchantMap.on('click',e=>choose(e.latlng));
-      if(merchantPoint)choose({lat:merchantPoint.lat,lng:merchantPoint.lon});
-    }
+    initMerchantLocationMap();
     const map=baseMap('admin-map');
     if(map)refreshAdminLiveMap(true);
   }else if(tab==='driver'){
@@ -532,3 +522,51 @@ function refreshAdminLiveMap(fitInitially=false){
   return true;
 }
 
+
+function saveMerchantEditorDraft(){
+  if(!state||tab!=='admin'||!document.getElementById('m-name'))return;
+  merchantEditorDraft={};
+  for(const id of ['m-name','m-category','m-area','m-address']){const input=document.getElementById(id);if(input)merchantEditorDraft[id]=input.value}
+  const map=mapViews.find(m=>m.getContainer().id==='merchant-map');
+  if(map){const center=map.getCenter();merchantMapView={lat:center.lat,lon:center.lng,zoom:map.getZoom()}}
+}
+function restoreMerchantEditorDraft(){
+  if(!merchantEditorDraft||!state||tab!=='admin')return;
+  for(const [id,value] of Object.entries(merchantEditorDraft)){const input=document.getElementById(id);if(input)input.value=value}
+}
+function clearMerchantEditorDraft(){
+  merchantEditorDraft=null;merchantPoint=null;merchantMapView=null;
+  for(const id of ['m-name','m-address']){const input=document.getElementById(id);if(input)input.value=''}
+  const map=mapViews.find(m=>m.getContainer().id==='merchant-map');
+  if(map?._merchantMarker){map.removeLayer(map._merchantMarker);map._merchantMarker=null}
+  const label=document.getElementById('merchant-point');if(label)label.textContent='حرّك الخريطة ثم اضغط على موقع المحل أو اختر منتصف الخريطة.';
+}
+function chooseMerchantMapCenter(){
+  const map=mapViews.find(m=>m.getContainer().id==='merchant-map');
+  if(!map?._chooseMerchantLocation)return;
+  map._chooseMerchantLocation(map.getCenter());
+}
+function initMerchantLocationMap(){
+  const map=baseMap('merchant-map');if(!map)return;
+  const initial=merchantMapView||(merchantPoint?{lat:merchantPoint.lat,lon:merchantPoint.lon,zoom:17}:null);
+  if(initial)map.setView([initial.lat,initial.lon],initial.zoom,{animate:false});
+  const remember=()=>{const center=map.getCenter();merchantMapView={lat:center.lat,lon:center.lng,zoom:map.getZoom()}};
+  map.on('moveend zoomend',remember);
+  map._chooseMerchantLocation=latlng=>{
+    if(!Number.isFinite(latlng.lat)||!Number.isFinite(latlng.lng))return;
+    merchantPoint={lat:latlng.lat,lon:latlng.lng};
+    if(map._merchantMarker)map._merchantMarker.setLatLng(latlng);
+    else map._merchantMarker=point(map,latlng.lat,latlng.lng,'موقع استلام المحل','#e05f2b');
+    const label=document.getElementById('merchant-point');
+    if(label)label.textContent='تم تحديد موقع المحل ✓ · '+latlng.lat.toFixed(6)+'، '+latlng.lng.toFixed(6)+' · يمكنك تغيير النقطة بالضغط على الخريطة.';
+    remember();
+  };
+  map.on('click',e=>map._chooseMerchantLocation(e.latlng));
+  if(merchantPoint)map._chooseMerchantLocation({lat:merchantPoint.lat,lng:merchantPoint.lon});
+  requestAnimationFrame(()=>{if(mapViews.includes(map))map.invalidateSize({pan:false})});
+  return map;
+}
+function keepMerchantEditorOnRefresh(){
+  // Refresh state and notifications without destroying an in-progress location/form edit.
+  return tab==='admin'&&adminPage==='admin-merchants'&&(!Array.isArray(state.staff_permissions)||state.staff_permissions.includes('admin-merchants'))&&!!document.getElementById('m-name')&&mapViews.some(m=>m.getContainer().id==='merchant-map');
+}
