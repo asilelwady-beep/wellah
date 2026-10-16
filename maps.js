@@ -487,8 +487,6 @@ async function initMaps(){
       showMapPoints(track,positions);
     }
   }else if(tab==='admin'){
-    const map=baseMap('admin-map');if(!map)return;
-    refreshAdminLiveMap(true);
     const merchantMap=baseMap('merchant-map');
     if(merchantMap){
       let marker=null;
@@ -502,6 +500,8 @@ async function initMaps(){
       merchantMap.on('click',e=>choose(e.latlng));
       if(merchantPoint)choose({lat:merchantPoint.lat,lng:merchantPoint.lon});
     }
+    const map=baseMap('admin-map');
+    if(map)refreshAdminLiveMap(true);
   }else if(tab==='driver'){
     updateDriverMap();
   }
