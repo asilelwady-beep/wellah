@@ -1724,6 +1724,46 @@ class Handler(BaseHTTPRequestHandler):
                         if active is not None: updates.append('active=?');values.append(int(active))
                         if updates: db.execute('UPDATE products SET '+','.join(updates)+' WHERE id=?',(*values,product_id))
                     return self.respond({'ok':True,'updated':len(prepared)})
+                elif path == '/api/products/import-supermarket-new':
+                    if user['role']!='admin' or user['staff_permissions'] is not None:
+                        return self.respond({'error':'للمسؤول الرئيسي فقط'},403)
+                    merchant_id=int(data.get('merchant_id') or 0)
+                    merchant=db.execute("SELECT id FROM merchants WHERE id=? AND category='سوبر ماركت' AND active=1 AND deleted=0",(merchant_id,)).fetchone()
+                    if not merchant: raise ValueError('اختر سوبر ماركت نشطًا أولاً')
+                    rows=data.get('rows')
+                    if not isinstance(rows,list) or not 1<=len(rows)<=200: raise ValueError('ارفع دفعات من 1 إلى 200 صنف')
+                    db.execute("""CREATE TABLE IF NOT EXISTS supermarket_import_rows
+                        (batch_key TEXT NOT NULL, source_row INTEGER NOT NULL,
+                         product_id INTEGER NOT NULL, source_json TEXT NOT NULL,
+                         PRIMARY KEY(batch_key,source_row))""")
+                    batch_key=str(data.get('batch_key') or '').strip()
+                    if not re.fullmatch(r'[a-f0-9]{64}',batch_key): raise ValueError('معرف الملف غير صحيح')
+                    prepared=[];seen=set()
+                    for row in rows:
+                        if not isinstance(row,dict): raise ValueError('صف غير صحيح')
+                        n=int(row.get('source_row') or 0)
+                        if n<=0 or n in seen: raise ValueError('رقم صف مكرر أو غير صحيح')
+                        seen.add(n)
+                        original=row.get('original_columns')
+                        if not isinstance(original,list) or len(original)!=20: raise ValueError('الأعمدة الأصلية يجب أن تكون 20')
+                        name=str(original[1] or '').strip()
+                        if not name or len(name)>160 or name.upper()=='NULL': raise ValueError('اسم غير صحيح في السطر '+str(n))
+                        try: price=Decimal(str(original[9]))
+                        except (InvalidOperation,ValueError,TypeError): raise ValueError('سعر غير صحيح في السطر '+str(n))
+                        if not price.is_finite() or price<0 or price>10000000: raise ValueError('سعر غير مسموح في السطر '+str(n))
+                        prepared.append((n,name,price,original))
+                    created=0;skipped=0
+                    for n,name,price,original in prepared:
+                        if db.execute('SELECT 1 FROM supermarket_import_rows WHERE batch_key=? AND source_row=?',(batch_key,n)).fetchone():
+                            skipped+=1;continue
+                        cur=db.execute("""INSERT INTO products
+                            (name,category,price,stock,active,merchant_id,price_pending,catalog_preview)
+                            VALUES (?,'سوبر ماركت',?,100,?,?,?,1)""",
+                            (name,str(price),int(price>0),merchant_id,int(price==0)))
+                        db.execute('INSERT INTO supermarket_import_rows VALUES (?,?,?,?)',
+                            (batch_key,n,cur.lastrowid,json.dumps(original,ensure_ascii=False,default=str)))
+                        created+=1
+                    return self.respond({'ok':True,'created':created,'already_imported':skipped})
                 elif path == '/api/products/import-names':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     merchant=db.execute("SELECT id FROM merchants WHERE id=? AND category='سوبر ماركت' AND active=1",(int(data.get('merchant_id') or 0),)).fetchone()
