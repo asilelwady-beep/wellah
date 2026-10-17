@@ -304,18 +304,28 @@ def feature_post(handler, db, path, data, user, create_user, areas, now):
         if account and password:
             candidate=hashlib.scrypt(password.encode(),salt=bytes.fromhex(account['salt']),n=2**14,r=8,p=1).hex()
             password_ok=hmac.compare_digest(candidate,account['password_hash'])
+        if not password_ok or not account:
+            raise ValueError('تعذر التحقق؛ راجع اسم المستخدم وكلمة المرور')
+        has_recovery=bool(account['recovery_question'] and account['recovery_salt'] and account['recovery_hash'])
+        recovery_question=account['recovery_question'] if has_recovery else str(data.get('security_question','')).strip()
         answer=normalize_recovery_answer(data.get('recovery_answer'))
-        answer_salt=account['recovery_salt'] if account and account['recovery_salt'] else '0'*32
-        answer_hash=account['recovery_hash'] if account and account['recovery_hash'] else '0'*128
-        answer_candidate=hashlib.scrypt(answer.encode(),salt=bytes.fromhex(answer_salt),n=2**14,r=8,p=1).hex()
-        if not password_ok or not account or not account['recovery_question'] or not hmac.compare_digest(answer_candidate,answer_hash):
-            raise ValueError('تعذر التحقق؛ راجع كلمة المرور وإجابة الاسترداد')
+        if has_recovery:
+            answer_candidate=hashlib.scrypt(answer.encode(),salt=bytes.fromhex(account['recovery_salt']),n=2**14,r=8,p=1).hex()
+            if not hmac.compare_digest(answer_candidate,account['recovery_hash']):
+                raise ValueError('إجابة الاسترداد غير صحيحة')
+        elif len(recovery_question)<8 or len(recovery_question)>180:
+            raise ValueError('اكتب سؤال استرداد من 8 إلى 180 حرفًا')
         key=str(data.get('security_key',''))
         if len(key)<12 or len(key)>128 or key!=str(data.get('confirm_security_key','')):
             raise ValueError('رمز الأمان يجب أن يكون 12 حرفًا على الأقل، مع تأكيد مطابق')
         salt=secrets.token_hex(16)
         digest=hashlib.scrypt(key.encode(),salt=bytes.fromhex(salt),n=2**14,r=8,p=1).hex()
-        db.execute('UPDATE users SET security_salt=?,security_hash=? WHERE id=?',(salt,digest,account['id']))
+        if has_recovery:
+            db.execute('UPDATE users SET security_salt=?,security_hash=? WHERE id=?',(salt,digest,account['id']))
+        else:
+            recovery_salt=secrets.token_hex(16)
+            recovery_hash=hashlib.scrypt(answer.encode(),salt=bytes.fromhex(recovery_salt),n=2**14,r=8,p=1).hex()
+            db.execute('UPDATE users SET security_salt=?,security_hash=?,recovery_question=?,recovery_salt=?,recovery_hash=? WHERE id=?',(salt,digest,recovery_question,recovery_salt,recovery_hash,account['id']))
         db.execute('DELETE FROM sessions WHERE user_id=?',(account['id'],))
         handler.respond({'ok':True})
         return True
