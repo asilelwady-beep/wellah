@@ -570,3 +570,19 @@ function keepMerchantEditorOnRefresh(){
   // Refresh state and notifications without destroying an in-progress location/form edit.
   return tab==='admin'&&adminPage==='admin-merchants'&&(!Array.isArray(state.staff_permissions)||state.staff_permissions.includes('admin-merchants'))&&!!document.getElementById('m-name')&&mapViews.some(m=>m.getContainer().id==='merchant-map');
 }
+
+function locateMerchantGPS(){
+ const label=document.getElementById('merchant-point'),button=document.getElementById('merchant-gps');
+ if(!navigator.geolocation){if(label)label.textContent='جهازك لا يدعم تحديد الموقع. حدد المحل بالضغط على الخريطة.';return}
+ if(button)button.disabled=true;
+ if(label)label.textContent='جارٍ تحديد موقعك الحالي… اسمح بالوصول للموقع وتأكد من تشغيل GPS.';
+ navigator.geolocation.getCurrentPosition(position=>{
+  if(button)button.disabled=false;
+  const map=mapViews.find(m=>m.getContainer().id==='merchant-map');
+  if(!map?._chooseMerchantLocation||!document.getElementById('m-name'))return;
+  const lat=position.coords.latitude,lng=position.coords.longitude;
+  if(!Number.isFinite(lat)||!Number.isFinite(lng))return;
+  map.setView([lat,lng],18,{animate:false});map._chooseMerchantLocation({lat,lng});
+  if(label)label.textContent='تم تحديد موقع المحل ✓ · دقة الموقع حوالي '+Math.round(position.coords.accuracy)+' متر. اضغط على الخريطة لتدقيق مكان المدخل ثم احفظ المحل.';
+ },error=>{if(button)button.disabled=false;if(label)label.textContent=error.code===1?'اسمح بالوصول للموقع من إعدادات المتصفح ثم أعد المحاولة، أو حدد المحل يدويًا على الخريطة.':error.code===3?'انتهت مهلة تحديد الموقع. تأكد من تشغيل GPS وأعد المحاولة.':'تعذر تحديد موقعك. شغّل GPS أو حدد مكان المحل على الخريطة.'},{enableHighAccuracy:true,maximumAge:0,timeout:20000});
+}

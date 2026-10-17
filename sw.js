@@ -1,4 +1,4 @@
-const SHELL='wallaha-shell-v42-dashboard-interior-craft';
+const SHELL='wallaha-shell-v43-customer-light-gps';
 const ASSETS=['/customer','/driver','/admin','/icon-192.png','/icon-512.png'];
 self.addEventListener('install',event=>event.waitUntil(caches.open(SHELL).then(cache=>cache.addAll(ASSETS)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key!==SHELL).map(key=>caches.delete(key)))).then(()=>self.clients.claim())));
