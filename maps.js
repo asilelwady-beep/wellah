@@ -444,7 +444,7 @@ async function initMaps(){
       window.pickCurrentLocation=()=>{
         mapPinMode='destination';
         if(!navigator.geolocation)return alert('تحديد الموقع غير مدعوم');
-        navigator.geolocation.getCurrentPosition(p=>{
+        getCustomerLocation(p=>{
           if(!mapViews.includes(map))return;
           const pos={lat:p.coords.latitude,lng:p.coords.longitude};
           if(kind==='delivery'){map.flyTo(pos,17,{duration:0.7});return}
@@ -457,7 +457,7 @@ async function initMaps(){
       window.pickupCurrentLocation=()=>{
         mapPinMode='pickup';
         if(!pickupMap||!navigator.geolocation)return alert('تحديد الموقع غير متاح؛ فعّل GPS وإذن الموقع');
-        navigator.geolocation.getCurrentPosition(p=>{
+        getCustomerLocation(p=>{
           if(!mapViews.includes(pickupMap))return;
           const pos={lat:p.coords.latitude,lng:p.coords.longitude};
           choose(pos,'pickup');
@@ -471,7 +471,7 @@ async function initMaps(){
       if(customerView==='checkout'&&!autoCheckoutLocationAttempted){
         autoCheckoutLocationAttempted=true;
         if(!navigator.geolocation){const label=document.getElementById(kind==='products'?'selected-point':'selected-pickup');if(label)label.textContent='الموقع غير متاح؛ المس مكانك على الخريطة'}
-        else navigator.geolocation.getCurrentPosition(p=>{
+        else getCustomerLocation(p=>{
           if(!mapViews.includes(map))return;
           const pos={lat:p.coords.latitude,lng:p.coords.longitude};
           if(kind==='products'){if(chosenPoint)return;choose(pos,'destination');map.flyTo(pos,17,{duration:0.7})}
