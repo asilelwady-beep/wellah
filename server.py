@@ -224,6 +224,12 @@ def init():
         CREATE TABLE IF NOT EXISTS driver_trip_points (driver_id INTEGER NOT NULL, order_id INTEGER NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, at TEXT NOT NULL, PRIMARY KEY(driver_id,order_id));
         CREATE TABLE IF NOT EXISTS driver_distance_daily (driver_id INTEGER NOT NULL, day TEXT NOT NULL, meters REAL NOT NULL DEFAULT 0, PRIMARY KEY(driver_id,day));
         """)
+        # Revoke every pre-hardening admin session once, including sessions on
+        # devices the owner no longer controls. The marker prevents logouts on restarts.
+        session_lock_key = 'owner-only-session-reset-20261017-v1'
+        if not db.execute('SELECT 1 FROM settings WHERE key=?',(session_lock_key,)).fetchone():
+            db.execute("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE role='admin')")
+            db.execute("INSERT INTO settings(key,value) VALUES (?,?)",(session_lock_key,'completed'))
         for table in ('categories','products'):
             if 'deleted' not in {r['name'] for r in db.execute(f'PRAGMA table_info({table})')}:
                 db.execute(f'ALTER TABLE {table} ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0')
