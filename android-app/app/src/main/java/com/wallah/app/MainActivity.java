@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.location.LocationManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
@@ -39,6 +40,7 @@ public class MainActivity extends Activity {
     private Bundle pendingState;
     private String pendingDestination;
     private boolean appUpdated;
+    private boolean gpsPromptShown;
     private ValueCallback<Uri[]> fileCallback;
     private GeolocationPermissions.Callback locationCallback;
     private String locationOrigin;
@@ -158,9 +160,30 @@ public class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
-        if ("customer".equals(BuildConfig.FLAVOR) && web != null) {
-            web.postDelayed(() -> web.evaluateJavascript("window.dispatchEvent(new Event('wallaha:app-resume'))", null), 400);
+        if (!"customer".equals(BuildConfig.FLAVOR)) return;
+        LocationManager locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
+        boolean locationEnabled;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            locationEnabled = locationManager != null && locationManager.isLocationEnabled();
+        } else {
+            locationEnabled = locationManager != null && (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+                || locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER));
         }
+        if (locationEnabled) {
+            gpsPromptShown = false;
+            return;
+        }
+        if (gpsPromptShown || isFinishing() || isDestroyed()) return;
+        gpsPromptShown = true;
+        new AlertDialog.Builder(this)
+            .setTitle("تشغيل GPS")
+            .setMessage("خدمات الموقع في الهاتف متوقفة. فعّلها ليقدر التطبيق يحدد موقعك.")
+            .setNegativeButton("لاحقًا", (dialog, which) -> { })
+            .setPositiveButton("فتح إعدادات الموقع", (dialog, which) -> {
+                try { startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)); }
+                catch (Exception ignored) { startActivity(new Intent(Settings.ACTION_SETTINGS)); }
+            })
+            .show();
     }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grants) {
@@ -217,22 +240,6 @@ public class MainActivity extends Activity {
     }
 
     private final class DriverBridge {
-        @JavascriptInterface public void promptEnableLocation() {
-            if (!"customer".equals(BuildConfig.FLAVOR)) return;
-            runOnUiThread(() -> {
-                if (isFinishing() || isDestroyed()) return;
-                new AlertDialog.Builder(MainActivity.this)
-                    .setTitle("تشغيل الموقع")
-                    .setMessage("خدمات الموقع في الهاتف متوقفة. شغّلها مرة واحدة ليحدد تطبيق ولعه موقعك تلقائيًا.")
-                    .setNegativeButton("لاحقًا", (dialog, which) -> { })
-                    .setPositiveButton("فتح إعدادات الموقع", (dialog, which) -> {
-                        try { startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)); }
-                        catch (Exception ignored) { startActivity(new Intent(Settings.ACTION_SETTINGS)); }
-                    })
-                    .show();
-            });
-        }
-
         @JavascriptInterface public void startDriverTracking(String token, String baseUrl) {
             if (!"driver".equals(BuildConfig.FLAVOR) || token == null || token.trim().isEmpty()) return;
             Uri base = Uri.parse(baseUrl == null ? "" : baseUrl);
