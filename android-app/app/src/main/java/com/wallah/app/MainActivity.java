@@ -2,8 +2,8 @@ package com.wallah.app;
 
 import android.Manifest;
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.IntentSender;
 import android.content.pm.PackageManager;
 import android.location.LocationManager;
 import android.net.Uri;
@@ -21,6 +21,11 @@ import android.webkit.JavascriptInterface;
 import android.widget.Toast;
 import android.os.Build;
 import android.os.SystemClock;
+import com.google.android.gms.common.api.ResolvableApiException;
+import com.google.android.gms.location.LocationRequest;
+import com.google.android.gms.location.LocationServices;
+import com.google.android.gms.location.LocationSettingsRequest;
+import com.google.android.gms.location.Priority;
 import java.net.URLDecoder;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -33,6 +38,7 @@ public class MainActivity extends Activity {
     private static final int LOCATION_REQUEST = 41;
     private static final int FILE_REQUEST = 42;
     private static final int CAMERA_REQUEST = 43;
+    private static final int LOCATION_SETTINGS_REQUEST = 44;
     private static final long BACK_PRESS_WINDOW_MS = 2000;
     private PermissionRequest cameraRequest;
     private WebView web;
@@ -175,15 +181,37 @@ public class MainActivity extends Activity {
         }
         if (gpsPromptShown || isFinishing() || isDestroyed()) return;
         gpsPromptShown = true;
-        new AlertDialog.Builder(this)
-            .setTitle("تشغيل GPS")
-            .setMessage("خدمات الموقع في الهاتف متوقفة. فعّلها ليقدر التطبيق يحدد موقعك.")
-            .setNegativeButton("لاحقًا", (dialog, which) -> { })
-            .setPositiveButton("فتح إعدادات الموقع", (dialog, which) -> {
-                try { startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)); }
-                catch (Exception ignored) { startActivity(new Intent(Settings.ACTION_SETTINGS)); }
-            })
-            .show();
+        requestGpsEnablement();
+    }
+
+    private void requestGpsEnablement() {
+        try {
+            LocationRequest locationRequest = new LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 10000L).build();
+            LocationSettingsRequest settingsRequest = new LocationSettingsRequest.Builder()
+                .addLocationRequest(locationRequest)
+                .setAlwaysShow(true)
+                .build();
+            LocationServices.getSettingsClient(this).checkLocationSettings(settingsRequest)
+                .addOnSuccessListener(this, response -> gpsPromptShown = false)
+                .addOnFailureListener(this, error -> {
+                    if (error instanceof ResolvableApiException) {
+                        try {
+                            ((ResolvableApiException) error).startResolutionForResult(this, LOCATION_SETTINGS_REQUEST);
+                        } catch (IntentSender.SendIntentException ignored) {
+                            openLocationSettings();
+                        }
+                    } else {
+                        openLocationSettings();
+                    }
+                });
+        } catch (Exception ignored) {
+            openLocationSettings();
+        }
+    }
+
+    private void openLocationSettings() {
+        try { startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)); }
+        catch (Exception ignored) { startActivity(new Intent(Settings.ACTION_SETTINGS)); }
     }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grants) {
@@ -209,6 +237,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == LOCATION_SETTINGS_REQUEST && resultCode == RESULT_OK) gpsPromptShown = false;
         if (requestCode == FILE_REQUEST && fileCallback != null) {
             fileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data));
             fileCallback = null;
