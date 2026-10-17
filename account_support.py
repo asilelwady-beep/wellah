@@ -293,6 +293,32 @@ def feature_post(handler, db, path, data, user, create_user, areas, now):
         question=account['recovery_question'] if account and account['recovery_hash'] and account['recovery_question'] else 'ما إجابة الاسترداد السرية التي حفظتها في إعدادات حسابك؟'
         handler.respond({'question':question})
         return True
+    if path == '/api/auth/admin-security/setup':
+        remote=handler.client_address[0]
+        limit(db,'admin-security-setup-ip',remote,900,10)
+        identifier=str(data.get('username','')).strip()[:64]
+        limit(db,'admin-security-setup-account',identifier.casefold(),900,5)
+        account=admin_recovery_account(db,identifier)
+        password=str(data.get('password',''))
+        password_ok=False
+        if account and password:
+            candidate=hashlib.scrypt(password.encode(),salt=bytes.fromhex(account['salt']),n=2**14,r=8,p=1).hex()
+            password_ok=hmac.compare_digest(candidate,account['password_hash'])
+        answer=normalize_recovery_answer(data.get('recovery_answer'))
+        answer_salt=account['recovery_salt'] if account and account['recovery_salt'] else '0'*32
+        answer_hash=account['recovery_hash'] if account and account['recovery_hash'] else '0'*128
+        answer_candidate=hashlib.scrypt(answer.encode(),salt=bytes.fromhex(answer_salt),n=2**14,r=8,p=1).hex()
+        if not password_ok or not account or not account['recovery_question'] or not hmac.compare_digest(answer_candidate,answer_hash):
+            raise ValueError('تعذر التحقق؛ راجع كلمة المرور وإجابة الاسترداد')
+        key=str(data.get('security_key',''))
+        if len(key)<12 or len(key)>128 or key!=str(data.get('confirm_security_key','')):
+            raise ValueError('رمز الأمان يجب أن يكون 12 حرفًا على الأقل، مع تأكيد مطابق')
+        salt=secrets.token_hex(16)
+        digest=hashlib.scrypt(key.encode(),salt=bytes.fromhex(salt),n=2**14,r=8,p=1).hex()
+        db.execute('UPDATE users SET security_salt=?,security_hash=? WHERE id=?',(salt,digest,account['id']))
+        db.execute('DELETE FROM sessions WHERE user_id=?',(account['id'],))
+        handler.respond({'ok':True})
+        return True
     if path == '/api/auth/admin-recover':
         recover_admin_by_answer(db,data,handler.client_address[0])
         handler.respond({'ok':True})

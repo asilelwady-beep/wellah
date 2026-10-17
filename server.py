@@ -230,6 +230,10 @@ def init():
         if not db.execute('SELECT 1 FROM settings WHERE key=?',(session_lock_key,)).fetchone():
             db.execute("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE role='admin')")
             db.execute("INSERT INTO settings(key,value) VALUES (?,?)",(session_lock_key,'completed'))
+        security_lock_key='owner-security-key-enrollment-reset-20261017-v1'
+        if not db.execute('SELECT 1 FROM settings WHERE key=?',(security_lock_key,)).fetchone():
+            db.execute("DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE role='admin')")
+            db.execute("INSERT INTO settings(key,value) VALUES (?,?)",(security_lock_key,'completed'))
         for table in ('categories','products'):
             if 'deleted' not in {r['name'] for r in db.execute(f'PRAGMA table_info({table})')}:
                 db.execute(f'ALTER TABLE {table} ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0')
@@ -265,8 +269,13 @@ def init():
         for column,definition in [('driver_earning_cents' ,'INTEGER NOT NULL DEFAULT 0'),('driver_earning_paid','INTEGER NOT NULL DEFAULT 0'),('commission_percent','REAL NOT NULL DEFAULT 0'),('commission_cents','INTEGER NOT NULL DEFAULT 0'),('commission_locked','INTEGER NOT NULL DEFAULT 0')]:
             if column not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
                 db.execute(f'ALTER TABLE orders ADD COLUMN {column} {definition}')
-        if 'username' not in {x['name'] for x in db.execute('PRAGMA table_info(users)')}:
+        user_columns={x['name'] for x in db.execute('PRAGMA table_info(users)')}
+        if 'username' not in user_columns:
             db.execute('ALTER TABLE users ADD COLUMN username TEXT')
+        if 'security_salt' not in user_columns:
+            db.execute('ALTER TABLE users ADD COLUMN security_salt TEXT')
+        if 'security_hash' not in user_columns:
+            db.execute('ALTER TABLE users ADD COLUMN security_hash TEXT')
         db.execute('CREATE TABLE IF NOT EXISTS driver_shifts (id INTEGER PRIMARY KEY,driver_id INTEGER NOT NULL REFERENCES drivers(id),selfie TEXT NOT NULL,started_at TEXT NOT NULL,ended_at TEXT)')
         for table,column,definition in [('drivers','identity_blocked_shift','INTEGER'),('driver_shifts','review_status',"TEXT NOT NULL DEFAULT 'pending'"),('driver_shifts','reviewed_at','TEXT'),('driver_shifts','reviewed_by','INTEGER'),('driver_shifts','restored_at','TEXT')]:
             if column not in {r['name'] for r in db.execute('PRAGMA table_info('+table+')')}: db.execute('ALTER TABLE '+table+' ADD COLUMN '+column+' '+definition)
@@ -1258,10 +1267,26 @@ class Handler(BaseHTTPRequestHandler):
                         if u['role'] != expected_role:
                             label={'customer':'عميل','driver':'طيار','admin':'مسؤول'}[expected_role]
                             return self.respond({'error':'هذا التطبيق يحتاج حساب '+label+'؛ الحساب الذي أدخلته من نوع مختلف'},403)
+                    if u['role']=='admin':
+                        security=u['security_hash'] if 'security_hash' in u.keys() else None
+                        if not security:
+                            return self.respond({'security_setup_required':True,'recovery_question':u['recovery_question'] if u['recovery_question'] else None})
+                        supplied=str(data.get('security_key',''))[:128]
+                        salt=u['security_salt'] or '0'*32
+                        candidate=hashlib.scrypt(supplied.encode(),salt=bytes.fromhex(salt),n=2**14,r=8,p=1).hex()
+                        if not supplied or not hmac.compare_digest(candidate,security):
+                            record_failed_login(db,phone,remote)
+                            db.commit()
+                            return self.respond({'error':'رمز الأمان غير صحيح'},401)
                     db.execute('DELETE FROM login_attempts WHERE phone=? AND remote=?',(phone,remote))
                     token=secrets.token_urlsafe(32)
-                    session_lifetime=86400 if u['role']=='admin' else 86400*7
-                    db.execute('INSERT INTO sessions VALUES (?,?,?)',(hashlib.sha256(token.encode()).hexdigest(),u['id'],int(time.time())+session_lifetime))
+                    if u['role']=='admin':
+                        local_now=datetime.now(CAIRO)
+                        session_end=datetime.combine(local_now.date()+timedelta(days=1),datetime.min.time(),tzinfo=CAIRO)
+                        expires=int(session_end.timestamp())
+                    else:
+                        expires=int(time.time())+86400*7
+                    db.execute('INSERT INTO sessions VALUES (?,?,?)',(hashlib.sha256(token.encode()).hexdigest(),u['id'],expires))
                     return self.respond({'token':token,'role':u['role']})
                 user=self.user(db)
                 if not user: return self.respond({'error':'سجل الدخول أولًا'},401)
