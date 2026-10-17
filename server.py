@@ -911,11 +911,25 @@ def staff_state(view, permissions):
 
 
 class Handler(BaseHTTPRequestHandler):
+    def end_headers(self):
+        # Apply browser protections to JSON, HTML, and static responses alike.
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('X-Frame-Options', 'DENY')
+        self.send_header('Referrer-Policy', 'strict-origin-when-cross-origin')
+        self.send_header('Strict-Transport-Security', 'max-age=31536000')
+        self.send_header('Permissions-Policy', 'camera=(self), geolocation=(self), microphone=(self)')
+        super().end_headers()
+
     def user(self, db):
         header = self.headers.get('Authorization', '')
         if not header.startswith('Bearer '): return None
         digest = hashlib.sha256(header[7:].encode()).hexdigest()
-        return db.execute('SELECT u.id,u.name,u.phone,u.role,u.username,u.email,sm.permissions AS staff_permissions FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN staff_members sm ON sm.user_id=u.id WHERE s.token_hash=? AND s.expires>? AND u.disabled=0', (digest, int(time.time()))).fetchone()
+        user = db.execute('SELECT u.id,u.name,u.phone,u.role,u.username,u.email,sm.permissions AS staff_permissions FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN staff_members sm ON sm.user_id=u.id WHERE s.token_hash=? AND s.expires>? AND u.disabled=0', (digest, int(time.time()))).fetchone()
+        # The owner requested exclusive access to the admin dashboard. Existing staff
+        # sessions remain stored but cannot read data or call any protected endpoint.
+        if user and user['role'] == 'admin' and user['staff_permissions'] is not None:
+            return None
+        return user
 
     def respond(self, value, code=200):
         data = json.dumps(value, ensure_ascii=False).encode()
@@ -1093,6 +1107,7 @@ class Handler(BaseHTTPRequestHandler):
             data = (ROOT / "index.html").read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -1226,6 +1241,8 @@ class Handler(BaseHTTPRequestHandler):
                         record_failed_login(db,phone,remote)
                         db.commit()
                         return self.respond({'error':'بيانات الدخول غير صحيحة'},401)
+                    if u['role'] == 'admin' and db.execute('SELECT 1 FROM staff_members WHERE user_id=?',(u['id'],)).fetchone():
+                        return self.respond({'error':'لوحة التحكم متاحة للمسؤول الرئيسي فقط'},403)
                     if path == '/api/admin/login' and u['role'] != 'admin':
                         return self.respond({'error':'لوحة التحكم خاصة بالمسؤول فقط'},403)
                     expected_role=data.get('expected_role')
@@ -1237,7 +1254,8 @@ class Handler(BaseHTTPRequestHandler):
                             return self.respond({'error':'هذا التطبيق يحتاج حساب '+label+'؛ الحساب الذي أدخلته من نوع مختلف'},403)
                     db.execute('DELETE FROM login_attempts WHERE phone=? AND remote=?',(phone,remote))
                     token=secrets.token_urlsafe(32)
-                    db.execute('INSERT INTO sessions VALUES (?,?,?)',(hashlib.sha256(token.encode()).hexdigest(),u['id'],int(time.time())+86400*7))
+                    session_lifetime=86400 if u['role']=='admin' else 86400*7
+                    db.execute('INSERT INTO sessions VALUES (?,?,?)',(hashlib.sha256(token.encode()).hexdigest(),u['id'],int(time.time())+session_lifetime))
                     return self.respond({'token':token,'role':u['role']})
                 user=self.user(db)
                 if not user: return self.respond({'error':'سجل الدخول أولًا'},401)
