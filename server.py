@@ -22,7 +22,7 @@ from urllib.request import urlopen, Request, build_opener, HTTPRedirectHandler
 from decimal import Decimal, ROUND_HALF_UP, ROUND_CEILING, InvalidOperation
 from threading import Lock
 from wallet_controls import init_wallet_controls, wallet_post, unlocked, verify_owner, redact_wallet
-from account_support import init_features, feature_post, feature_state, normalized_username, complete_registration, set_recovery_answer
+from account_support import init_features, feature_post, feature_state, normalized_username, normalized_mobile, complete_registration, set_recovery_answer
 
 ROOT = Path(__file__).parent
 DB = Path(os.environ.get('WALLAHA_DB_PATH', str(ROOT / 'wallaha.sqlite3')))
@@ -1244,7 +1244,8 @@ class Handler(BaseHTTPRequestHandler):
                         return self.respond({'ok':True,'id':uid})
                     if data.get('password') != data.get('confirm_password'):
                         raise ValueError('كلمتا المرور غير متطابقتين')
-                    uid=create_user(db,str(data.get('name','')),str(data.get('phone','')),'customer',str(data.get('password','')))
+                    phone=normalized_mobile(data.get('phone',''))
+                    uid=create_user(db,str(data.get('name','')),phone,'customer',str(data.get('password','')))
                     set_recovery_answer(db,uid,data.get('recovery_answer'))
                     return self.respond({'ok':True,'id':uid})
                 if path in ('/api/login','/api/admin/login'):

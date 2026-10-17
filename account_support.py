@@ -224,10 +224,13 @@ def complete_registration(db, data, create_user):
     if db.execute('SELECT used FROM account_codes WHERE id=?', (code['id'],)).fetchone()['used']:
         raise ValueError('رمز التأكيد مستخدم بالفعل')
     mobile=code['email'].startswith('sms:')
-    if mobile:
-        if normalized_mobile(data.get('phone','')) != code['email'][4:]: raise ValueError('رقم الموبايل لا يطابق الرقم الذي تم تأكيده')
-        data=dict(data,phone=normalized_mobile(data['phone']))
-    elif str(data.get('email', '')).strip().lower() != code['email']:
+    # Every customer account stores an Egyptian national mobile number, including
+    # registrations verified by email. Do not let the email path bypass the
+    # phone validation used by SMS registration.
+    phone=normalized_mobile(data.get('phone',''))
+    if mobile and phone != code['email'][4:]: raise ValueError('رقم الموبايل لا يطابق الرقم الذي تم تأكيده')
+    data=dict(data,phone=phone)
+    if not mobile and str(data.get('email', '')).strip().lower() != code['email']:
         raise ValueError('البريد لا يطابق البريد الذي تم تأكيده')
     uid = create_user(db, str(data.get('name', '')), str(data.get('phone', '')), 'customer', str(data.get('password', '')))
     if mobile: db.execute('UPDATE users SET verified_phone=? WHERE id=?',(code['email'][4:],uid))

@@ -171,6 +171,14 @@ class AccountSupportTests(unittest.TestCase):
             self.assertTrue(account['recovery_salt']);self.assertNotEqual(account['recovery_hash'],'خالد والبحر')
         self.assertEqual(self.post('login',{'phone':phone,'password':'simple-password-123'})[0],200)
 
+    def test_customer_registration_rejects_ten_digit_phone_without_otp(self):
+        phone='0100000124'
+        status,result=self.post('register',{'name':'رقم قصير','phone':phone,'password':'simple-password-123','confirm_password':'simple-password-123','recovery_answer':'خالد والبحر'})
+        self.assertEqual(status,400,result)
+        self.assertIn('11 رقمًا',result['error'])
+        with server.connect() as db:
+            self.assertIsNone(db.execute('SELECT id FROM users WHERE phone=?',(phone,)).fetchone())
+
     def test_recovery_answer_resets_password_and_revokes_sessions(self):
         phone='01000000126'
         status,_=self.post('register',{'name':'عميل استرداد','phone':phone,'password':'recovery-old-pass','confirm_password':'recovery-old-pass','recovery_answer':'خالتي سعاد'})
@@ -420,6 +428,15 @@ class AccountSupportTests(unittest.TestCase):
             self.assertEqual(self.post('login',{'phone':'new@example.test','password':'new-password-123'})[0],401)
             self.assertEqual(self.post('login',{'phone':'new@example.test','password':'replacement-pass-123'})[0],200)
             self.assertEqual(self.post('auth/reset-password',reset)[0],400)
+
+    def test_email_verified_registration_still_requires_eleven_digit_mobile(self):
+        sent={}
+        with patch.object(features,'mail_ready',return_value=True),patch.object(features,'send_code',side_effect=lambda email,code:sent.update({email:code})):
+            _,challenge=self.post('auth/send-code',{'email':'short-phone@example.test','purpose':'register'})
+        data={'name':'رقم قصير','phone':'0100000124','email':'short-phone@example.test','password':'new-password-123','confirm_password':'new-password-123','challenge_id':challenge['challenge_id'],'code':sent['short-phone@example.test']}
+        status,result=self.post('register',data)
+        self.assertEqual(status,400,result)
+        self.assertIn('11 رقمًا',result['error'])
 
     def test_code_attempts_survive_failed_requests(self):
         with patch.object(features,'mail_ready',return_value=True),patch.object(features,'send_code'):
