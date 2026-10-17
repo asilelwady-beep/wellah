@@ -104,7 +104,7 @@ async function searchMapAddress(mode='destination'){
   if(/^https?:\/\//i.test(query)){
     status.textContent='جارٍ قراءة رابط اللوكيشن…';
     try{
-      const response=await fetch('/api/resolve-map-link?url='+encodeURIComponent(query));
+      const response=await (window.appFetchWithTimeout||fetch)('/api/resolve-map-link?url='+encodeURIComponent(query),{},10000);
       const data=await response.json();if(!response.ok)throw Error(data.error||'تعذر قراءة الرابط');
       point=parseMapCoordinates(data.url);
       if(!point)throw Error('الرابط لا يحتوي نقطة دقيقة؛ افتحه وانسخ رابط المكان أو حدد العلامة على الخريطة');
@@ -115,7 +115,7 @@ async function searchMapAddress(mode='destination'){
   }
   status.textContent='جارٍ البحث عن العنوان…';
   try{
-    const response=await fetch('/api/geocode?q='+encodeURIComponent(query));
+    const response=await (window.appFetchWithTimeout||fetch)('/api/geocode?q='+encodeURIComponent(query),{},10000);
     const data=await response.json();if(!response.ok)throw Error(data.error||'تعذر البحث');
     const places=data.results||[];
     if(!places.length){status.textContent='لم أجد نتيجة مؤكدة. جرّب اسم المكان مع القرية، أو الصق رابط Google Maps.';return}
@@ -157,7 +157,7 @@ function showMyLocationOnMap(id){
 let googleMapsReadyPromise=null;
 function loadGoogleMaps(){
   if(googleMapsReadyPromise)return googleMapsReadyPromise;
-  googleMapsReadyPromise=fetch('/api/maps-config').then(r=>r.ok?r.json():{}).then(config=>{
+  googleMapsReadyPromise=(window.appFetchWithTimeout||fetch)('/api/maps-config',{},10000).then(r=>r.ok?r.json():{}).then(config=>{
     const key=config.google_maps_key;
     if(!key)return false;
     const googleReady=window.google?.maps?Promise.resolve():new Promise((resolve,reject)=>{
@@ -237,7 +237,7 @@ window.showNearbyMapRoads=async()=>{
   status.textContent='جارٍ تحميل الشوارع والحارات حول الجزء الظاهر من الخريطة…';
   const center=map.getCenter();
   try{
-    const response=await fetch('/api/map-roads?lat='+center.lat.toFixed(5)+'&lon='+center.lng.toFixed(5));
+    const response=await (window.appFetchWithTimeout||fetch)('/api/map-roads?lat='+center.lat.toFixed(5)+'&lon='+center.lng.toFixed(5),{},10000);
     const data=await response.json();
     if(!response.ok)throw Error(data.error||'تعذر تحميل الشوارع');
     if(map._roadOverlay)map.removeLayer(map._roadOverlay);

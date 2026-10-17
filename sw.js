@@ -1,12 +1,37 @@
-const SHELL='wallaha-shell-v43-customer-light-gps';
-const ASSETS=['/customer','/driver','/admin','/icon-192.png','/icon-512.png'];
-self.addEventListener('install',event=>event.waitUntil(caches.open(SHELL).then(cache=>cache.addAll(ASSETS)).then(()=>self.skipWaiting())));
+const SHELL='wallaha-shell-v44-offline-customer';
+const ASSETS=['/','/customer','/driver','/admin','/maps.js','/features.js','/icon.svg','/icon-192.png','/icon-512.png'];
+const PRODUCT_ASSET=/^\/(?:product-photo-[0-9]+\.jpg|product-illustration\/[0-9]+\.svg)$/;
+self.addEventListener('install',event=>{
+ event.waitUntil((async()=>{
+  const cache=await caches.open(SHELL);
+  await Promise.all(ASSETS.map(async path=>{
+   try{const response=await fetch(path);if(response.ok)await cache.put(path,response)}catch(e){}
+  }));
+  await self.skipWaiting();
+ })());
+});
 self.addEventListener('activate',event=>event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(key=>key!==SHELL).map(key=>caches.delete(key)))).then(()=>self.clients.claim())));
 self.addEventListener('fetch',event=>{
  const request=event.request;
  if(request.method!=='GET'||request.url.includes('/api/'))return;
  const url=new URL(request.url);
- if(url.origin!==self.location.origin)return;
- if(!ASSETS.includes(url.pathname))return;
- event.respondWith(fetch(request).then(response=>{if(response.ok){const copy=response.clone();caches.open(SHELL).then(cache=>cache.put(request,copy))}return response}).catch(()=>caches.match(request)));
+ if(url.origin!==self.location.origin||(!ASSETS.includes(url.pathname)&&!PRODUCT_ASSET.test(url.pathname)))return;
+ const update=caches.open(SHELL).then(cache=>{
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),10000);
+  return fetch(request,{signal:controller.signal}).then(async response=>{
+   if(response.ok){
+    await cache.put(new Request(url.origin+url.pathname),response.clone());
+    if(PRODUCT_ASSET.test(url.pathname)){
+     const keys=await cache.keys(),images=keys.filter(key=>PRODUCT_ASSET.test(new URL(key.url).pathname));
+     for(const old of images.slice(0,Math.max(0,images.length-180)))await cache.delete(old);
+    }
+   }
+   return response;
+  }).catch(()=>null).finally(()=>clearTimeout(timer));
+ });
+ event.waitUntil(update.then(()=>undefined));
+ event.respondWith((async()=>{
+  const cached=await caches.match(request,{ignoreSearch:true});
+  return cached||await update||Response.error();
+ })());
 });
