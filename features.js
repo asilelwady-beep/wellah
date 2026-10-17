@@ -28,31 +28,31 @@ function installCustomerLoginStyles(){if(document.getElementById('customer-login
 '@media(max-width:680px){body:has(.customer-login-shell) main{padding:12px 14px 30px}.customer-login-shell{padding-top:4px}.customer-login-hero{min-height:148px;padding:20px;border-radius:23px;margin-bottom:14px}.customer-login-brand{font-size:15px}.customer-login-logo{width:47px;height:47px;border-radius:15px}.customer-login-spark{font-size:58px}.customer-login-hero p{font-size:13px}.customer-login-forms{grid-template-columns:1fr;gap:12px}.customer-login-forms>.card{padding:19px;border-radius:20px}.customer-login-title h2{font-size:20px}}'
 ].join('');document.head.appendChild(style)}
 function installDriverLoginStyles(){if(document.getElementById('driver-login-styles'))return;const style=document.createElement('style');style.id='driver-login-styles';style.textContent=`
-body:has(.driver-login-shell){background:radial-gradient(ellipse at 88% 8%,rgba(255,139,45,.2),transparent 34%),radial-gradient(ellipse at 6% 92%,rgba(207,48,31,.12),transparent 32%),linear-gradient(145deg,#f6f7fb,#eef1f7 55%,#fff8f2);min-height:100vh}
+body:has(.driver-login-shell){background:radial-gradient(ellipse at 88% 8%,rgba(255,183,84,.28),transparent 34%),radial-gradient(ellipse at 6% 92%,rgba(207,48,31,.12),transparent 32%),linear-gradient(145deg,#fffaf6,#fff0e2 55%,#fff8f2);min-height:100vh}
 body:has(.driver-login-shell) main{max-width:760px;padding:22px 18px 44px}
 .driver-login-shell{max-width:650px;margin:0 auto;padding:8px 0 28px}
-.driver-login-hero{display:flex;align-items:center;gap:17px;padding:24px 26px;margin-bottom:17px;border-radius:27px;background:linear-gradient(125deg,#172238,#263a57 60%,#d94424);color:#fff;box-shadow:0 18px 42px rgba(29,42,66,.18);position:relative;overflow:hidden}
+.driver-login-hero{display:flex;align-items:center;gap:17px;padding:24px 26px;margin-bottom:17px;border-radius:27px;background:linear-gradient(120deg,#a92f12 0%,#dc4818 56%,#f17626 100%);color:#fff;box-shadow:0 18px 42px rgba(173,64,30,.2);position:relative;overflow:hidden}
 .driver-login-mark{display:grid;place-items:center;flex:0 0 64px;width:64px;height:64px;border-radius:21px;background:linear-gradient(145deg,#ffb542,#f26827);box-shadow:0 9px 22px rgba(0,0,0,.2)}
 .driver-login-mark svg{width:40px;height:40px;fill:none;stroke:#fff;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .driver-login-hero h2{margin:0 0 7px;color:#fff;font-size:23px}.driver-login-hero p{margin:0;color:#e9edf5;line-height:1.7}
-.driver-login-card{padding:24px;border:1px solid #e5e8ef;border-radius:24px;background:rgba(255,255,255,.97);box-shadow:0 14px 38px rgba(37,48,69,.09)}
+.driver-login-card{padding:24px;border:1px solid #e5e8ef;border-radius:24px;background:#fff;box-shadow:0 14px 38px rgba(102,52,24,.09)}
 .driver-login-title{display:flex;align-items:center;gap:12px;margin-bottom:19px}
-.driver-login-title h3{margin:0;color:#172238;font-size:20px}.driver-login-title p{margin:4px 0 0;color:#68758a;font-size:14px}
+.driver-login-title h3{margin:0;color:#512d1f;font-size:20px}.driver-login-title p{margin:4px 0 0;color:#7c736c;font-size:14px}
 .driver-login-badge{display:grid;place-items:center;flex:0 0 46px;width:46px;height:46px;border-radius:15px;background:#fff1e5;color:#d94a25}
 .driver-login-badge svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
-.driver-login-card label{display:flex;align-items:center;gap:8px;margin:14px 0 7px;color:#334057;font-weight:700}
+.driver-login-card label{display:flex;align-items:center;gap:8px;margin:14px 0 7px;color:#59483d;font-weight:700}
 .driver-login-card .driver-label-icon{color:#da512d;font-size:17px}
-.driver-login-card input{width:100%;min-height:50px;padding:12px 14px;border:1px solid #dce1ea;border-radius:14px;background:#fbfcfe;color:#172238;font:inherit;outline:none;transition:border-color .18s,box-shadow .18s}
+.driver-login-card input{width:100%;min-height:50px;padding:12px 14px;border:1px solid #ead9cb;border-radius:14px;background:#fffdfa;color:#392c25;font:inherit;outline:none;transition:border-color .18s,box-shadow .18s}
 .driver-login-card input:focus{border-color:#e16537;box-shadow:0 0 0 4px rgba(225,101,55,.12)}
 .driver-password-wrap{position:relative}.driver-password-wrap input{padding-left:52px}
-.driver-password-toggle{position:absolute;left:8px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:38px;height:38px;padding:0;border:0;border-radius:11px;background:#f1f3f7;color:#536078}
+.driver-password-toggle{position:absolute;left:8px;top:50%;transform:translateY(-50%);display:grid;place-items:center;width:38px;height:38px;padding:0;border:0;border-radius:11px;background:#fff0e3;color:#a83b17}
 .driver-password-toggle svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .driver-login-submit{width:100%;margin-top:20px;border:0!important;border-radius:14px!important;background:linear-gradient(110deg,#e84c25,#f28a32)!important;color:#fff!important;font-weight:800!important;box-shadow:0 9px 20px rgba(225,83,42,.2)}
 .driver-forgot-link{display:block;width:100%;margin:11px 0 0;padding:10px;border:0;background:transparent;color:#b83e21;text-align:center;font-weight:700}
-.driver-login-note{display:flex;align-items:flex-start;gap:9px;margin:17px 0 0;padding:12px 14px;border-radius:14px;background:#f5f6f9;color:#667187;font-size:13px;line-height:1.7}
+.driver-login-note{display:flex;align-items:flex-start;gap:9px;margin:17px 0 0;padding:12px 14px;border-radius:14px;background:#fff8f2;color:#74675f;font-size:13px;line-height:1.7}
 .driver-login-note .driver-label-icon{color:#e17a2f;font-size:16px}
-.driver-recovery-card{max-width:500px;margin:24px auto;padding:24px;border:1px solid #e5e8ef;border-radius:24px;background:white;box-shadow:0 14px 38px rgba(37,48,69,.09)}
-.driver-recovery-card h2{margin-top:0;color:#172238}.driver-recovery-card .driver-recovery-icon{display:grid;place-items:center;width:52px;height:52px;margin-bottom:14px;border-radius:17px;background:#fff1e5;color:#d94a25;font-size:25px}
+.driver-recovery-card{max-width:500px;margin:24px auto;padding:24px;border:1px solid #f0dfd1;border-radius:24px;background:white;box-shadow:0 14px 38px rgba(102,52,24,.09)}
+.driver-recovery-card h2{margin-top:0;color:#512d1f}.driver-recovery-card .driver-recovery-icon{display:grid;place-items:center;width:52px;height:52px;margin-bottom:14px;border-radius:17px;background:#fff1e5;color:#d94a25;font-size:25px}
 .driver-recovery-card button{width:100%;margin-top:12px}
 @media(max-width:560px){body:has(.driver-login-shell) main{padding:13px 12px 30px}.driver-login-shell{padding-top:2px}.driver-login-hero{padding:20px 18px;border-radius:23px}.driver-login-mark{flex-basis:56px;width:56px;height:56px;border-radius:18px}.driver-login-hero h2{font-size:20px}.driver-login-card{padding:19px;border-radius:21px}}
 `;document.head.appendChild(style)}
