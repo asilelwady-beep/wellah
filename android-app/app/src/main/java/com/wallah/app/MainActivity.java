@@ -3,7 +3,6 @@ package com.wallah.app;
 import android.Manifest;
 import android.app.Activity;
 import android.content.ClipData;
-import android.content.ContentValues;
 import android.content.Intent;
 import android.content.IntentSender;
 import android.content.pm.PackageManager;
@@ -11,8 +10,6 @@ import android.location.LocationManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
-import android.provider.MediaStore;
-import android.os.Environment;
 import android.webkit.GeolocationPermissions;
 import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
@@ -30,6 +27,8 @@ import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationServices;
 import com.google.android.gms.location.LocationSettingsRequest;
 import com.google.android.gms.location.Priority;
+import java.io.File;
+import androidx.core.content.FileProvider;
 import java.net.URLDecoder;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -55,6 +54,7 @@ public class MainActivity extends Activity {
     private boolean notificationPermissionAsked;
     private ValueCallback<Uri[]> fileCallback;
     private Uri captureOutputUri;
+    private File capturePhotoFile;
     private GeolocationPermissions.Callback locationCallback;
     private String locationOrigin;
     private long lastBackPressAt;
@@ -146,16 +146,15 @@ public class MainActivity extends Activity {
                 fileCallback = callback;
                 try {
                     if ("driver".equals(BuildConfig.FLAVOR) && params.isCaptureEnabled()) {
-                        ContentValues values = new ContentValues();
-                        values.put(MediaStore.Images.Media.DISPLAY_NAME, "wallah-order-" + System.currentTimeMillis() + ".jpg");
-                        values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                            values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Wallah");
+                        File captureDirectory = new File(getCacheDir(), "order-captures");
+                        if (!captureDirectory.exists() && !captureDirectory.mkdirs()) {
+                            throw new IllegalStateException("تعذر تجهيز صورة الأوردر");
                         }
-                        captureOutputUri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
-                        if (captureOutputUri == null) throw new IllegalStateException("تعذر تجهيز صورة الأوردر");
-                        Intent camera = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-                        camera.putExtra(MediaStore.EXTRA_OUTPUT, captureOutputUri);
+                        capturePhotoFile = File.createTempFile("wallah-order-", ".jpg", captureDirectory);
+                        captureOutputUri = FileProvider.getUriForFile(
+                            MainActivity.this, getPackageName() + ".fileprovider", capturePhotoFile);
+                        Intent camera = new Intent("android.media.action.IMAGE_CAPTURE");
+                        camera.putExtra("output", captureOutputUri);
                         camera.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
                         camera.setClipData(ClipData.newUri(getContentResolver(), "wallah-order-photo", captureOutputUri));
                         startActivityForResult(camera, FILE_REQUEST);
@@ -164,7 +163,8 @@ public class MainActivity extends Activity {
                     }
                     return true;
                 } catch (Exception e) {
-                    if (captureOutputUri != null) getContentResolver().delete(captureOutputUri, null, null);
+                    if (capturePhotoFile != null) capturePhotoFile.delete();
+                    capturePhotoFile = null;
                     captureOutputUri = null;
                     fileCallback = null;
                     callback.onReceiveValue(null);
@@ -280,9 +280,10 @@ public class MainActivity extends Activity {
                 captureOutputUri = null;
                 if (resultCode == RESULT_OK) results = new Uri[]{photo};
                 else {
-                    getContentResolver().delete(photo, null, null);
+                    if (capturePhotoFile != null) capturePhotoFile.delete();
                     results = null;
                 }
+                capturePhotoFile = null;
             } else {
                 results = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
             }

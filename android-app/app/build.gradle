@@ -7,8 +7,8 @@ android {
         applicationId 'com.wallah.app'
         minSdk 24
         targetSdk 35
-        versionCode 20
-        versionName '1.1.9'
+        versionCode 21
+        versionName '1.1.10'
     }
     flavorDimensions 'role'
     productFlavors {
@@ -40,5 +40,6 @@ android {
 }
 
 dependencies {
+    implementation 'androidx.core:core:1.15.0'
     implementation 'com.google.android.gms:play-services-location:21.3.0'
 }
