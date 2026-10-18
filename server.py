@@ -2150,8 +2150,8 @@ class Handler(BaseHTTPRequestHandler):
                     elif action in ("picked_up", "on_way", "delivered") and o["driver_id"] and o["status"] in ({'picked_up': ('assigned','ready'),'on_way':('picked_up',),'delivered':('on_way',)}[action]):
                         pickup_photo=str(data.get('pickup_photo',''))
                         delivery_photo=str(data.get('delivery_photo',''))
-                        if action=='picked_up' and not valid_image(pickup_photo,1_000_000): raise ValueError('ارفع صورة واضحة لمكان استلام الطلب')
-                        if action=='delivered' and not valid_image(delivery_photo,1_000_000): raise ValueError('ارفع صورة واضحة لمكان تسليم الطلب')
+                        if action=='picked_up' and pickup_photo and not valid_image(pickup_photo,1_000_000): raise ValueError('ارفع صورة واضحة لمكان استلام الطلب')
+                        if action=='delivered' and delivery_photo and not valid_image(delivery_photo,1_000_000): raise ValueError('ارفع صورة واضحة لمكان تسليم الطلب')
                         if action=='delivered' and o['payment']=='cash' and data.get('cash_collected') is not True: raise ValueError('أكد تحصيل المبلغ النقدي أولًا')
                         if action=='delivered' and not o['commission_locked']:
                             driver=db.execute('SELECT vehicle_type FROM drivers WHERE id=?',(o['driver_id'],)).fetchone()

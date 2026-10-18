@@ -493,7 +493,8 @@ async function initMaps(){
     const map=baseMap('admin-map');
     if(map)refreshAdminLiveMap(true);
   }else if(tab==='driver'){
-    updateDriverMap();
+    const map=baseMap('driver-map');
+    if(map)updateDriverMap();
   }
 }
 
