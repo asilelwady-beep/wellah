@@ -1970,9 +1970,9 @@ class Handler(BaseHTTPRequestHandler):
                         if shop_anywhere and not catalog_order and merchant['category']!='سوبر ماركت': raise ValueError('الشراء من أي متجر متاح للسوبر ماركت فقط')
                         for it in data.get("items", []):
                             qty = float(it["quantity"])
-                            p = catalog_order_product(db, it["product_id"], qty)[0] if catalog_order else db.execute("SELECT * FROM products WHERE id=? AND active=1", (it["product_id"],)).fetchone()
-                            if not p: raise ValueError('المنتج غير متاح')
                             requested_amount = it.get('spend_amount')
+                            p = catalog_order_product(db, it["product_id"], 0.01 if requested_amount is not None else qty)[0] if catalog_order else db.execute("SELECT * FROM products WHERE id=? AND active=1", (it["product_id"],)).fetchone()
+                            if not p: raise ValueError('المنتج غير متاح')
                             if requested_amount is not None:
                                 try: requested_amount = float(requested_amount)
                                 except (TypeError,ValueError): raise ValueError('مبلغ المنتج غير صحيح')
