@@ -39,7 +39,7 @@ public class DriverLocationService extends Service {
     public static final String EXTRA_TOKEN = "driver_token";
     public static final String EXTRA_BASE_URL = "api_base_url";
     private static final String CHANNEL_ID = "wallaha_driver_location";
-    private static final String ORDER_CHANNEL_ID = "wallaha_driver_orders_v3";
+    private static final String ORDER_CHANNEL_ID = "wallaha_driver_orders_v4";
     private static final int NOTIFICATION_ID = 7301;
     private static final long UPDATE_INTERVAL_MS = 15000L;
     private static final float UPDATE_DISTANCE_METERS = 0f;
