@@ -2,6 +2,8 @@ package com.wallah.app;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ContentValues;
 import android.content.Intent;
 import android.content.IntentSender;
 import android.content.pm.PackageManager;
@@ -9,6 +11,8 @@ import android.location.LocationManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.provider.MediaStore;
+import android.os.Environment;
 import android.webkit.GeolocationPermissions;
 import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
@@ -50,6 +54,7 @@ public class MainActivity extends Activity {
     private boolean gpsPromptShown;
     private boolean notificationPermissionAsked;
     private ValueCallback<Uri[]> fileCallback;
+    private Uri captureOutputUri;
     private GeolocationPermissions.Callback locationCallback;
     private String locationOrigin;
     private long lastBackPressAt;
@@ -139,8 +144,32 @@ public class MainActivity extends Activity {
             @Override public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
                 if (fileCallback != null) fileCallback.onReceiveValue(null);
                 fileCallback = callback;
-                try { startActivityForResult(params.createIntent(), FILE_REQUEST); return true; }
-                catch (Exception e) { fileCallback = null; callback.onReceiveValue(null); return false; }
+                try {
+                    if ("driver".equals(BuildConfig.FLAVOR) && params.isCaptureEnabled()) {
+                        ContentValues values = new ContentValues();
+                        values.put(MediaStore.Images.Media.DISPLAY_NAME, "wallah-order-" + System.currentTimeMillis() + ".jpg");
+                        values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            values.put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Wallah");
+                        }
+                        captureOutputUri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                        if (captureOutputUri == null) throw new IllegalStateException("تعذر تجهيز صورة الأوردر");
+                        Intent camera = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+                        camera.putExtra(MediaStore.EXTRA_OUTPUT, captureOutputUri);
+                        camera.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                        camera.setClipData(ClipData.newUri(getContentResolver(), "wallah-order-photo", captureOutputUri));
+                        startActivityForResult(camera, FILE_REQUEST);
+                    } else {
+                        startActivityForResult(params.createIntent(), FILE_REQUEST);
+                    }
+                    return true;
+                } catch (Exception e) {
+                    if (captureOutputUri != null) getContentResolver().delete(captureOutputUri, null, null);
+                    captureOutputUri = null;
+                    fileCallback = null;
+                    callback.onReceiveValue(null);
+                    return false;
+                }
             }
         });
         web.addJavascriptInterface(new DriverBridge(), "WallahaNative");
@@ -245,7 +274,19 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == LOCATION_SETTINGS_REQUEST && resultCode == RESULT_OK) gpsPromptShown = false;
         if (requestCode == FILE_REQUEST && fileCallback != null) {
-            fileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data));
+            Uri[] results;
+            if (captureOutputUri != null) {
+                Uri photo = captureOutputUri;
+                captureOutputUri = null;
+                if (resultCode == RESULT_OK) results = new Uri[]{photo};
+                else {
+                    getContentResolver().delete(photo, null, null);
+                    results = null;
+                }
+            } else {
+                results = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
+            }
+            fileCallback.onReceiveValue(results);
             fileCallback = null;
         }
     }
