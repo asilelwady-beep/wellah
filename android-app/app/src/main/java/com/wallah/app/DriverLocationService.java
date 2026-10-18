@@ -39,7 +39,7 @@ public class DriverLocationService extends Service {
     public static final String EXTRA_TOKEN = "driver_token";
     public static final String EXTRA_BASE_URL = "api_base_url";
     private static final String CHANNEL_ID = "wallaha_driver_location";
-    private static final String ORDER_CHANNEL_ID = "wallaha_driver_orders_v2";
+    private static final String ORDER_CHANNEL_ID = "wallaha_driver_orders_v3";
     private static final int NOTIFICATION_ID = 7301;
     private static final long UPDATE_INTERVAL_MS = 15000L;
     private static final float UPDATE_DISTANCE_METERS = 0f;
@@ -52,6 +52,7 @@ public class DriverLocationService extends Service {
     private volatile String token;
     private volatile String baseUrl;
     private long lastSentAt;
+    private Uri orderSoundUri;
 
     @Override public void onCreate() {
         super.onCreate();
@@ -88,6 +89,7 @@ public class DriverLocationService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationManager manager = getSystemService(NotificationManager.class);
             if (manager == null) return;
+            orderSoundUri = Uri.parse("android.resource://" + getPackageName() + "/" + R.raw.order_chime);
             NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "موقع الطيار أثناء الشيفت", NotificationManager.IMPORTANCE_LOW);
             channel.setDescription("تحديث موقع الطيار أثناء تشغيل التطبيق في الخلفية");
             manager.createNotificationChannel(channel);
@@ -96,7 +98,7 @@ public class DriverLocationService extends Service {
             orders.setDescription("تنبيه الطيار عند إسناد طلب جديد أثناء الشيفت");
             orders.enableVibration(true);
             orders.setVibrationPattern(new long[]{0, 180, 120, 180});
-            orders.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),
+            orders.setSound(orderSoundUri,
                 new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build());
             manager.createNotificationChannel(orders);
@@ -161,7 +163,7 @@ public class DriverLocationService extends Service {
             .setCategory(Notification.CATEGORY_STATUS)
             .setPriority(Notification.PRIORITY_HIGH);
         if (pending != null) builder.setContentIntent(pending);
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) builder.setDefaults(Notification.DEFAULT_SOUND | Notification.DEFAULT_VIBRATE);
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) builder.setSound(orderSoundUri).setVibrate(new long[]{0, 180, 120, 180});
         NotificationManager manager = getSystemService(NotificationManager.class);
         if (manager != null) manager.notify("wallaha-driver-order-" + orderId, 1, builder.build());
     }
