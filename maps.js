@@ -185,6 +185,7 @@ function baseMap(id,zoom=13){
   const el=document.getElementById(id);
   if(!el)return null;
   if(!window.L){el.textContent='تعذر تحميل الخريطة الآن. تحقق من الاتصال ثم حدّث الصفحة.';return null}
+  el.replaceChildren();
   const map=L.map(el,{scrollWheelZoom:false,zoomControl:false,zoomAnimation:true,fadeAnimation:true,preferCanvas:true}).setView(mapCenter,zoom);
   L.control.zoom({position:'bottomleft'}).addTo(map);
   const baseLayer=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
@@ -260,7 +261,18 @@ window.showNearbyMapRoads=async()=>{
   }catch(error){status.textContent=error.message||'تعذر تحميل الشوارع'}
 };
 let leafletReady=null,mapInitVersion=0;
-function ensureLeaflet(){if(window.L)return Promise.resolve();if(!leafletReady)leafletReady=new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';script.onload=resolve;script.onerror=()=>{script.remove();leafletReady=null;reject(new Error('تعذر تحميل الخريطة'))};document.head.append(script)});return leafletReady}
+function ensureLeaflet(){
+ if(window.L)return Promise.resolve();
+ if(!leafletReady)leafletReady=new Promise((resolve,reject)=>{
+  const script=document.createElement('script');let settled=false;
+  const finish=error=>{if(settled)return;settled=true;clearTimeout(timer);if(error){script.remove();leafletReady=null;reject(error)}else resolve()};
+  const timer=setTimeout(()=>finish(new Error('تعذر تحميل الخريطة؛ اضغط إعادة المحاولة.')),12000);
+  script.src='/leaflet.js?v=1.9.4';script.onload=()=>finish(window.L?null:new Error('تعذر تشغيل الخريطة'));script.onerror=()=>finish(new Error('تعذر تحميل الخريطة؛ تحقق من اتصال الإنترنت.'));document.head.append(script);
+ });
+ return leafletReady;
+}
+function showMapLoadError(error){document.querySelectorAll('.map:not(.leaflet-container)').forEach(el=>{el.replaceChildren();const message=document.createElement('p');message.textContent=error.message||'تعذر تحميل الخريطة';const retry=document.createElement('button');retry.type='button';retry.textContent='إعادة تحميل الخريطة';retry.onclick=()=>{el.replaceChildren();initMaps()};el.append(message,retry)})}
+
 function requestDriverRoadRoute(map,origin,target){
   if(!origin||!target||target.lat==null||target.lon==null){
     map._driverRouteController?.abort();
@@ -365,7 +377,7 @@ function updateDriverMap(){
 async function initMaps(){
   const version=++mapInitVersion;
   if(!state||!document.querySelector('.map'))return;
-  try{await ensureLeaflet()}catch(e){document.querySelectorAll('.map').forEach(el=>el.textContent=e.message);return}
+  try{await ensureLeaflet()}catch(e){showMapLoadError(e);return}
   if(version!==mapInitVersion||!state)return;
   const tripMap=baseMap('trip-map');
   if(tripMap){

@@ -1,11 +1,11 @@
-const SHELL='wallaha-shell-v65-camera-without-file-field';
-const ASSETS=['/','/customer','/driver','/admin','/maps.js','/features.js','/icon.svg','/icon-192.png','/icon-512.png'];
+const SHELL='wallaha-shell-v66-local-maps';
+const ASSETS=['/','/customer','/driver','/admin','/maps.js','/leaflet.js','/leaflet.css','/features.js','/icon.svg','/icon-192.png','/icon-512.png'];
 const PRODUCT_ASSET=/^\/(?:product-photo-[0-9]+\.jpg|product-illustration\/[0-9]+\.svg)$/;
 self.addEventListener('install',event=>{
  event.waitUntil((async()=>{
   const cache=await caches.open(SHELL);
   await Promise.all(ASSETS.map(async path=>{
-   try{const response=await fetch(path);if(response.ok)await cache.put(path,response)}catch(e){}
+   try{const response=await fetch(path,{cache:'reload'});if(response.ok)await cache.put(path,response)}catch(e){}
   }));
   await self.skipWaiting();
  })());
@@ -18,7 +18,7 @@ self.addEventListener('fetch',event=>{
  if(url.origin!==self.location.origin||(!ASSETS.includes(url.pathname)&&!PRODUCT_ASSET.test(url.pathname)))return;
  const update=caches.open(SHELL).then(cache=>{
   const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),10000);
-  return fetch(request,{signal:controller.signal}).then(async response=>{
+  return fetch(request,{signal:controller.signal,cache:'no-cache'}).then(async response=>{
    if(response.ok){
     await cache.put(new Request(url.origin+url.pathname),response.clone());
     if(PRODUCT_ASSET.test(url.pathname)){
@@ -32,6 +32,6 @@ self.addEventListener('fetch',event=>{
  event.waitUntil(update.then(()=>undefined));
  event.respondWith((async()=>{
   const cached=await caches.match(request,{ignoreSearch:true});
-  return cached||await update||Response.error();
+  return /\.(?:js|css)$/.test(url.pathname)?(await update||cached||Response.error()):(cached||await update||Response.error());
  })());
 });

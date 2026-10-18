@@ -1165,10 +1165,10 @@ class Handler(BaseHTTPRequestHandler):
             data=(ROOT/'icon.svg').read_bytes()
             self.send_response(200);self.send_header('Content-Type','image/svg+xml');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
             return
-        if path in ('/icon-192.png','/icon-512.png','/sw.js','/maps.js','/features.js'):
+        if path in ('/icon-192.png','/icon-512.png','/sw.js','/maps.js','/features.js','/leaflet.js','/leaflet.css'):
             data=(ROOT/path[1:]).read_bytes()
-            mime='application/javascript' if path in ('/sw.js','/maps.js','/features.js') else 'image/png'
-            self.send_response(200);self.send_header('Content-Type',mime);self.send_header('Cache-Control','public, max-age=3600');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+            mime='text/css' if path=='/leaflet.css' else 'application/javascript' if path in ('/sw.js','/maps.js','/features.js','/leaflet.js') else 'image/png'
+            self.send_response(200);self.send_header('Content-Type',mime);self.send_header('Cache-Control','no-cache' if path in ('/sw.js','/maps.js','/features.js') else 'public, max-age=86400');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
             return
         if path == "/api/driver/offers":
             with connect() as db:
