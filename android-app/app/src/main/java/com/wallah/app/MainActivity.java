@@ -2,7 +2,6 @@ package com.wallah.app;
 
 import android.Manifest;
 import android.app.Activity;
-import android.content.ClipData;
 import android.content.Intent;
 import android.content.IntentSender;
 import android.content.pm.PackageManager;
@@ -27,8 +26,6 @@ import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationServices;
 import com.google.android.gms.location.LocationSettingsRequest;
 import com.google.android.gms.location.Priority;
-import java.io.File;
-import androidx.core.content.FileProvider;
 import java.net.URLDecoder;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -53,8 +50,6 @@ public class MainActivity extends Activity {
     private boolean gpsPromptShown;
     private boolean notificationPermissionAsked;
     private ValueCallback<Uri[]> fileCallback;
-    private Uri captureOutputUri;
-    private File capturePhotoFile;
     private GeolocationPermissions.Callback locationCallback;
     private String locationOrigin;
     private long lastBackPressAt;
@@ -146,26 +141,12 @@ public class MainActivity extends Activity {
                 fileCallback = callback;
                 try {
                     if ("driver".equals(BuildConfig.FLAVOR) && params.isCaptureEnabled()) {
-                        File captureDirectory = new File(getCacheDir(), "order-captures");
-                        if (!captureDirectory.exists() && !captureDirectory.mkdirs()) {
-                            throw new IllegalStateException("تعذر تجهيز صورة الأوردر");
-                        }
-                        capturePhotoFile = File.createTempFile("wallah-order-", ".jpg", captureDirectory);
-                        captureOutputUri = FileProvider.getUriForFile(
-                            MainActivity.this, getPackageName() + ".fileprovider", capturePhotoFile);
-                        Intent camera = new Intent("android.media.action.IMAGE_CAPTURE");
-                        camera.putExtra("output", captureOutputUri);
-                        camera.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-                        camera.setClipData(ClipData.newUri(getContentResolver(), "wallah-order-photo", captureOutputUri));
-                        startActivityForResult(camera, FILE_REQUEST);
+                        startActivityForResult(new Intent(MainActivity.this, CameraCaptureActivity.class), FILE_REQUEST);
                     } else {
                         startActivityForResult(params.createIntent(), FILE_REQUEST);
                     }
                     return true;
                 } catch (Exception e) {
-                    if (capturePhotoFile != null) capturePhotoFile.delete();
-                    capturePhotoFile = null;
-                    captureOutputUri = null;
                     fileCallback = null;
                     callback.onReceiveValue(null);
                     return false;
@@ -274,17 +255,10 @@ public class MainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == LOCATION_SETTINGS_REQUEST && resultCode == RESULT_OK) gpsPromptShown = false;
         if (requestCode == FILE_REQUEST && fileCallback != null) {
-            Uri[] results;
-            if (captureOutputUri != null) {
-                Uri photo = captureOutputUri;
-                captureOutputUri = null;
-                if (resultCode == RESULT_OK) results = new Uri[]{photo};
-                else {
-                    if (capturePhotoFile != null) capturePhotoFile.delete();
-                    results = null;
-                }
-                capturePhotoFile = null;
-            } else {
+            Uri[] results = null;
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                results = new Uri[]{data.getData()};
+            } else if (resultCode == RESULT_OK) {
                 results = WebChromeClient.FileChooserParams.parseResult(resultCode, data);
             }
             fileCallback.onReceiveValue(results);
