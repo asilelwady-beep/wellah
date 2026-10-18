@@ -2042,7 +2042,7 @@ class Handler(BaseHTTPRequestHandler):
                     oid=int(data.get('id',0))
                     o=db.execute('SELECT * FROM orders WHERE id=?',(oid,)).fetchone()
                     if not o: raise ValueError('الطلب غير موجود')
-                    if o['status'] in ('delivered','cancelled'): raise ValueError('لا يمكن تعديل رسوم طلب مكتمل أو ملغي')
+                    if o['status'] in ('delivered','cancelled','awaiting_quote','quote_pending'): raise ValueError('لا يمكن تعديل الرسوم قبل اعتماد السعر أو بعد إكمال الطلب')
                     if o['driver_earning_paid']: raise ValueError('تمت تسوية مستحقات الطيار لهذا الطلب')
                     try: amount=Decimal(str(data.get('amount','0')).strip() or '0')
                     except InvalidOperation: raise ValueError('اكتب مبلغًا صحيحًا')
