@@ -20,3 +20,10 @@ class CatalogPurchaseTests(unittest.TestCase):
         with self.assertRaises(ValueError):server.catalog_order_product(self.db,1,2)
         self.db.execute('UPDATE products SET stock=100 WHERE id=1')
         self.assertEqual(server.catalog_order_product(self.db,1,2)[1],2)
+
+    def test_deli_products_allow_ten_gram_quantities_for_spend(self):
+        self.db.execute("UPDATE products SET name='جبنة رومي بالوزن',price_basis_weight_kg=1,price=200 WHERE id=1")
+        self.assertEqual(server.catalog_order_product(self.db,1,.08)[1],.08)
+        with self.assertRaises(ValueError):server.catalog_order_product(self.db,1,.085)
+        self.db.execute("UPDATE products SET name='تفاح بالوزن' WHERE id=1")
+        with self.assertRaises(ValueError):server.catalog_order_product(self.db,1,.08)
