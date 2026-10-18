@@ -1,4 +1,4 @@
-const SHELL='wallaha-shell-v52-tight-payment';
+const SHELL='wallaha-shell-v53-contrast-payment';
 const ASSETS=['/','/customer','/driver','/admin','/maps.js','/features.js','/icon.svg','/icon-192.png','/icon-512.png'];
 const PRODUCT_ASSET=/^\/(?:product-photo-[0-9]+\.jpg|product-illustration\/[0-9]+\.svg)$/;
 self.addEventListener('install',event=>{
