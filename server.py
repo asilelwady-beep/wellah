@@ -1191,7 +1191,7 @@ class Handler(BaseHTTPRequestHandler):
             if user['role']=='admin':
                 clause,args='',()
             elif user['role']=='customer':
-                clause,args=" WHERE o.user_id=? AND o.status NOT IN ('delivered','cancelled')",(user['id'],)
+                clause,args=" WHERE o.user_id=?",(user['id'],)
             elif driver_state_view=='history':
                 clause,args=' WHERE d.user_id=?',(user['id'],)
             else:
