@@ -1314,68 +1314,7 @@ class Handler(BaseHTTPRequestHandler):
                 user=self.user(db)
                 if not user: return self.respond({'error':'سجل الدخول أولًا'},401)
                 if path == '/api/order/call':
-                    oid=int(data.get('order_id',0))
-                    mode=str(data.get('mode','check'))
-                    order=db.execute('SELECT id,user_id,driver_id,status FROM orders WHERE id=?',(oid,)).fetchone()
-                    driver=db.execute('SELECT user_id FROM drivers WHERE id=?',(order['driver_id'],)).fetchone() if order and order['driver_id'] else None
-                    is_customer=bool(order and user['role']=='customer' and order['user_id']==user['id'])
-                    is_driver=bool(driver and user['role']=='driver' and driver['user_id']==user['id'])
-                    active_status=('assigned','ready','picked_up','on_way')
-                    if not order or not (is_customer or is_driver) or order['status'] not in active_status:
-                        return self.respond({'error':'الاتصال متاح للعميل والطيار المعيّن في الطلب الجاري فقط'},403)
-                    now_s=int(time.time())
-                    if mode=='ice':
-                        ice_servers,ice_policy=order_call_ice_config(user['id'])
-                        return self.respond({'ice_servers':ice_servers,'ice_policy':ice_policy})
-                    if mode=='start':
-                        offer=data.get('offer')
-                        if not isinstance(offer,dict) or offer.get('type')!='offer' or not isinstance(offer.get('sdp'),str) or len(offer['sdp'])>30000:
-                            raise ValueError('تعذر بدء المكالمة؛ بيانات الاتصال غير صالحة')
-                        db.execute('BEGIN IMMEDIATE')
-                        existing=db.execute("SELECT id FROM order_calls WHERE order_id=? AND status IN ('ringing','connected') AND created_at>? ORDER BY created_at DESC LIMIT 1",(oid,now_s-7200)).fetchone()
-                        if existing: return self.respond({'error':'فيه مكالمة جارية لهذا الطلب'},409)
-                        cid=secrets.token_urlsafe(24)
-                        db.execute('INSERT INTO order_calls(id,order_id,driver_id,customer_id,caller_id,status,offer,created_at,updated_at) VALUES (?,?,?,?,? ,\'ringing\',?,?,?)',(cid,oid,order['driver_id'],order['user_id'],user['id'],json.dumps(offer,separators=(',',':')),now_s,now_s))
-                        ice_servers,ice_policy=order_call_ice_config(user['id'])
-                        return self.respond({'call_id':cid,'status':'ringing','ice_servers':ice_servers,'ice_policy':ice_policy})
-                    if mode=='check':
-                        db.execute('BEGIN IMMEDIATE')
-                        db.execute("UPDATE order_calls SET status='ended',offer='{}',updated_at=? WHERE order_id=? AND status='ringing' AND created_at<=?",(now_s,oid,now_s-90))
-                        db.execute("UPDATE order_calls SET status='ended',offer='{}',updated_at=? WHERE order_id=? AND status='connected' AND updated_at<=?",(now_s,oid,now_s-7200))
-                        db.execute('DELETE FROM order_call_signals WHERE call_id IN (SELECT id FROM order_calls WHERE order_id=? AND status=\'ended\')',(oid,))
-                        db.execute('DELETE FROM order_calls WHERE updated_at<?',(now_s-86400,))
-                        call=db.execute("SELECT id,caller_id,status,offer FROM order_calls WHERE order_id=? AND status IN ('ringing','connected') ORDER BY created_at DESC LIMIT 1",(oid,)).fetchone()
-                        if not call: return self.respond({'call':None,'signals':[],'next_id':0})
-                        after=max(0,int(data.get('after_id',0)))
-                        signals=rows(db,'SELECT id,kind,payload FROM order_call_signals WHERE call_id=? AND sender_id<>? AND id>? ORDER BY id LIMIT 60',(call['id'],user['id'],after))
-                        for signal in signals: signal['payload']=json.loads(signal['payload'])
-                        next_id=db.execute('SELECT COALESCE(MAX(id),0) AS id FROM order_call_signals WHERE call_id=?',(call['id'],)).fetchone()['id']
-                        ice_servers,ice_policy=order_call_ice_config(user['id'])
-                        return self.respond({'call':{'id':call['id'],'caller_id':call['caller_id'],'status':call['status'],'offer':json.loads(call['offer']) if call['caller_id']!=user['id'] and call['status']=='ringing' else None},'signals':signals,'next_id':next_id,'ice_servers':ice_servers,'ice_policy':ice_policy})
-                    cid=str(data.get('call_id',''))
-                    call=db.execute('SELECT * FROM order_calls WHERE id=? AND order_id=?',(cid,oid)).fetchone()
-                    if not call or user['id'] not in (call['customer_id'],):
-                        if not call or not (is_driver and call['driver_id']==order['driver_id']):
-                            return self.respond({'error':'المكالمة غير موجودة أو غير مصرح بها'},403)
-                    if mode in ('end','reject'):
-                        if mode=='reject' and (call['caller_id']==user['id'] or call['status']!='ringing'):
-                            raise ValueError('لا يمكن رفض هذه المكالمة')
-                        db.execute('UPDATE order_calls SET status=?,updated_at=? WHERE id=? AND status IN (\'ringing\',\'connected\')',('rejected' if mode=='reject' else 'ended',now_s,cid))
-                        db.execute('UPDATE order_calls SET offer=\'{}\' WHERE id=?',(cid,))
-                        db.execute('DELETE FROM order_call_signals WHERE call_id=?',(cid,))
-                        return self.respond({'ok':True})
-                    if mode!='signal': raise ValueError('إجراء مكالمة غير معروف')
-                    kind=str(data.get('kind',''))
-                    payload=data.get('payload')
-                    if kind not in ('answer','candidate') or not isinstance(payload,dict) or len(json.dumps(payload,separators=(',',':')))>8000:
-                        raise ValueError('إشارة الاتصال غير صالحة')
-                    if call['status'] not in ('ringing','connected'): raise ValueError('انتهت المكالمة')
-                    if kind=='answer':
-                        if call['caller_id']==user['id'] or call['status']!='ringing' or payload.get('type')!='answer' or not isinstance(payload.get('sdp'),str) or len(payload['sdp'])>30000:
-                            raise ValueError('رد المكالمة غير صالح')
-                        db.execute('UPDATE order_calls SET status=\'connected\',updated_at=? WHERE id=?',(now_s,cid))
-                    db.execute('INSERT INTO order_call_signals(call_id,sender_id,kind,payload,at) VALUES (?,?,?,?,?)',(cid,user['id'],kind,json.dumps(payload,separators=(',',':')),now_s))
-                    return self.respond({'ok':True})
+                    return self.respond({'error':'الاتصال داخل التطبيق غير متاح. استخدم رقم الهاتف أو الشات.'},410)
                 if path == '/api/admin/team':
                     if user['role']!='admin' or user['staff_permissions'] is not None: return self.respond({'error':'إدارة الفريق للمسؤول الرئيسي فقط'},403)
                     action=str(data.get('action',''))
