@@ -1170,6 +1170,15 @@ class Handler(BaseHTTPRequestHandler):
             mime='application/javascript' if path in ('/sw.js','/maps.js','/features.js') else 'image/png'
             self.send_response(200);self.send_header('Content-Type',mime);self.send_header('Cache-Control','public, max-age=3600');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
             return
+        if path == "/api/driver/offers":
+            with connect() as db:
+                user = self.user(db)
+                if not user: return self.respond({"error":"سجل الدخول أولًا"},401)
+                if user["role"] != "driver": return self.respond({"error":"خاص بالطيار فقط"},403)
+                driver = db.execute("SELECT id FROM drivers WHERE user_id=?",(user["id"],)).fetchone()
+                if not driver: return self.respond({"error":"حساب الطيار غير موجود"},404)
+                offers = rows(db,"SELECT id,offer_until FROM orders WHERE driver_id=? AND status='offered' AND offer_until>? ORDER BY id DESC LIMIT 20",(driver["id"],int(time.time())))
+                return self.respond({"offers":offers})
         if path != "/api/state":
             return self.respond({"error": "غير موجود"}, 404)
         with connect() as db:
