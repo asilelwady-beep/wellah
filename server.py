@@ -263,7 +263,7 @@ def init():
             db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(ride_key+'_base_km','3'))
             db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(ride_key+'_base',''))
             db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(ride_key+'_extra',''))
-        for table,column,definition in [('orders','route_km','REAL'),('orders','km_rate','REAL'),('orders','km_base_km','REAL'),('orders','km_base_fee','REAL'),('orders','pickup_photo',"TEXT NOT NULL DEFAULT ''"),('orders','delivery_photo',"TEXT NOT NULL DEFAULT ''"),('merchants','deleted','INTEGER NOT NULL DEFAULT 0'),('products','price_pending','INTEGER NOT NULL DEFAULT 0'),('products','price_basis_weight_kg','REAL'),('order_items','unit',"TEXT NOT NULL DEFAULT 'قطعة'"),('order_items','stock_quantity','REAL')]:
+        for table,column,definition in [('orders','additional_fee','REAL NOT NULL DEFAULT 0'),('orders','route_km','REAL'),('orders','km_rate','REAL'),('orders','km_base_km','REAL'),('orders','km_base_fee','REAL'),('orders','pickup_photo',"TEXT NOT NULL DEFAULT ''"),('orders','delivery_photo',"TEXT NOT NULL DEFAULT ''"),('merchants','deleted','INTEGER NOT NULL DEFAULT 0'),('products','price_pending','INTEGER NOT NULL DEFAULT 0'),('products','price_basis_weight_kg','REAL'),('order_items','unit',"TEXT NOT NULL DEFAULT 'قطعة'"),('order_items','stock_quantity','REAL')]:
             if column not in {x['name'] for x in db.execute(f'PRAGMA table_info({table})')}:
                 db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
         for column,definition in [('driver_earning_cents' ,'INTEGER NOT NULL DEFAULT 0'),('driver_earning_paid','INTEGER NOT NULL DEFAULT 0'),('commission_percent','REAL NOT NULL DEFAULT 0'),('commission_cents','INTEGER NOT NULL DEFAULT 0'),('commission_locked','INTEGER NOT NULL DEFAULT 0')]:
@@ -2037,6 +2037,34 @@ class Handler(BaseHTTPRequestHandler):
                     log(db, oid, "أنشأ العميل الطلب")
                     if status=='new' or (km_quote and kind=='delivery' and payment=='cash'): assign(db,oid)
                     return self.respond({"ok": True, "id": oid})
+                elif path == '/api/order/additional-fee':
+                    if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    oid=int(data.get('id',0))
+                    o=db.execute('SELECT * FROM orders WHERE id=?',(oid,)).fetchone()
+                    if not o: raise ValueError('الطلب غير موجود')
+                    if o['status'] in ('delivered','cancelled'): raise ValueError('لا يمكن تعديل رسوم طلب مكتمل أو ملغي')
+                    if o['driver_earning_paid']: raise ValueError('تمت تسوية مستحقات الطيار لهذا الطلب')
+                    try: amount=Decimal(str(data.get('amount','0')).strip() or '0')
+                    except InvalidOperation: raise ValueError('اكتب مبلغًا صحيحًا')
+                    if not amount.is_finite() or amount<0 or amount>Decimal('100000'): raise ValueError('الرسوم الإضافية يجب أن تكون من صفر وحتى 100000 جنيه')
+                    amount=amount.quantize(Decimal('0.01'),rounding=ROUND_HALF_UP)
+                    previous=Decimal(str(o['additional_fee'] or 0))
+                    delta=amount-previous
+                    if delta and o['payment']!='cash' and o['payment_status']=='confirmed':
+                        raise ValueError('تم تأكيد دفع المحفظة؛ لا يمكن تغيير الإجمالي بعد تأكيده')
+                    total=Decimal(str(o['total'] or 0))+delta
+                    delivery=Decimal(str(o['delivery_fee'] or 0))+delta
+                    if total<0 or delivery<0: raise ValueError('تعذر تحديث إجمالي الطلب')
+                    db.execute('UPDATE orders SET additional_fee=?,total=?,delivery_fee=? WHERE id=?',(float(amount),float(total),float(delivery),oid))
+                    if delta and o['payment']!='cash' and o['proof']:
+                        db.execute("UPDATE orders SET proof='',reference='',payment_status='pending' WHERE id=?",(oid,))
+                    if o['commission_locked'] and o['driver_id']:
+                        driver=db.execute('SELECT vehicle_type FROM drivers WHERE id=?',(o['driver_id'],)).fetchone()
+                        if driver:
+                            percent,share,net=commission_split(db,o['kind'],driver['vehicle_type'],float(delivery))
+                            db.execute('UPDATE orders SET commission_percent=?,commission_cents=?,driver_earning_cents=? WHERE id=?',(percent,share,net,oid))
+                    log(db,oid,'عدّلت الإدارة الرسوم الإضافية إلى '+str(amount)+' جنيه')
+                    return self.respond({'ok':True,'additional_fee':float(amount),'total':float(total),'delivery_fee':float(delivery)})
                 elif path == "/api/order/action":
                     oid, action = int(data["id"]), data["action"]
                     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
