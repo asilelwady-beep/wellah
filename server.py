@@ -94,6 +94,13 @@ def sold_by_weight(product):
                 (category == 'سوبر ماركت' and (re.search(r'^(?:لحم|لحمة|كبدة|دجاج طازج|فراخ طازجة|سمك|بلطي|بوري|جمبري|كابوريا|ثوم طازج|لانشون|لنشون|لَنشون|بسطرمة|سلامي|مرتديلا|ديك رومي|جبنة رومي|جبن رومي|جبنة شيدر|جبن شيدر)(?:\s|$)', name) or (re.search(r'لانشون|سلامي|سلامى|بسطرمة', name) and re.search(r'بالوزن|بالكيلو', name)))))
 
 
+def supports_price_selected_weight(product):
+    """Deli and cheese sold by weight may be ordered in 10-gram increments by spend."""
+    if not sold_by_weight(product) or product['category'] != 'سوبر ماركت':
+        return False
+    return bool(re.search(r'لانشون|لنشون|لَنشون|بسطرمة|سلامي|سلامى|مرتديلا|ديك رومي|جبنة|جبن|جبنه|موتزاريلا', product['name'], re.I))
+
+
 def weight_basis(product):
     match = re.search(r'(\d+(?:[.]\d+)?)\s*(كجم|كيلو|kg|جرام|غرام|جم|g)\b', product['name'], re.I)
     if not match:
@@ -107,8 +114,9 @@ def order_quantity(product, value):
     if not math.isfinite(quantity) or quantity <= 0 or quantity > 100000:
         raise ValueError('الكمية غير صحيحة')
     if sold_by_weight(product):
-        if quantity * 4 != int(quantity * 4):
-            raise ValueError('اختر الوزن بمضاعفات ربع كيلو')
+        step = 0.01 if supports_price_selected_weight(product) else 0.25
+        if abs(quantity / step - round(quantity / step)) > 1e-7:
+            raise ValueError('اختر وزنًا بزيادات 10 جرام' if step == 0.01 else 'اختر الوزن بمضاعفات ربع كيلو')
     elif quantity != int(quantity):
         raise ValueError('هذا المنتج يباع بالقطعة')
     return quantity
