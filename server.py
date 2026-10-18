@@ -715,6 +715,33 @@ def verify_delivery_quote(db,user_id,data):
         raise ValueError('احسب رسوم التوصيل مجددًا بعد تحديد الموقع؛ عرض السعر غير صالح أو انتهت صلاحيته')
 
 
+def dispatch_point(lat, lon):
+    if lat is None or lon is None: return None
+    try: point=(float(lat),float(lon))
+    except (ValueError,TypeError): return None
+    return point if all(math.isfinite(v) for v in point) and -90<=point[0]<=90 and -180<=point[1]<=180 else None
+
+
+def dispatch_origin(order, merchant=None):
+    """Rank drivers around the pickup point, never a shipment's destination."""
+    pickup=dispatch_point(order['pickup_lat'],order['pickup_lon'])
+    if order['kind']=='products':
+        if order['shop_anywhere']:
+            return dispatch_point(order['latitude'],order['longitude'])
+        return pickup or (dispatch_point(merchant['lat'],merchant['lon']) if merchant else None)
+    return pickup
+
+
+def dispatch_driver_has_fresh_gps(driver):
+    if not dispatch_point(driver['lat'],driver['lon']) or not driver['location_at']: return False
+    try:
+        timestamp=datetime.fromisoformat(driver['location_at'])
+        if timestamp.tzinfo is None: timestamp=timestamp.replace(tzinfo=timezone.utc)
+        age=time.time()-timestamp.timestamp()
+        return -60<=age<=300
+    except (ValueError,TypeError,OverflowError): return False
+
+
 def assign(db, oid):
     # Serialize selection and reservation so two concurrent orders cannot claim one driver.
     if not db.in_transaction:
@@ -722,20 +749,20 @@ def assign(db, oid):
     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
     if not o or o['status'] not in ('new','awaiting_driver','offered') or o["payment_status"] != "confirmed" or (o['kind']!='products' and not o['quote_accepted']) or o['medicine_review']:
         return
-    merchant = db.execute('SELECT area FROM merchants WHERE id=?',(o['merchant_id'],)).fetchone() if o['merchant_id'] else None
-    pickup_area = merchant['area'] if merchant and not o['shop_anywhere'] else o['area']
-    # Prefer fresh GPS, but keep on-shift drivers eligible by area when location is stale.
-    candidates = db.execute("""SELECT d.id,d.lat,d.lon,d.location_at,d.area,d.vehicle_type,d.featured FROM drivers d JOIN users du ON du.id=d.user_id WHERE du.disabled=0 AND d.identity_blocked_shift IS NULL AND d.available=1 AND d.break_until<=? AND (?=1 OR d.area=?)
+    merchant = db.execute('SELECT area,lat,lon FROM merchants WHERE id=?',(o['merchant_id'],)).fetchone() if o['merchant_id'] else None
+    # Area labels and featured status must not override distance from pickup.
+    candidates = db.execute("""SELECT d.id,d.lat,d.lon,d.location_at,d.area,d.vehicle_type,d.featured FROM drivers d JOIN users du ON du.id=d.user_id WHERE du.disabled=0 AND d.identity_blocked_shift IS NULL AND d.available=1 AND d.break_until<=?
         AND NOT EXISTS (SELECT 1 FROM orders x WHERE x.driver_id=d.id AND x.id<>?
             AND x.status IN ('offered','assigned','ready','picked_up','on_way'))
         AND NOT EXISTS (SELECT 1 FROM order_declines x WHERE x.order_id=? AND x.driver_id=d.id)
         AND NOT EXISTS (SELECT 1 FROM order_offer_timeouts t WHERE t.order_id=? AND t.driver_id=d.id AND t.retry_after>?)
         AND EXISTS (SELECT 1 FROM driver_shifts s WHERE s.driver_id=d.id AND s.ended_at IS NULL AND s.started_at>=? AND (s.started_at>? OR s.second_selfie IS NOT NULL))""",
-        (int(time.time()),1 if o['kind']!='products' else 0,pickup_area,oid,oid,oid,int(time.time()),datetime.fromtimestamp(time.time()-86400,timezone.utc).isoformat(timespec='seconds'),datetime.fromtimestamp(time.time()-21600,timezone.utc).isoformat(timespec='seconds'))).fetchall()
+        (int(time.time()),oid,oid,oid,int(time.time()),datetime.fromtimestamp(time.time()-86400,timezone.utc).isoformat(timespec='seconds'),datetime.fromtimestamp(time.time()-21600,timezone.utc).isoformat(timespec='seconds'))).fetchall()
     if o['kind']=='ride':
         candidates=[d for d in candidates if d['vehicle_type']==o['vehicle']]
-    origin=(o['pickup_lat'],o['pickup_lon']) if o['pickup_lat'] is not None else (o['latitude'],o['longitude'])
-    if origin[0] is None or origin[1] is None:
+    candidates=[d for d in candidates if dispatch_driver_has_fresh_gps(d)]
+    origin=dispatch_origin(o,merchant)
+    if origin is None:
         db.execute("UPDATE orders SET driver_id=NULL,status='awaiting_driver',offer_until=NULL WHERE id=?",(oid,))
         if o['status']!='awaiting_driver': log(db,oid,'بانتظار تحديد موقع الاستلام لتوزيع الطلب')
         return
@@ -744,19 +771,16 @@ def assign(db, oid):
         a,b=map(math.radians,(origin[0],d['lat']))
         da=math.radians(d['lat']-origin[0]);dl=math.radians(d['lon']-origin[1])
         return 6371*2*math.asin(min(1,math.sqrt(math.sin(da/2)**2+math.cos(a)*math.cos(b)*math.sin(dl/2)**2)))
-    minimum=float(db.execute("SELECT value FROM settings WHERE key='featured_min_order'").fetchone()[0])
-    prioritize=float(o['delivery_fee'] or o['total'])>=minimum
-    recent=datetime.fromtimestamp(time.time()-300,timezone.utc).isoformat(timespec='seconds')
-    d=min(candidates,key=lambda x:(0 if prioritize and x['featured'] else 1,0 if x['location_at'] and x['location_at']>=recent and x['lat'] is not None and x['lon'] is not None else 1,0 if x['area']==pickup_area else 1,distance(x),x['id'])) if candidates else None
+    d=min(candidates,key=lambda x:(distance(x),x['id'])) if candidates else None
     if d:
         if not o['commission_locked']:
             percent,share,net=commission_split(db,o['kind'],d['vehicle_type'],o['delivery_fee'])
             db.execute('UPDATE orders SET commission_percent=?,commission_cents=?,driver_earning_cents=?,commission_locked=1 WHERE id=?',(percent,share,net,oid))
         db.execute("UPDATE orders SET driver_id=?,status='offered',offer_until=? WHERE id=?", (d['id'],int(time.time())+90,oid))
-        log(db, oid, "أولوية الطيار المميز للطلب الأعلى قيمة" if prioritize and d['featured'] else "عُرض الطلب تلقائيًا على أقرب مندوب متاح من نقطة الاستلام")
+        log(db, oid, "عُرض الطلب تلقائيًا على أقرب طيار متاح إلى "+("المحل" if o['kind']=='products' and not o['shop_anywhere'] else "مكان المرسل" if o['kind']=='delivery' else "نقطة الاستلام"))
     else:
         db.execute("UPDATE orders SET driver_id=NULL,status='awaiting_driver',offer_until=NULL WHERE id=?", (oid,))
-        if o['status']!='awaiting_driver': log(db, oid, "بانتظار طيار متاح بدأ الشيفت وأكمل صورة التحقق")
+        if o['status']!='awaiting_driver': log(db, oid, "بانتظار طيار متاح بشيفت نشط وموقع GPS حديث")
 
 
 def refresh_offers(db):
