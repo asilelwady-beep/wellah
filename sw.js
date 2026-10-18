@@ -1,4 +1,4 @@
-const SHELL='wallaha-shell-v60-driver-app-polish';
+const SHELL='wallaha-shell-v61-compact-driver-icons';
 const ASSETS=['/','/customer','/driver','/admin','/maps.js','/features.js','/icon.svg','/icon-192.png','/icon-512.png'];
 const PRODUCT_ASSET=/^\/(?:product-photo-[0-9]+\.jpg|product-illustration\/[0-9]+\.svg)$/;
 self.addEventListener('install',event=>{
