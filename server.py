@@ -271,7 +271,7 @@ def init():
             db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(ride_key+'_base_km','3'))
             db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(ride_key+'_base',''))
             db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)",(ride_key+'_extra',''))
-        for table,column,definition in [('orders','additional_fee','REAL NOT NULL DEFAULT 0'),('orders','route_km','REAL'),('orders','km_rate','REAL'),('orders','km_base_km','REAL'),('orders','km_base_fee','REAL'),('orders','pickup_photo',"TEXT NOT NULL DEFAULT ''"),('orders','delivery_photo',"TEXT NOT NULL DEFAULT ''"),('merchants','deleted','INTEGER NOT NULL DEFAULT 0'),('products','price_pending','INTEGER NOT NULL DEFAULT 0'),('products','price_basis_weight_kg','REAL'),('order_items','unit',"TEXT NOT NULL DEFAULT 'قطعة'"),('order_items','stock_quantity','REAL')]:
+        for table,column,definition in [('orders','additional_fee','REAL NOT NULL DEFAULT 0'),('orders','route_km','REAL'),('orders','km_rate','REAL'),('orders','km_base_km','REAL'),('orders','km_base_fee','REAL'),('orders','pickup_photo',"TEXT NOT NULL DEFAULT ''"),('orders','delivery_photo',"TEXT NOT NULL DEFAULT ''"),('merchants','deleted','INTEGER NOT NULL DEFAULT 0'),('products','price_pending','INTEGER NOT NULL DEFAULT 0'),('products','price_basis_weight_kg','REAL'),('order_items','unit',"TEXT NOT NULL DEFAULT 'قطعة'"),('order_items','stock_quantity','REAL'),('order_items','requested_amount','REAL')]:
             if column not in {x['name'] for x in db.execute(f'PRAGMA table_info({table})')}:
                 db.execute(f'ALTER TABLE {table} ADD COLUMN {column} {definition}')
         for column,definition in [('driver_earning_cents' ,'INTEGER NOT NULL DEFAULT 0'),('driver_earning_paid','INTEGER NOT NULL DEFAULT 0'),('commission_percent','REAL NOT NULL DEFAULT 0'),('commission_cents','INTEGER NOT NULL DEFAULT 0'),('commission_locked','INTEGER NOT NULL DEFAULT 0')]:
@@ -1247,7 +1247,7 @@ class Handler(BaseHTTPRequestHandler):
             item_groups, event_groups = {}, {}
             order_scope = "SELECT o.id FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id" + clause
             if orders:
-                for item in rows(db, "SELECT oi.order_id,oi.product_id,oi.name,oi.quantity,oi.unit_price,oi.unit,COALESCE(NULLIF(p.image,''),CASE WHEN p.catalog_preview=1 THEN '/product-illustration/' || p.id || '.svg' ELSE '/icon.svg' END) AS image FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id IN ("+order_scope+") ORDER BY oi.rowid", args):
+                for item in rows(db, "SELECT oi.order_id,oi.product_id,oi.name,oi.quantity,oi.unit_price,oi.unit,oi.requested_amount,COALESCE(NULLIF(p.image,''),CASE WHEN p.catalog_preview=1 THEN '/product-illustration/' || p.id || '.svg' ELSE '/icon.svg' END) AS image FROM order_items oi LEFT JOIN products p ON p.id=oi.product_id WHERE oi.order_id IN ("+order_scope+") ORDER BY oi.rowid", args):
                     item_groups.setdefault(item.pop('order_id'), []).append(item)
                 for event in rows(db, "SELECT order_id,action,at FROM events WHERE order_id IN ("+order_scope+") ORDER BY id", args):
                     event_groups.setdefault(event.pop('order_id'), []).append(event)
@@ -1972,14 +1972,24 @@ class Handler(BaseHTTPRequestHandler):
                             qty = float(it["quantity"])
                             p = catalog_order_product(db, it["product_id"], qty)[0] if catalog_order else db.execute("SELECT * FROM products WHERE id=? AND active=1", (it["product_id"],)).fetchone()
                             if not p: raise ValueError('المنتج غير متاح')
-                            qty = order_quantity(p, qty)
+                            requested_amount = it.get('spend_amount')
+                            if requested_amount is not None:
+                                try: requested_amount = float(requested_amount)
+                                except (TypeError,ValueError): raise ValueError('مبلغ المنتج غير صحيح')
+                                if not math.isfinite(requested_amount) or requested_amount <= 0 or requested_amount > 10000000: raise ValueError('مبلغ المنتج غير صحيح')
+                                if not supports_price_selected_weight(p) or not sold_by_weight(p): raise ValueError('اختيار المبلغ متاح فقط للمنتجات المباعة بالوزن')
+                                unit_price = p["price"] / weight_basis(p)
+                                if unit_price <= 0: raise ValueError('سعر الكيلو غير متاح')
+                                qty = requested_amount / unit_price
+                            else:
+                                qty = order_quantity(p, qty)
                             stock_qty = qty / weight_basis(p) if sold_by_weight(p) else qty
-                            if any(existing['id'] == p['id'] for existing, _ in items): raise ValueError('منتج مكرر في السلة')
+                            if any(existing['id'] == p['id'] for existing, _, _ in items): raise ValueError('منتج مكرر في السلة')
                             if (not catalog_order and p['merchant_id']!=merchant['id']) or p["stock"] < stock_qty: raise ValueError("اختر منتجات من نفس المحل وبكمية متاحة")
-                            items.append((p, qty))
+                            items.append((p, qty, requested_amount))
                             medicine_review |= p['category']=='أدوية'
                             requires_prescription |= p['category']=='أدوية' or bool(p['requires_prescription'])
-                            subtotal += (p["price"] / weight_basis(p) if sold_by_weight(p) else p["price"]) * qty
+                            subtotal += requested_amount if requested_amount is not None else (p["price"] / weight_basis(p) if sold_by_weight(p) else p["price"]) * qty
                         if not items and not prescription_only: raise ValueError("السلة فارغة")
                     prescription=str(data.get('prescription',''))
                     if requires_prescription and not valid_image(prescription,2_500_000): raise ValueError('صورة الوصفة مطلوبة لهذا المنتج')
@@ -2024,9 +2034,9 @@ class Handler(BaseHTTPRequestHandler):
                     if parcel:
                         db.execute('UPDATE orders SET shipment_type=?,shipment_other=?,sender_name=?,sender_phone=?,recipient_name=?,recipient_phone=? WHERE id=?',tuple(parcel[key] for key in ('shipment_type','shipment_other','sender_name','sender_phone','recipient_name','recipient_phone'))+(oid,))
                     db.execute('UPDATE orders SET service_key=?,latitude=?,longitude=?,merchant_id=?,pickup_lat=?,pickup_lon=?,shop_anywhere=?,pickup=? WHERE id=?',(service_key,lat,lon,merchant['id'] if merchant else None,None if kind=='products' and shop_anywhere else merchant['lat'] if merchant else pickup_lat,None if kind=='products' and shop_anywhere else merchant['lon'] if merchant else pickup_lon,1 if kind=='products' and shop_anywhere else 0,'محل أو صيدلية مناسبة يختارها الطيار' if catalog_order else 'أي سوبر ماركت قريب يختاره الطيار' if kind=='products' and shop_anywhere else str(data.get('pickup','')),oid))
-                    for p, qty in items:
+                    for p, qty, requested_amount in items:
                         if catalog_order or not (kind=='products' and shop_anywhere): db.execute("UPDATE products SET stock=stock-? WHERE id=?", (qty / weight_basis(p) if sold_by_weight(p) else qty, p["id"]))
-                        db.execute("INSERT INTO order_items(order_id,product_id,name,quantity,unit_price,unit,stock_quantity) VALUES (?,?,?,?,?,?,?)", (oid, p["id"], p["name"], qty, p["price"] / weight_basis(p) if sold_by_weight(p) else p["price"], "كجم" if sold_by_weight(p) else "قطعة", 0 if kind=='products' and shop_anywhere and not catalog_order else qty / weight_basis(p) if sold_by_weight(p) else qty))
+                        db.execute("INSERT INTO order_items(order_id,product_id,name,quantity,unit_price,unit,stock_quantity,requested_amount) VALUES (?,?,?,?,?,?,?,?)", (oid, p["id"], p["name"], qty, p["price"] / weight_basis(p) if sold_by_weight(p) else p["price"], "كجم" if sold_by_weight(p) else "قطعة", 0 if kind=='products' and shop_anywhere and not catalog_order else qty / weight_basis(p) if sold_by_weight(p) else qty, requested_amount))
                     log(db, oid, "أنشأ العميل الطلب")
                     if status=='new' or (km_quote and kind=='delivery' and payment=='cash'): assign(db,oid)
                     return self.respond({"ok": True, "id": oid})
