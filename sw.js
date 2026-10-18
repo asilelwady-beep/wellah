@@ -1,4 +1,4 @@
-const SHELL='wallaha-shell-v70-soft-customer-confirmation';
+const SHELL='wallaha-shell-v71-compact-customer-home';
 const ASSETS=['/','/customer','/driver','/admin','/maps.js','/leaflet.js','/leaflet.css','/features.js','/icon.svg','/icon-192.png','/icon-512.png'];
 const PRODUCT_ASSET=/^\/(?:product-photo-[0-9]+\.jpg|product-illustration\/[0-9]+\.svg)$/;
 self.addEventListener('install',event=>{
@@ -32,6 +32,6 @@ self.addEventListener('fetch',event=>{
  event.waitUntil(update.then(()=>undefined));
  event.respondWith((async()=>{
   const cached=await caches.match(request,{ignoreSearch:true});
-  return /\.(?:js|css)$/.test(url.pathname)?(await update||cached||Response.error()):(cached||await update||Response.error());
+  return (request.mode==='navigate'||/\.(?:js|css)$/.test(url.pathname))?(await update||cached||Response.error()):(cached||await update||Response.error());
  })());
 });
