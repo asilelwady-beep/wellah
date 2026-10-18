@@ -39,6 +39,7 @@ public class MainActivity extends Activity {
     private static final int FILE_REQUEST = 42;
     private static final int CAMERA_REQUEST = 43;
     private static final int LOCATION_SETTINGS_REQUEST = 44;
+    private static final int NOTIFICATION_REQUEST = 45;
     private static final long BACK_PRESS_WINDOW_MS = 2000;
     private PermissionRequest cameraRequest;
     private WebView web;
@@ -47,6 +48,7 @@ public class MainActivity extends Activity {
     private String pendingDestination;
     private boolean appUpdated;
     private boolean gpsPromptShown;
+    private boolean notificationPermissionAsked;
     private ValueCallback<Uri[]> fileCallback;
     private GeolocationPermissions.Callback locationCallback;
     private String locationOrigin;
@@ -216,6 +218,10 @@ public class MainActivity extends Activity {
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grants) {
         super.onRequestPermissionsResult(requestCode, permissions, grants);
+        if (requestCode == NOTIFICATION_REQUEST) {
+            notificationPermissionAsked = true;
+            startPendingDriverService();
+        }
         if (requestCode == CAMERA_REQUEST && cameraRequest != null) {
             PermissionRequest pending = cameraRequest; cameraRequest = null;
             if (grants.length > 0 && grants[0] == PackageManager.PERMISSION_GRANTED) pending.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
@@ -288,9 +294,16 @@ public class MainActivity extends Activity {
     }
 
     private void startPendingDriverService() {
-        if (pendingDriverServiceIntent == null ||
-            (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
-             checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED)) return;
+        if (pendingDriverServiceIntent == null) return;
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
+            !notificationPermissionAsked) {
+            notificationPermissionAsked = true;
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_REQUEST);
+            return;
+        }
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(pendingDriverServiceIntent);
         else startService(pendingDriverServiceIntent);
     }
