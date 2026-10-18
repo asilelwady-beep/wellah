@@ -139,7 +139,7 @@ async function searchMapAddress(mode='destination'){
 window.searchCustomerMapAddress=()=>searchMapAddress('destination');
 window.searchPickupMapAddress=()=>searchMapAddress('pickup');
 
-function clearMaps(){closeExpandedMap();for(const map of mapViews){if(map._gpsWatch!=null)navigator.geolocation?.clearWatch(map._gpsWatch);map.remove()}mapViews=[]}
+function clearMaps(){closeExpandedMap();for(const map of mapViews){if(map._gpsWatch!=null)navigator.geolocation?.clearWatch(map._gpsWatch);map._driverRouteController?.abort();if(map._driverMoveFrame)cancelAnimationFrame(map._driverMoveFrame);map.remove()}mapViews=[]}
 function showMyLocationOnMap(id){
   const map=mapViews.find(m=>m.getContainer().id===id);
   if(!map||!navigator.geolocation){alert('GPS غير متاح على هذا الجهاز');return}
@@ -277,6 +277,7 @@ function requestDriverRoadRoute(map,origin,target){
   if(!origin||!target||target.lat==null||target.lon==null){
     map._driverRouteController?.abort();
     if(map._driverRouteLayer){map.removeLayer(map._driverRouteLayer);map._driverRouteLayer=null}
+    map._driverRouteDetails=null;
     map._driverRouteTargetKey='';
     map._driverRouteOrigin=null;
     return;
@@ -287,6 +288,7 @@ function requestDriverRoadRoute(map,origin,target){
   const changedTarget=map._driverRouteTargetKey!==targetKey;
   if(changedTarget){
     map._driverRouteController?.abort();
+    map._driverRouteBusy=false;map._driverRouteDetails=null;
     if(map._driverRouteLayer){map.removeLayer(map._driverRouteLayer);map._driverRouteLayer=null}
     map._driverRouteTargetKey=targetKey;
     map._driverRouteOrigin=null;
@@ -303,6 +305,7 @@ function requestDriverRoadRoute(map,origin,target){
   map._driverRouteBusy=true;
   const controller=new AbortController();
   map._driverRouteController=controller;
+  const routeTimer=setTimeout(()=>controller.abort(),10000);
   const coords=origin[1]+','+origin[0]+';'+destination[1]+','+destination[0];
   const url='https://router.project-osrm.org/route/v1/driving/'+coords+'?overview=full&geometries=geojson&steps=false&alternatives=false';
   fetch(url,{signal:controller.signal,mode:'cors',credentials:'omit'})
@@ -319,9 +322,11 @@ function requestDriverRoadRoute(map,origin,target){
       layer.addTo(map);
       if(map._driverRouteLayer)map.removeLayer(map._driverRouteLayer);
       map._driverRouteLayer=layer;
+      map._driverRouteDetails={duration:Number(data.routes[0].duration),at:Date.now(),targetKey};
+      map._onRouteDetails?.();
     })
-    .catch(error=>{if(error.name!=='AbortError')console.warn('تعذر تحديث مسار الطيار',error)})
-    .finally(()=>{if(map._driverRouteController===controller){map._driverRouteBusy=false;map._driverRouteController=null}});
+    .catch(error=>{if(map._driverRouteController===controller){map._driverRouteDetails=null;map._onRouteDetails?.()}if(error.name!=='AbortError')console.warn('تعذر تحديث مسار الطيار',error)})
+    .finally(()=>{clearTimeout(routeTimer);if(map._driverRouteController===controller){map._driverRouteBusy=false;map._driverRouteController=null}});
 }
 function moveDriverBike(map,position){
   if(!position||!position.every(Number.isFinite))return;
@@ -491,15 +496,8 @@ async function initMaps(){
         },()=>{const label=document.getElementById(kind==='products'?'selected-point':'selected-pickup');if(label)label.textContent='اسمح بالوصول إلى الموقع أو المس مكانك على الخريطة'}, {enableHighAccuracy:true,maximumAge:0,timeout:20000});
       }
     }
-    const o=state.orders.find(x=>x.id===trackingOrderId);
     const track=baseMap('tracking-map');
-    if(track&&o){
-      const positions=[];
-      if(o.pickup_lat!=null){point(track,o.pickup_lat,o.pickup_lon,'المحل: '+esc(o.merchant_name||o.pickup),'#2864c5');positions.push([o.pickup_lat,o.pickup_lon])}
-      if(o.latitude!=null){point(track,o.latitude,o.longitude,'عنوان الطلب: '+esc(o.address),'#e58029');positions.push([o.latitude,o.longitude])}
-      if(o.driver_lat!=null){point(track,o.driver_lat,o.driver_lon,'آخر موقع للمندوب · '+esc(o.driver_location_at||''));positions.push([o.driver_lat,o.driver_lon])}
-      showMapPoints(track,positions);
-    }
+    if(track)updateCustomerTrackingMap();
   }else if(tab==='admin'){
     initMerchantLocationMap();
     const map=baseMap('admin-map');
@@ -508,6 +506,36 @@ async function initMaps(){
     const map=baseMap('driver-map');
     if(map)updateDriverMap();
   }
+}
+
+function customerTrackingFresh(o){const at=Date.parse(o.driver_location_at||'');return Number.isFinite(at)&&Date.now()-at<120000&&Date.now()>=at-60000}
+function customerArrivalText(o,route){
+ if(!['assigned','ready','picked_up','on_way'].includes(o.status))return 'سيظهر تتبع الطيار بعد قبوله الطلب.';
+ if(o.driver_lat==null||o.driver_lon==null||!customerTrackingFresh(o))return 'بانتظار موقع حديث من الطيار. سنعرض حركته ووقت الوصول عند تحديث GPS.';
+ const pickup=['assigned','ready'].includes(o.status),target=tripRouteTarget(o),destination=pickup?'مكان الاستلام':'إليك';
+ if(!target||target.lat==null||target.lon==null)return pickup?'الطيار يجهّز طلبك؛ سيظهر وقت الوصول بعد تحديد نقطة الاستلام.':'الطيار في الطريق؛ وقت الوصول يحتاج نقطة تسليم دقيقة.';
+ const road=route&&Date.now()-route.at<90000&&Number.isFinite(route.duration)&&route.duration>=0;
+ let minutes;
+ if(road)minutes=Math.max(1,Math.ceil(route.duration/60));
+ else{const a=Number(o.driver_lat)*Math.PI/180,b=Number(target.lat)*Math.PI/180,da=b-a,dl=(Number(target.lon)-Number(o.driver_lon))*Math.PI/180,km=6371*2*Math.asin(Math.min(1,Math.sqrt(Math.sin(da/2)**2+Math.cos(a)*Math.cos(b)*Math.sin(dl/2)**2)));minutes=Math.max(1,Math.ceil(km*1.5/20*60))}
+ return (pickup?'الطيار متجه للاستلام':'الطيار في طريقه إليك')+' · الوصول '+destination+' خلال نحو '+minutes+' دقيقة'+(road?' حسب مسار الطريق.':' · تقدير مبدئي.')+' الوقت تقريبي ويتغير مع الحركة والزحام.';
+}
+function paintCustomerArrival(map){const o=state?.orders.find(o=>o.id===trackingOrderId),el=document.getElementById('tracking-arrival');if(o&&el)el.textContent=customerArrivalText(o,map?._driverRouteDetails)}
+function updateCustomerTrackingMap(){
+ const map=mapViews.find(m=>m.getContainer().id==='tracking-map'),o=state?.orders.find(o=>o.id===trackingOrderId);
+ if(!map||!o||tab!=='customer')return false;
+ if(!map._customerStops)map._customerStops=L.layerGroup().addTo(map);
+ const positions=[],stopsKey=JSON.stringify([o.id,o.pickup_lat,o.pickup_lon,o.latitude,o.longitude]);
+ if(map._customerStopsKey!==stopsKey){map._customerStops.clearLayers();map._customerStopsKey=stopsKey;for(const [lat,lon,label,color] of [[o.pickup_lat,o.pickup_lon,'مكان الاستلام','#2864c5'],[o.latitude,o.longitude,'عنوان التسليم','#e58029']])if(lat!=null&&lon!=null)point(map,lat,lon,label,color,map._customerStops)}
+ for(const [lat,lon] of [[o.pickup_lat,o.pickup_lon],[o.latitude,o.longitude]])if(lat!=null&&lon!=null)positions.push([Number(lat),Number(lon)]);
+ const fresh=customerTrackingFresh(o),driver=o.driver_lat!=null&&o.driver_lon!=null?[Number(o.driver_lat),Number(o.driver_lon)]:null;
+ if(driver&&driver.every(Number.isFinite)){moveDriverBike(map,driver);map._driverMarker.setOpacity(fresh?1:.45);map._driverMarker.setPopupContent(fresh?'موقع الطيار · يتحدث تلقائيًا':'آخر موقع للطيار · ننتظر تحديث GPS');positions.push(driver)}
+ else if(map._driverMarker){map.removeLayer(map._driverMarker);map._driverMarker=null}
+ map._onRouteDetails=()=>paintCustomerArrival(map);
+ const target=tripRouteTarget(o);requestDriverRoadRoute(map,fresh?driver:null,target);
+ const viewKey=o.id+':'+(['assigned','ready'].includes(o.status)?'pickup':'delivery')+':'+Boolean(driver);
+ if(map._customerViewKey!==viewKey){showMapPoints(map,positions);map._customerViewKey=viewKey}
+ paintCustomerArrival(map);return true;
 }
 
 function adminDriverMapCard(d){

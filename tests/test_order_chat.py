@@ -31,6 +31,13 @@ class ChatIntegrationTests(unittest.TestCase):
             ''')
             for uid in range(1, 5):
                 db.execute('INSERT INTO sessions VALUES(?,?,?)', (hashlib.sha256(('test-token-'+str(uid)).encode()).hexdigest(),uid,int(time.time())+3600))
+        with server.connect() as db:
+            for name in ('pickup_lat','pickup_lon','latitude','longitude'):
+                db.execute('ALTER TABLE orders ADD COLUMN '+name+' REAL')
+            for name in ('lat','lon'):
+                db.execute('ALTER TABLE drivers ADD COLUMN '+name+' REAL')
+            db.execute('ALTER TABLE drivers ADD COLUMN location_at TEXT')
+            db.execute("UPDATE drivers SET lat=29.8513,lon=31.2744,location_at=?", (server.now(),))
         class Handler(server.Handler):
             def log_message(self, *args): pass
         self.http = server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
@@ -79,3 +86,18 @@ class ChatIntegrationTests(unittest.TestCase):
     def test_completed_order_cannot_receive_new_messages(self):
         with server.connect() as db: db.execute("UPDATE orders SET status='delivered' WHERE id=61")
         self.assertEqual(self.post(2,{'order_id':61,'mode':'send','body':'late','request_id':'closed-order-request'})[0],400)
+
+    def test_tracking_only_discloses_location_to_order_customer_after_acceptance(self):
+        def get(uid):
+            req=Request('http://127.0.0.1:'+str(self.http.server_port)+'/api/order/tracking?order_id=61',headers={'Authorization':'Bearer test-token-'+str(uid)})
+            try:
+                with urlopen(req,timeout=5) as response: return response.status,json.load(response)
+            except HTTPError as error: return error.code,json.load(error)
+        code,result=get(1)
+        self.assertEqual(code,200)
+        self.assertEqual(result['order']['driver_lat'],29.8513)
+        self.assertEqual(get(3)[0],403)
+        self.assertEqual(get(2)[0],403)
+        for status in ['offered','delivered','cancelled']:
+            with server.connect() as db: db.execute('UPDATE orders SET status=? WHERE id=61',(status,))
+            self.assertIsNone(get(1)[1]['order']['driver_lat'])

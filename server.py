@@ -1179,6 +1179,19 @@ class Handler(BaseHTTPRequestHandler):
                 if not driver: return self.respond({"error":"حساب الطيار غير موجود"},404)
                 offers = rows(db,"SELECT id,offer_until FROM orders WHERE driver_id=? AND status='offered' AND offer_until>? ORDER BY id DESC LIMIT 20",(driver["id"],int(time.time())))
                 return self.respond({"offers":offers})
+        if path == '/api/order/tracking':
+            raw=parse_qs(urlparse(self.path).query).get('order_id',[''])[0]
+            if not raw.isdigit(): return self.respond({'error':'رقم الطلب غير صحيح'},400)
+            with connect() as db:
+                user=self.user(db)
+                if not user: return self.respond({'error':'سجل الدخول أولًا'},401)
+                order=db.execute("SELECT o.id,o.user_id,o.status,o.driver_id,o.pickup_lat,o.pickup_lon,o.latitude,o.longitude,d.lat AS driver_lat,d.lon AS driver_lon,d.location_at AS driver_location_at FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id WHERE o.id=?",(int(raw),)).fetchone()
+                if not order or user['role']!='customer' or order['user_id']!=user['id']:
+                    return self.respond({'error':'التتبع متاح لصاحب الطلب فقط'},403)
+                result=dict(order);result.pop('user_id')
+                if result['status'] not in ('assigned','ready','picked_up','on_way'):
+                    result['driver_lat']=result['driver_lon']=result['driver_location_at']=None
+                return self.respond({'order':result})
         if path != "/api/state":
             return self.respond({"error": "غير موجود"}, 404)
         with connect() as db:
