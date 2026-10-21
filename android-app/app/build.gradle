@@ -2,13 +2,13 @@ plugins { id 'com.android.application' }
 
 android {
     namespace 'com.wallah.app'
-    compileSdk 35
+    compileSdk 36
     defaultConfig {
         applicationId 'com.wallah.app'
         minSdk 24
-        targetSdk 35
-        versionCode 22
-        versionName '1.1.11'
+        targetSdk 36
+        versionCode 23
+        versionName '1.1.12'
     }
     flavorDimensions 'role'
     productFlavors {
