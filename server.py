@@ -1832,7 +1832,7 @@ class Handler(BaseHTTPRequestHandler):
                     fee=float(data.get('delivery_fee',current.get('delivery_fee','20')))
                     if not math.isfinite(fee) or fee<0: raise ValueError('رسوم التوصيل غير صحيحة')
                     policy_url=str(data.get('privacy_policy_url',current.get('privacy_policy_url',''))).strip()
-                    if len(policy_url)>2048 or (policy_url and (not re.match(r'^https://',policy_url,re.I) or re.search(r'[\\s<>"\']',policy_url))): raise ValueError('أدخل رابط سياسة خصوصية صحيح يبدأ بـ https://')
+                    if len(policy_url)>2048 or (policy_url and (not re.match(r'^https://',policy_url,re.I) or re.search(r'[\s<>"\']',policy_url))): raise ValueError('أدخل رابط سياسة خصوصية صحيح يبدأ بـ https://')
                     values=[('wallet',str(data.get('wallet',current.get('wallet',''))).strip()),('instapay',str(data.get('instapay',current.get('instapay',''))).strip()),('whatsapp',str(data.get('whatsapp',current.get('whatsapp',''))).strip()),('delivery_fee',str(fee)),('privacy_policy_url',policy_url)]
                     if any(len(v)>100 for k,v in values if k!='privacy_policy_url'): raise ValueError('رقم أو حساب التحويل طويل جدًا')
                     for k,v in values:
