@@ -1275,6 +1275,7 @@ class Handler(BaseHTTPRequestHandler):
             profile=db.execute('SELECT id,name,phone,photo,area,vehicle_type,available,break_until,lat,lon,location_at,identity_blocked_shift FROM drivers WHERE user_id=?',(user['id'],)).fetchone() if user['role']=='driver' else None
             wallets={str(d['id']):driver_wallet(db,d['id']) for d in db.execute('SELECT id FROM drivers')} if user['role']=='admin' and unlocked(self,db) else {}
             view={**feature_state(db,user),"draft_catalog":preview_catalog(db) if user['role'] in ('customer','admin') else [],"driver_profile":dict(profile) if profile else None,"wallet_unlocked":unlocked(self,db) if user['role']=='admin' else False,"driver_wallet":redact_wallet(driver_wallet(db,profile['id'])) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories WHERE deleted=0 ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products WHERE deleted=0 ORDER BY id DESC") if user['role']=='admin' else rows(db, "SELECT p.* FROM products p JOIN merchants m ON m.id=p.merchant_id JOIN categories c ON c.name=p.category WHERE p.deleted=0 AND p.active=1 AND p.stock>0 AND m.active=1 AND c.active=1 ORDER BY p.id DESC") if user['role']=='customer' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username,u.disabled,u.email FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}, "privacy_policy_url": (db.execute("SELECT value FROM settings WHERE key='privacy_policy_url'").fetchone() or [''])[0]}
+            view['archived_products']=rows(db,"SELECT p.id,p.name,p.category,p.price,p.stock FROM products p JOIN categories c ON c.name=p.category WHERE p.deleted=1 AND c.deleted=0 ORDER BY p.id DESC") if user['role']=='admin' and user['staff_permissions'] is None else []
             if user['staff_permissions'] is not None: staff_state(view,json.loads(user['staff_permissions']))
             else: view['staff_permissions']=None
             if user['role']=='admin' and user['staff_permissions'] is None: view['staff_members']=[dict(r) for r in db.execute("SELECT u.id,u.name,u.username,u.disabled,s.permissions FROM staff_members s JOIN users u ON u.id=s.user_id ORDER BY u.id DESC")]
@@ -1544,6 +1545,22 @@ class Handler(BaseHTTPRequestHandler):
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     cur=db.execute('UPDATE products SET active=0,catalog_preview=0 WHERE id=?',(int(data['id']),))
                     if not cur.rowcount: raise ValueError('المنتج غير موجود')
+                elif path in ('/api/product/archive','/api/product/restore'):
+                    if user['role']!='admin' or user['staff_permissions'] is not None:
+                        return self.respond({'error':'إدارة المنتجات للمسؤول الرئيسي فقط'},403)
+                    product_id=int(data.get('id') or 0)
+                    product=db.execute('SELECT id,name,category,deleted FROM products WHERE id=?',(product_id,)).fetchone()
+                    if not product: raise ValueError('المنتج غير موجود')
+                    if path.endswith('/archive'):
+                        if product['deleted']: raise ValueError('المنتج محذوف بالفعل')
+                        if data.get('confirm_name')!=product['name']: raise ValueError('اسم المنتج غير مطابق؛ حدّث الصفحة')
+                        db.execute('UPDATE products SET deleted=1,active=0,catalog_preview=0 WHERE id=?',(product_id,))
+                    else:
+                        if not product['deleted']: raise ValueError('المنتج موجود بالفعل')
+                        if not db.execute('SELECT 1 FROM categories WHERE name=? AND deleted=0',(product['category'],)).fetchone():
+                            raise ValueError('استرجع قسم المنتج أولًا')
+                        db.execute('UPDATE products SET deleted=0,active=0,catalog_preview=0 WHERE id=?',(product_id,))
+                    return self.respond({'ok':True,'id':product_id})
                 elif path == '/api/product/update':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     price,stock=float(data['price']),int(data['stock'])
