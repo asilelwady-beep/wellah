@@ -1279,6 +1279,12 @@ class Handler(BaseHTTPRequestHandler):
             if user['staff_permissions'] is not None: staff_state(view,json.loads(user['staff_permissions']))
             else: view['staff_permissions']=None
             if user['role']=='admin' and user['staff_permissions'] is None: view['staff_members']=[dict(r) for r in db.execute("SELECT u.id,u.name,u.username,u.disabled,s.permissions FROM staff_members s JOIN users u ON u.id=s.user_id ORDER BY u.id DESC")]
+            if user['role']=='admin' and user['staff_permissions'] is None:
+                view['customers']=[dict(r) for r in db.execute("""SELECT u.id,u.name,u.phone,u.email,u.disabled,COUNT(o.id) AS total_orders,
+                    SUM(CASE WHEN o.status='delivered' THEN 1 ELSE 0 END) AS completed_orders
+                    FROM users u LEFT JOIN orders o ON o.user_id=u.id WHERE u.role='customer'
+                    GROUP BY u.id ORDER BY u.id DESC""")]
+            else: view['customers']=[]
             self.respond(view)
 
     def do_POST(self):
@@ -1455,6 +1461,17 @@ class Handler(BaseHTTPRequestHandler):
                             did=db.execute('SELECT id FROM drivers WHERE user_id=?',(uid,)).fetchone()['id']
                             db.execute('INSERT INTO wallet_adjustments(driver_id,admin_id,amount_cents,reason,at,settled) VALUES (?,?,?,?,?,0)',(did,user['id'],cents,'بونص الطيار المميز',now()))
                     else: raise ValueError('الإجراء غير صحيح')
+                    return self.respond({'ok':True})
+                if path == '/api/admin/customer':
+                    if user['role']!='admin' or user['staff_permissions'] is not None:
+                        return self.respond({'error':'إدارة حسابات العملاء للمسؤول الرئيسي فقط'},403)
+                    uid=int(data.get('user_id',0))
+                    action=data.get('action')
+                    customer=db.execute("SELECT id FROM users WHERE id=? AND role='customer'",(uid,)).fetchone()
+                    if not customer: raise ValueError('حساب العميل غير موجود')
+                    if action not in ('disable','enable'): raise ValueError('الإجراء غير صحيح')
+                    db.execute('UPDATE users SET disabled=? WHERE id=?',(int(action=='disable'),uid))
+                    if action=='disable': db.execute('DELETE FROM sessions WHERE user_id=?',(uid,))
                     return self.respond({'ok':True})
                 if path == '/api/admin/chat/archive':
                     if user['role']!='admin': return self.respond({'error':'خاص بالمسؤول فقط'},403)
