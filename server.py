@@ -974,7 +974,7 @@ class Handler(BaseHTTPRequestHandler):
         header = self.headers.get('Authorization', '')
         if not header.startswith('Bearer '): return None
         digest = hashlib.sha256(header[7:].encode()).hexdigest()
-        user = db.execute('SELECT u.id,u.name,u.phone,u.role,u.username,u.email,sm.permissions AS staff_permissions FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN staff_members sm ON sm.user_id=u.id WHERE s.token_hash=? AND (s.expires>? OR (u.role IN ('customer','driver') AND s.expires=0)) AND u.disabled=0', (digest, int(time.time()))).fetchone()
+        user = db.execute("SELECT u.id,u.name,u.phone,u.role,u.username,u.email,sm.permissions AS staff_permissions FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN staff_members sm ON sm.user_id=u.id WHERE s.token_hash=? AND (s.expires>? OR (u.role IN ('customer','driver') AND s.expires=0)) AND u.disabled=0", (digest, int(time.time()))).fetchone()
         # The owner requested exclusive access to the admin dashboard. Existing staff
         # sessions remain stored but cannot read data or call any protected endpoint.
         if user and user['role'] == 'admin' and user['staff_permissions'] is not None:
