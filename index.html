@@ -1106,13 +1106,13 @@ const expectedAppRole=location.pathname.startsWith('/driver')?'driver':location.
 
 let cachedReadOnly=false,cachedCatalogActive=false,lastCustomerCatalogCacheWrite=0;
 const CUSTOMER_CATALOG_CACHE_KEY='wallaha_customer_catalog_v1';
-function fetchWithTimeout(url,options={},timeoutMs=12000){if(typeof AbortController==='undefined')return fetch(url,options);const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeoutMs);return fetch(url,{...options,signal:controller.signal}).finally(()=>clearTimeout(timer))}
+function fetchWithTimeout(url,options={},timeoutMs=12000){const controller=typeof AbortController!=='undefined'?new AbortController():null;let timer;const request=fetch(url,controller?{...options,signal:controller.signal}:options);const timeout=new Promise((resolve,reject)=>{timer=setTimeout(()=>{controller?.abort();const error=new Error('Request timed out');error.name='TimeoutError';reject(error)},timeoutMs)});return Promise.race([request,timeout]).finally(()=>clearTimeout(timer))}
 window.appFetchWithTimeout=fetchWithTimeout;
 function compactPublicProduct(p){return Object.fromEntries(['id','name','category','price','price_pending','price_basis_weight_kg','stock','active','merchant_id','catalog_preview','requires_prescription','image'].filter(k=>p[k]!==undefined).map(k=>[k,p[k]]))}
 function saveCustomerCatalogCache(source){if(Date.now()-lastCustomerCatalogCacheWrite<300000)return;try{const catalog={draft_catalog:(source.draft_catalog||[]).slice(0,300).map(compactPublicProduct),products:(source.products||[]).map(compactPublicProduct),categories:(source.categories||[]).map(c=>({id:c.id,name:c.name,active:c.active,sort_order:c.sort_order})),merchants:(source.merchants||[]).map(m=>({id:m.id,name:m.name,category:m.category,area:m.area,address:m.address,image:m.image,active:m.active,lat:m.lat,lon:m.lon})),services:(source.services||[]).map(x=>({key:x.key,name:x.name,active:x.active})),areas:source.areas||[],area_fees:source.area_fees||{}};localStorage.setItem(CUSTOMER_CATALOG_CACHE_KEY,JSON.stringify(catalog));lastCustomerCatalogCacheWrite=Date.now()}catch(e){}}
 function readCustomerCatalogCache(){try{const value=localStorage.getItem(CUSTOMER_CATALOG_CACHE_KEY);return value?JSON.parse(value):null}catch(e){return null}}
 function customerPreviewState(catalog){return {...catalog,products:Array.from(new Map([...(catalog.draft_catalog||[]),...(catalog.products||[])].map(p=>[p.id,p])).values()),user:{name:'عميل',phone:'',role:'customer'},orders:[],settings:{wallet:''}}}
-function showStartupLoading(message='جارٍ تجهيز التطبيق…'){const app=$('app');if(app)app.innerHTML=`<div class="connection-status" role="status">${esc(message)}</div><div class="card" aria-hidden="true" style="min-height:160px"><div class="muted">لحظة واحدة، بنجهز الأقسام والمحلات.</div></div>`}
+function showStartupLoading(message='جارٍ تجهيز التطبيق…'){const app=$('app');if(app)app.innerHTML=`<div class="connection-status" role="status" aria-live="polite">${esc(message)}</div><div class="card" style="min-height:160px"><div class="muted">لو التحميل اتأخر بسبب الشبكة، اضغط إعادة المحاولة.</div><button type="button" class="secondary" onclick="refresh(true)">إعادة المحاولة</button></div>`}
 let state,previewMode=false,offline=false,tab='customer',kind='products',prescriptionOnly=false,serviceKey='',merchantId=0,categoryFilter='الكل',productSearch='',orderFilter='الجارية',cart={},cartBudgets={},submitting=false,installPrompt=null,lastSeenRole='',lastSeenOrderId=null,requestId=sessionStorage.getItem('wallaha_request_id')||(crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random()),token=localStorage.getItem(appTokenKey)||localStorage.getItem('wallaha_token')||'';sessionStorage.setItem('wallaha_request_id',requestId);const $=id=>document.getElementById(id);const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const money=x=>Number(x||0).toLocaleString('ar-EG')+' ج';
 window.appConfirm=(message,options={})=>new Promise(resolve=>{
   window._wallahConfirmClose?.(false);
@@ -1229,7 +1229,7 @@ async function performRefresh(force=false){
     if(tab==='customer'&&previousState&&customerView==='orders'&&customerTrackingStateKey(previousState)===customerTrackingStateKey(state)&&updateCustomerTrackingMap())return;
     if(tab==='driver'&&previousState&&location.pathname==='/driver'&&driverRenderKey(previousState)===driverRenderKey(state)){if(driverGpsKey(previousState)!==driverGpsKey(state))updateDriverMap();return}
     render()
-  }catch(e){offline=true;render()}
+  }catch(e){offline=true;if(!state&&token){showStartupLoading('الشبكة بطيئة أو الاتصال لم يكتمل.');return}render()}
 }
 let driverAudio=null,driverSoundEnabled=false,driverSoundError='',driverOfferAccount=null;
 const heardDriverOffers=new Set();
