@@ -232,6 +232,9 @@ def init():
         CREATE TABLE IF NOT EXISTS driver_trip_points (driver_id INTEGER NOT NULL, order_id INTEGER NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, at TEXT NOT NULL, PRIMARY KEY(driver_id,order_id));
         CREATE TABLE IF NOT EXISTS driver_distance_daily (driver_id INTEGER NOT NULL, day TEXT NOT NULL, meters REAL NOT NULL DEFAULT 0, PRIMARY KEY(driver_id,day));
         """)
+        # Customer and driver sessions stay valid until explicit logout. This
+        # also migrates sessions created before persistent sessions were enabled.
+        db.execute("UPDATE sessions SET expires=0 WHERE user_id IN (SELECT id FROM users WHERE role IN ('customer','driver'))")
         # Revoke every pre-hardening admin session once, including sessions on
         # devices the owner no longer controls. The marker prevents logouts on restarts.
         session_lock_key = 'owner-only-session-reset-20261017-v1'
@@ -971,7 +974,7 @@ class Handler(BaseHTTPRequestHandler):
         header = self.headers.get('Authorization', '')
         if not header.startswith('Bearer '): return None
         digest = hashlib.sha256(header[7:].encode()).hexdigest()
-        user = db.execute('SELECT u.id,u.name,u.phone,u.role,u.username,u.email,sm.permissions AS staff_permissions FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN staff_members sm ON sm.user_id=u.id WHERE s.token_hash=? AND s.expires>? AND u.disabled=0', (digest, int(time.time()))).fetchone()
+        user = db.execute('SELECT u.id,u.name,u.phone,u.role,u.username,u.email,sm.permissions AS staff_permissions FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN staff_members sm ON sm.user_id=u.id WHERE s.token_hash=? AND (s.expires>? OR (u.role IN ('customer','driver') AND s.expires=0)) AND u.disabled=0', (digest, int(time.time()))).fetchone()
         # The owner requested exclusive access to the admin dashboard. Existing staff
         # sessions remain stored but cannot read data or call any protected endpoint.
         if user and user['role'] == 'admin' and user['staff_permissions'] is not None:
@@ -1347,7 +1350,7 @@ class Handler(BaseHTTPRequestHandler):
                         session_end=datetime.combine(local_now.date()+timedelta(days=1),datetime.min.time(),tzinfo=CAIRO)
                         expires=int(session_end.timestamp())
                     else:
-                        expires=int(time.time())+86400*7
+                        expires=0  # Customer and driver sessions end only on explicit logout.
                     db.execute('INSERT INTO sessions VALUES (?,?,?)',(hashlib.sha256(token.encode()).hexdigest(),u['id'],expires))
                     return self.respond({'token':token,'role':u['role']})
                 user=self.user(db)
