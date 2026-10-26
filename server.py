@@ -28,6 +28,7 @@ ROOT = Path(__file__).parent
 DB = Path(os.environ.get('WALLAHA_DB_PATH', str(ROOT / 'wallaha.sqlite3')))
 AREAS = ["مدينة البدرشين", "أبو رجوان البحري", "أبو رجوان القبلي", "أبو صير", "ميت رهينة", "سقارة", "دهشور", "زاوية دهشور", "الشوبك الغربي", "الطرفاية", "المرازيق", "الشنباب", "العزيزية"]
 CAIRO = ZoneInfo('Africa/Cairo')
+SESSION_NEVER_EXPIRES = 2**63 - 1
 GEOCODE_LOCK = Lock()
 GEOCODE_STATE = {'last': 0.0, 'cache': {}}
 ROAD_LOCK = Lock()
@@ -328,6 +329,7 @@ def init():
         for column in ('shipment_type','shipment_other','sender_name','sender_phone','recipient_name','recipient_phone'):
             if column not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
                 db.execute(f"ALTER TABLE orders ADD COLUMN {column} TEXT DEFAULT ''")
+        db.execute("UPDATE sessions SET expires=? WHERE user_id IN (SELECT id FROM users WHERE role IN ('customer','driver'))",(SESSION_NEVER_EXPIRES,))
         for column in ('latitude','longitude'):
             if column not in {x['name'] for x in db.execute('PRAGMA table_info(orders)')}:
                 db.execute(f'ALTER TABLE orders ADD COLUMN {column} REAL')
@@ -1347,7 +1349,7 @@ class Handler(BaseHTTPRequestHandler):
                         session_end=datetime.combine(local_now.date()+timedelta(days=1),datetime.min.time(),tzinfo=CAIRO)
                         expires=int(session_end.timestamp())
                     else:
-                        expires=int(time.time())+86400*7
+                        expires=SESSION_NEVER_EXPIRES
                     db.execute('INSERT INTO sessions VALUES (?,?,?)',(hashlib.sha256(token.encode()).hexdigest(),u['id'],expires))
                     return self.respond({'token':token,'role':u['role']})
                 user=self.user(db)
