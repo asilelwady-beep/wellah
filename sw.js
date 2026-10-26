@@ -1,4 +1,4 @@
-const SHELL='wallaha-shell-v75-feature-fix-20261026';
+const SHELL='wallaha-shell-v76-network-messaging-fix';
 const ASSETS=['/','/customer','/driver','/admin','/maps.js','/leaflet.js','/leaflet.css','/features.js','/icon.svg','/icon-192.png','/icon-512.png'];
 const PRODUCT_ASSET=/^\/(?:product-photo-[0-9]+\.jpg|product-illustration\/[0-9]+\.svg)$/;
 self.addEventListener('install',event=>{
