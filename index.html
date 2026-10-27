@@ -1387,38 +1387,6 @@ function customerOrders(){if(cachedReadOnly)return `<h2>طلباتك</h2><div cl
 
 function renderCustomer(){return `<div class="customer-app">${previewMode?'<div class="notice">تقدر تتصفح الأقسام والمحلات بدون حساب، وتسجيل الدخول مطلوب لإرسال الطلب.</div>':''}${customerView==='home'?customerHome():customerView==='store'?customerStore():customerView==='product'?customerProduct():customerView==='checkout'?customerCheckout():customerView==='account'?customerAccount():customerView==='restaurant'?`<button class="customer-back" onclick="returnCustomerHome('مطاعم')">→ رجوع للمطاعم</button><div class="store-heading"><span class="merchant-art">🍽️</span><h2>${esc(restaurantName)}</h2></div><div class="customer-empty">المنيو والأسعار لم تُضف لهذا المطعم بعد.</div>`:customerOrders()}${customerNav()}</div>`}
 async function fileData(id){let f=$(id)?.files?.[0]||checkoutFiles[id];if(!f)return '';return await new Promise((ok,fail)=>{let rd=new FileReader();rd.onload=()=>ok(rd.result);rd.onerror=fail;rd.readAsDataURL(f)})}
-function showDeliveryQuote(q,total){
-  return new Promise(resolve=>{
-    const previous=document.activeElement;
-    const backdrop=document.createElement('div');
-    backdrop.className='quote-backdrop';
-    backdrop.setAttribute('role','presentation');
-    const sheet=document.createElement('section');
-    sheet.className='quote-sheet';
-    sheet.setAttribute('role','dialog');
-    sheet.setAttribute('aria-modal','true');
-    sheet.setAttribute('aria-labelledby','quote-title');
-    const icon=document.createElement('div');icon.className='quote-icon';icon.textContent='🛵';
-    const title=document.createElement('h2');title.id='quote-title';title.textContent='مراجعة سعر التوصيل';
-    const hint=document.createElement('p');hint.className='quote-hint';hint.textContent='ده حسابك النهائي قبل تأكيد الطلب.';
-    const rows=document.createElement('div');rows.className='quote-rows';
-    for(const [label,value,extra] of [['توصيلك',money(q.fee),''],['حسابك الإجمالي',money(total),'quote-total']]){
-      const row=document.createElement('div');row.className='quote-row '+extra;
-      const name=document.createElement('span');name.textContent=label;
-      const amount=document.createElement('strong');amount.textContent=value;
-      row.append(name,amount);rows.append(row);
-    }
-    const actions=document.createElement('div');actions.className='quote-actions';
-    const cancel=document.createElement('button');cancel.type='button';cancel.className='quote-cancel';cancel.textContent='رجوع';
-    const accept=document.createElement('button');accept.type='button';accept.className='quote-accept';accept.textContent='تأكيد وإرسال الطلب';
-    actions.append(cancel,accept);sheet.append(icon,title,hint,rows,actions);backdrop.append(sheet);
-    const finish=answer=>{document.removeEventListener('keydown',onKey);backdrop.remove();previous?.focus?.();resolve(answer)};
-    const onKey=e=>{if(e.key==='Escape'){e.preventDefault();finish(false)}else if(e.key==='Tab'){const target=e.shiftKey?cancel:accept;if(document.activeElement===target){e.preventDefault();(e.shiftKey?accept:cancel).focus()}}};
-    cancel.addEventListener('click',()=>finish(false));accept.addEventListener('click',()=>finish(true));
-    backdrop.addEventListener('click',e=>{if(e.target===backdrop)finish(false)});
-    document.addEventListener('keydown',onKey);document.body.append(backdrop);cancel.focus();
-  });
-}
 async function placeOrder(){if(!previewMode&&kind==='products'&&cartNeedsPrescription()&&!$('prescription')?.files?.[0]&&!checkoutFiles.prescription){alert('ارفع صورة الروشتة قبل إرسال طلب الأدوية');return}if(previewMode)return leavePreview();if(submitting)return;submitting=true;unlockMessageAudio();try{await resolveOrderLocation();if(kind==='products'&&chosenPoint&&!$('address').value.trim())$('address').value='موقعي على الخريطة · '+$('area').value;if(kmPricing()){let q=await calculateDeliveryQuote();if(!q)throw Error('لم يكتمل حساب السعر. راجع نقطتي الاستلام والوصول وحاول مرة أخرى.')}rememberCustomerAddress();let v={client_request_id:requestId,kind,service_key:serviceKey,customer:$('customer').value.trim(),phone:$('phone').value.trim(),area:$('area').value,address:$('address').value.trim(),details:$('details').value,payment:$('payment').value,pickup:$('pickup')?.value||'',destination:kind==='delivery'?$('address').value.trim():$('destination')?.value||'',vehicle:$('vehicle')?.value||'',items:Object.entries(cart).filter(([,q])=>q>0).map(([id,quantity])=>({product_id:Number(id),quantity,...(Number(cartBudgets[id])>0?{spend_amount:Number(cartBudgets[id])}:{})})),proof:await fileData('proof'),prescription:await fileData('prescription'),reference:$('reference')?.value||'',merchant_id:merchantId,prescription_only:prescriptionOnly&&kind==='products',shop_anywhere:kind==='products'&&shopAnywhere,catalog_order:kind==='products'&&catalogOrder,shipment_type:shipmentType,shipment_other:$('shipment-other')?.value||'',sender_name:$('sender-name')?.value||'',sender_phone:$('sender-phone')?.value||'',recipient_name:$('recipient-name')?.value||'',recipient_phone:$('recipient-phone')?.value||'',address_mode:addressMode,latitude:chosenPoint?.latitude,longitude:chosenPoint?.longitude,pickup_lat:chosenPickup?.lat,pickup_lon:chosenPickup?.lon};if(kmPricing())v.delivery_quote=deliveryQuote.quote_token;let out=await api('order',v);cart={};cartBudgets={};prescriptionOnly=false;checkoutDraft={};checkoutFiles={};chosenPoint=null;chosenPickup=null;customerView='orders';customerOrderTab='active';trackingOrderId=out.id;requestId=crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random();sessionStorage.setItem('wallaha_request_id',requestId);render();checkoutDraft={};checkoutFiles={};playOrderConfirmationTone(out.id);alert('تم تسجيل الطلب رقم '+out.id+'. تقدر تتابعه من طلباتي.');refresh(true).catch(()=>{})}catch(e){alert(e.message)}finally{submitting=false}}
 function canCancel(o){return ['awaiting_quote','quote_pending','medicine_review','payment_review','new','awaiting_driver','offered','assigned'].includes(o.status)&&!(o.payment==='wallet'&&(o.payment_status==='confirmed'||o.has_proof))}
 function selectTracking(id){trackingOrderId=id;customerView='orders';render();document.getElementById('tracking-map')?.scrollIntoView({behavior:'smooth',block:'center'})}
