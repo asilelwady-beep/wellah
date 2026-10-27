@@ -1542,14 +1542,16 @@ class Handler(BaseHTTPRequestHandler):
                         if scope not in ('shipping','order') or frequency not in ('recurring','once'): raise ValueError('اختر نوع الخصم وموعد تطبيقه')
                         amount=Decimal(str(data.get('amount','')))
                         maximum=Decimal('10000')
-                        minimum=Decimal('0') if frequency=='recurring' else Decimal('0.01')
-                        if not amount.is_finite() or not minimum<=amount<=maximum: raise ValueError('اكتب خصمًا من ٠ إلى ١٠٠٠٠ جنيه')
+                        if not amount.is_finite() or not Decimal('0')<=amount<=maximum: raise ValueError('اكتب خصمًا من ٠ إلى ١٠٠٠٠ جنيه')
                         cents=int((amount*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
                         if frequency=='recurring':
                             column='shipping_discount_cents' if scope=='shipping' else 'order_discount_cents'
                             db.execute('UPDATE users SET '+column+'=? WHERE id=?',(cents,uid))
                         else:
                             kind='customer_shipping' if scope=='shipping' else 'customer_order'
+                            if cents==0:
+                                db.execute('DELETE FROM featured_rewards WHERE user_id=? AND kind=? AND used_order_id IS NULL',(uid,kind))
+                                return self.respond({'ok':True})
                             pending=db.execute('SELECT id FROM featured_rewards WHERE user_id=? AND kind=? AND used_order_id IS NULL ORDER BY id LIMIT 1',(uid,kind)).fetchone()
                             if pending: db.execute('UPDATE featured_rewards SET amount_cents=? WHERE id=?',(cents,pending['id']))
                             else: db.execute('INSERT INTO featured_rewards(user_id,kind,amount_cents,created_at) VALUES (?,?,?,?)',(uid,kind,cents,now()))
