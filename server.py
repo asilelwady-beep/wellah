@@ -301,8 +301,12 @@ def init():
         db.execute('CREATE INDEX IF NOT EXISTS events_order_lookup ON events(order_id,id)')
         if 'featured' not in {r['name'] for r in db.execute('PRAGMA table_info(drivers)')}:
             db.execute('ALTER TABLE drivers ADD COLUMN featured INTEGER NOT NULL DEFAULT 0')
-        if 'featured' not in {r['name'] for r in db.execute('PRAGMA table_info(users)')}:
+        user_columns={r['name'] for r in db.execute('PRAGMA table_info(users)')}
+        if 'featured' not in user_columns:
             db.execute('ALTER TABLE users ADD COLUMN featured INTEGER NOT NULL DEFAULT 0')
+        for column in ('shipping_discount_cents','order_discount_cents'):
+            if column not in user_columns:
+                db.execute('ALTER TABLE users ADD COLUMN '+column+' INTEGER NOT NULL DEFAULT 0')
         if 'discount_cents' not in {r['name'] for r in db.execute('PRAGMA table_info(orders)')}:
             db.execute('ALTER TABLE orders ADD COLUMN discount_cents INTEGER NOT NULL DEFAULT 0')
         db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('featured_min_order','35')")
@@ -700,6 +704,16 @@ def normalize_contact_phone(value, contact=''):
     return number
 
 
+def customer_discount_terms(db,user_id):
+    user=db.execute("SELECT COALESCE(shipping_discount_cents,0) AS shipping_recurring,COALESCE(order_discount_cents,0) AS order_recurring FROM users WHERE id=? AND role='customer'",(user_id,)).fetchone()
+    if not user: return {'shipping_recurring':0,'order_recurring':0,'shipping_reward_id':None,'shipping_reward_cents':0,'order_reward_id':None,'order_reward_cents':0}
+    shipping=db.execute("SELECT id,amount_cents FROM featured_rewards WHERE user_id=? AND kind='customer_shipping' AND used_order_id IS NULL ORDER BY id LIMIT 1",(user_id,)).fetchone()
+    order=db.execute("SELECT id,amount_cents FROM featured_rewards WHERE user_id=? AND kind='customer_order' AND used_order_id IS NULL ORDER BY id LIMIT 1",(user_id,)).fetchone()
+    return {'shipping_recurring':int(user['shipping_recurring'] or 0),'order_recurring':int(user['order_recurring'] or 0),
+            'shipping_reward_id':shipping['id'] if shipping else None,'shipping_reward_cents':int(shipping['amount_cents']) if shipping else 0,
+            'order_reward_id':order['id'] if order else None,'order_reward_cents':int(order['amount_cents']) if order else 0}
+
+
 def quote_delivery(db,user_id,data):
     kind=data.get('kind')
     vehicle=str(data.get('vehicle',''))
@@ -722,8 +736,13 @@ def quote_delivery(db,user_id,data):
         extra=Decimal(prices['delivery_extra_rate'])
     points=delivery_points(db,data)
     km=road_km(points)
-    fee=float(calculate_distance_fee(km,base_km,base,extra))
-    payload={'user_id':user_id,'kind':kind,'points':points,'km':km,'rate':float(extra),'base_km':float(base_km),'base_fee':float(base),'fee':fee,'expires':int(time.time())+600}
+    original_fee=float(calculate_distance_fee(km,base_km,base,extra))
+    original_fee_cents=int((Decimal(str(original_fee))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+    terms=customer_discount_terms(db,user_id)
+    shipping_discount_cents=min(original_fee_cents,terms['shipping_reward_cents']+terms['shipping_recurring'])
+    fee=max(0,original_fee_cents-shipping_discount_cents)/100
+    order_discount_cents=terms['order_reward_cents']+terms['order_recurring']
+    payload={'user_id':user_id,'kind':kind,'points':points,'km':km,'rate':float(extra),'base_km':float(base_km),'base_fee':float(base),'original_fee':original_fee,'fee':fee,'customer_shipping_discount_cents':shipping_discount_cents,'customer_order_discount_cents':order_discount_cents,'customer_shipping_reward_id':terms['shipping_reward_id'],'customer_order_reward_id':terms['order_reward_id'],'customer_shipping_recurring_cents':terms['shipping_recurring'],'customer_order_recurring_cents':terms['order_recurring'],'expires':int(time.time())+600}
     if kind=='ride': payload['vehicle']=vehicle
     body=base64.urlsafe_b64encode(json.dumps(payload,separators=(',',':')).encode()).decode()
     secret=db.execute("SELECT value FROM settings WHERE key='quote_secret'").fetchone()[0]
@@ -737,7 +756,11 @@ def verify_delivery_quote(db,user_id,data):
         secret=db.execute("SELECT value FROM settings WHERE key='quote_secret'").fetchone()[0]
         if not hmac.compare_digest(signature,hmac.new(secret.encode(),body.encode(),hashlib.sha256).hexdigest()): raise ValueError()
         q=json.loads(base64.urlsafe_b64decode(body))
+        terms=customer_discount_terms(db,user_id)
+        original_cents=int((Decimal(str(q.get('original_fee',0)))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+        expected_shipping=min(original_cents,terms['shipping_reward_cents']+terms['shipping_recurring'])
         if q['user_id']!=user_id or q['kind']!=data['kind'] or q['expires']<int(time.time()) or q['points']!=delivery_points(db,data) or (q['kind']=='ride' and q.get('vehicle')!=data.get('vehicle')): raise ValueError()
+        if q.get('customer_shipping_reward_id')!=terms['shipping_reward_id'] or q.get('customer_order_reward_id')!=terms['order_reward_id'] or q.get('customer_shipping_recurring_cents')!=terms['shipping_recurring'] or q.get('customer_order_recurring_cents')!=terms['order_recurring'] or q.get('customer_shipping_discount_cents')!=expected_shipping or q.get('customer_order_discount_cents')!=terms['order_reward_cents']+terms['order_recurring']: raise ValueError()
         return q
     except (ValueError,KeyError,TypeError):
         raise ValueError('احسب رسوم التوصيل مجددًا بعد تحديد الموقع؛ عرض السعر غير صالح أو انتهت صلاحيته')
@@ -991,7 +1014,14 @@ class Handler(BaseHTTPRequestHandler):
         header = self.headers.get('Authorization', '')
         if not header.startswith('Bearer '): return None
         digest = hashlib.sha256(header[7:].encode()).hexdigest()
-        user = db.execute("SELECT u.id,u.name,u.phone,u.role,u.username,u.email,sm.permissions AS staff_permissions FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN staff_members sm ON sm.user_id=u.id WHERE s.token_hash=? AND (s.expires>? OR (u.role IN ('customer','driver') AND s.expires=0)) AND u.disabled=0", (digest, int(time.time()))).fetchone()
+        user = db.execute("""SELECT u.id,u.name,u.phone,u.role,u.username,u.email,
+            COALESCE(u.shipping_discount_cents,0) AS shipping_discount_cents,
+            COALESCE(u.order_discount_cents,0) AS order_discount_cents,
+            COALESCE((SELECT amount_cents FROM featured_rewards fr WHERE fr.user_id=u.id AND fr.kind='customer_shipping' AND fr.used_order_id IS NULL ORDER BY fr.id LIMIT 1),0) AS next_shipping_discount_cents,
+            COALESCE((SELECT amount_cents FROM featured_rewards fr WHERE fr.user_id=u.id AND fr.kind='customer_order' AND fr.used_order_id IS NULL ORDER BY fr.id LIMIT 1),0) AS next_order_discount_cents,
+            sm.permissions AS staff_permissions
+            FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN staff_members sm ON sm.user_id=u.id
+            WHERE s.token_hash=? AND (s.expires>? OR (u.role IN ('customer','driver') AND s.expires=0)) AND u.disabled=0""", (digest, int(time.time()))).fetchone()
         # The owner requested exclusive access to the admin dashboard. Existing staff
         # sessions remain stored but cannot read data or call any protected endpoint.
         if user and user['role'] == 'admin' and user['staff_permissions'] is not None:
@@ -1308,7 +1338,12 @@ class Handler(BaseHTTPRequestHandler):
             else: view['staff_permissions']=None
             if user['role']=='admin' and user['staff_permissions'] is None: view['staff_members']=[dict(r) for r in db.execute("SELECT u.id,u.name,u.username,u.disabled,s.permissions FROM staff_members s JOIN users u ON u.id=s.user_id ORDER BY u.id DESC")]
             if user['role']=='admin' and user['staff_permissions'] is None:
-                view['customers']=[dict(r) for r in db.execute("""SELECT u.id,u.name,u.phone,u.email,u.disabled,COUNT(o.id) AS total_orders,
+                view['customers']=[dict(r) for r in db.execute("""SELECT u.id,u.name,u.phone,u.email,u.disabled,
+                    COALESCE(u.shipping_discount_cents,0) AS shipping_discount_cents,
+                    COALESCE(u.order_discount_cents,0) AS order_discount_cents,
+                    COALESCE((SELECT amount_cents FROM featured_rewards fr WHERE fr.user_id=u.id AND fr.kind='customer_shipping' AND fr.used_order_id IS NULL ORDER BY fr.id LIMIT 1),0) AS next_shipping_discount_cents,
+                    COALESCE((SELECT amount_cents FROM featured_rewards fr WHERE fr.user_id=u.id AND fr.kind='customer_order' AND fr.used_order_id IS NULL ORDER BY fr.id LIMIT 1),0) AS next_order_discount_cents,
+                    COUNT(o.id) AS total_orders,
                     SUM(CASE WHEN o.status='delivered' THEN 1 ELSE 0 END) AS completed_orders
                     FROM users u LEFT JOIN orders o ON o.user_id=u.id WHERE u.role='customer'
                     GROUP BY u.id ORDER BY u.id DESC""")]
@@ -1497,10 +1532,27 @@ class Handler(BaseHTTPRequestHandler):
                     action=data.get('action')
                     customer=db.execute("SELECT id FROM users WHERE id=? AND role='customer'",(uid,)).fetchone()
                     if not customer: raise ValueError('حساب العميل غير موجود')
-                    if action not in ('disable','enable'): raise ValueError('الإجراء غير صحيح')
-                    db.execute('UPDATE users SET disabled=? WHERE id=?',(int(action=='disable'),uid))
-                    if action=='disable': db.execute('DELETE FROM sessions WHERE user_id=?',(uid,))
-                    return self.respond({'ok':True})
+                    if action in ('disable','enable'):
+                        db.execute('UPDATE users SET disabled=? WHERE id=?',(int(action=='disable'),uid))
+                        if action=='disable': db.execute('DELETE FROM sessions WHERE user_id=?',(uid,))
+                        return self.respond({'ok':True})
+                    if action=='discount':
+                        scope=str(data.get('scope',''))
+                        frequency=str(data.get('frequency',''))
+                        if scope not in ('shipping','order') or frequency not in ('recurring','once'): raise ValueError('اختر نوع الخصم وموعد تطبيقه')
+                        amount=Decimal(str(data.get('amount','')))
+                        maximum=Decimal('10000')
+                        minimum=Decimal('0') if frequency=='recurring' else Decimal('0.01')
+                        if not amount.is_finite() or not minimum<=amount<=maximum: raise ValueError('اكتب خصمًا من ٠ إلى ١٠٠٠٠ جنيه')
+                        cents=int((amount*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+                        if frequency=='recurring':
+                            column='shipping_discount_cents' if scope=='shipping' else 'order_discount_cents'
+                            db.execute('UPDATE users SET '+column+'=? WHERE id=?',(cents,uid))
+                        else:
+                            kind='customer_shipping' if scope=='shipping' else 'customer_order'
+                            db.execute('INSERT INTO featured_rewards(user_id,kind,amount_cents,created_at) VALUES (?,?,?,?)',(uid,kind,cents,now()))
+                        return self.respond({'ok':True})
+                    raise ValueError('الإجراء غير صحيح')
                 if path == '/api/admin/chat/archive':
                     if user['role']!='admin': return self.respond({'error':'خاص بالمسؤول فقط'},403)
                     oid=int(data.get('order_id',0))
@@ -2085,17 +2137,45 @@ class Handler(BaseHTTPRequestHandler):
                     if (delivery_priced and not prescription_only and kind in ('products','delivery') and not (kind=='products' and shop_anywhere)) or (kind=='ride' and ride_priced):
                         km_quote=verify_delivery_quote(db,user['id'],data)
                         fee=km_quote['fee']
+                    customer_terms=customer_discount_terms(db,user['id'])
+                    if km_quote:
+                        shipping_discount_cents=int(km_quote['customer_shipping_discount_cents'])
+                        order_discount_cents=int(km_quote['customer_order_discount_cents'])
+                        shipping_reward_id=km_quote.get('customer_shipping_reward_id')
+                        order_reward_id=km_quote.get('customer_order_reward_id')
+                        original_fee_cents=int((Decimal(str(km_quote['original_fee']))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+                        shipping_reward_used=min(original_fee_cents,customer_terms['shipping_reward_cents'])
+                    else:
+                        original_fee_cents=int((Decimal(str(fee))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+                        shipping_reward_id=customer_terms['shipping_reward_id']
+                        order_reward_id=customer_terms['order_reward_id']
+                        shipping_reward_used=min(original_fee_cents,customer_terms['shipping_reward_cents'])
+                        shipping_discount_cents=min(original_fee_cents,customer_terms['shipping_reward_cents']+customer_terms['shipping_recurring'])
+                        order_discount_cents=customer_terms['order_reward_cents']+customer_terms['order_recurring']
+                        fee=max(0,original_fee_cents-shipping_discount_cents)/100
                     ps = "confirmed" if payment == "cash" else "pending"
                     status = "awaiting_quote" if kind != "products" else ("medicine_review" if medicine_review else ("new" if payment == "cash" else "payment_review"))
                     cur = db.execute("INSERT INTO orders(user_id,client_request_id,kind,customer,phone,area,address,details,vehicle,pickup,destination,payment,proof,reference,prescription,medicine_review,payment_status,status,total,delivery_fee,quote_accepted,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (user['id'],request_id,kind, customer, phone, data["area"], address, str(data.get("details", "")), str(data.get("vehicle", "")), str(data.get("pickup", "")), str(data.get("destination", "")), payment, proof, str(data.get("reference", "")), prescription,1 if medicine_review else 0, ps, status, subtotal+fee, fee,1 if kind=='products' else 0, now()))
                     oid = cur.lastrowid
-                    if kind=='products' and payment=='cash' and not medicine_review and not prescription_only:
-                        reward=db.execute("SELECT id,amount_cents FROM featured_rewards WHERE user_id=? AND kind='discount' AND used_order_id IS NULL ORDER BY id LIMIT 1",(user['id'],)).fetchone()
-                        if reward:
-                            cents=min(reward['amount_cents'],int((Decimal(str(subtotal+fee))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP)))
-                            db.execute('UPDATE orders SET total=total-?,discount_cents=? WHERE id=?',(cents/100,cents,oid))
-                            db.execute('UPDATE featured_rewards SET used_order_id=? WHERE id=?',(oid,reward['id']))
-                            log(db,oid,f'خصم مميز بقيمة {cents/100:.2f} جنيه')
+                    if not prescription_only:
+                        total_cents=int((Decimal(str(subtotal+fee))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+                        applied_order_discount=min(order_discount_cents,total_cents)
+                        total_cents-=applied_order_discount
+                        if order_reward_id and min(customer_terms['order_reward_cents'],int((Decimal(str(subtotal+fee))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP)))>0:
+                            db.execute('UPDATE featured_rewards SET used_order_id=? WHERE id=?',(oid,order_reward_id))
+                        legacy_discount=0
+                        if kind=='products' and payment=='cash' and not medicine_review:
+                            reward=db.execute("SELECT id,amount_cents FROM featured_rewards WHERE user_id=? AND kind='discount' AND used_order_id IS NULL ORDER BY id LIMIT 1",(user['id'],)).fetchone()
+                            if reward:
+                                legacy_discount=min(reward['amount_cents'],total_cents)
+                                total_cents-=legacy_discount
+                                db.execute('UPDATE featured_rewards SET used_order_id=? WHERE id=?',(oid,reward['id']))
+                        if shipping_reward_id and shipping_reward_used>0:
+                            db.execute('UPDATE featured_rewards SET used_order_id=? WHERE id=?',(oid,shipping_reward_id))
+                        applied_discount=shipping_discount_cents+applied_order_discount+legacy_discount
+                        if applied_discount:
+                            db.execute('UPDATE orders SET total=?,discount_cents=? WHERE id=?',(total_cents/100,applied_discount,oid))
+                            log(db,oid,f'خصم عميل مميز بقيمة {applied_discount/100:.2f} جنيه')
                     if prescription_only: db.execute('UPDATE orders SET prescription_only=1,total=0,delivery_fee=0,quote_accepted=0 WHERE id=?',(oid,))
                     if km_quote:
                         db.execute('UPDATE orders SET route_km=?,km_rate=?,km_base_km=?,km_base_fee=? WHERE id=?',(km_quote['km'],km_quote['rate'],km_quote['base_km'],km_quote['base_fee'],oid))
