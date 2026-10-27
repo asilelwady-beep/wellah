@@ -1172,9 +1172,13 @@ class Handler(BaseHTTPRequestHandler):
                 })
         if path in ('/', '/customer', '/driver', '/driver/settings', '/admin'):
             data = (ROOT / "index.html").read_bytes()
+            compressed = len(data)>2048 and 'gzip' in self.headers.get('Accept-Encoding','').lower()
+            if compressed: data=gzip.compress(data,compresslevel=5)
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Vary", "Accept-Encoding")
+            if compressed: self.send_header("Content-Encoding", "gzip")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -1220,7 +1224,11 @@ class Handler(BaseHTTPRequestHandler):
         if path in ('/icon-192.png','/icon-512.png','/sw.js','/maps.js','/features.js','/leaflet.js','/leaflet.css'):
             data=(ROOT/path[1:]).read_bytes()
             mime='text/css' if path=='/leaflet.css' else 'application/javascript' if path in ('/sw.js','/maps.js','/features.js','/leaflet.js') else 'image/png'
-            self.send_response(200);self.send_header('Content-Type',mime);self.send_header('Cache-Control','no-cache' if path in ('/sw.js','/maps.js','/features.js') else 'public, max-age=86400');self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
+            compressed = mime!='image/png' and len(data)>2048 and 'gzip' in self.headers.get('Accept-Encoding','').lower()
+            if compressed: data=gzip.compress(data,compresslevel=5)
+            self.send_response(200);self.send_header('Content-Type',mime);self.send_header('Cache-Control','no-cache' if path in ('/sw.js','/maps.js','/features.js') else 'public, max-age=86400');self.send_header('Vary','Accept-Encoding')
+            if compressed: self.send_header('Content-Encoding','gzip')
+            self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
             return
         if path == "/api/driver/offers":
             with connect() as db:
