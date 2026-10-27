@@ -1550,7 +1550,9 @@ class Handler(BaseHTTPRequestHandler):
                             db.execute('UPDATE users SET '+column+'=? WHERE id=?',(cents,uid))
                         else:
                             kind='customer_shipping' if scope=='shipping' else 'customer_order'
-                            db.execute('INSERT INTO featured_rewards(user_id,kind,amount_cents,created_at) VALUES (?,?,?,?)',(uid,kind,cents,now()))
+                            pending=db.execute('SELECT id FROM featured_rewards WHERE user_id=? AND kind=? AND used_order_id IS NULL ORDER BY id LIMIT 1',(uid,kind)).fetchone()
+                            if pending: db.execute('UPDATE featured_rewards SET amount_cents=? WHERE id=?',(cents,pending['id']))
+                            else: db.execute('INSERT INTO featured_rewards(user_id,kind,amount_cents,created_at) VALUES (?,?,?,?)',(uid,kind,cents,now()))
                         return self.respond({'ok':True})
                     raise ValueError('الإجراء غير صحيح')
                 if path == '/api/admin/chat/archive':
