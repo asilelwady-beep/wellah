@@ -1036,6 +1036,8 @@ class Handler(BaseHTTPRequestHandler):
             COALESCE(u.order_discount_cents,0) AS order_discount_cents,
             COALESCE((SELECT amount_cents FROM featured_rewards fr WHERE fr.user_id=u.id AND fr.kind='customer_shipping' AND fr.used_order_id IS NULL ORDER BY fr.id LIMIT 1),0) AS next_shipping_discount_cents,
             COALESCE((SELECT amount_cents FROM featured_rewards fr WHERE fr.user_id=u.id AND fr.kind='customer_order' AND fr.used_order_id IS NULL ORDER BY fr.id LIMIT 1),0) AS next_order_discount_cents,
+            (SELECT id FROM featured_rewards fr WHERE fr.user_id=u.id AND fr.kind='customer_shipping' AND fr.used_order_id IS NULL ORDER BY fr.id LIMIT 1) AS next_shipping_discount_id,
+            (SELECT id FROM featured_rewards fr WHERE fr.user_id=u.id AND fr.kind='customer_order' AND fr.used_order_id IS NULL ORDER BY fr.id LIMIT 1) AS next_order_discount_id,
             sm.permissions AS staff_permissions
             FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN staff_members sm ON sm.user_id=u.id
             WHERE s.token_hash=? AND (s.expires>? OR (u.role IN ('customer','driver') AND s.expires=0)) AND u.disabled=0""", (digest, int(time.time()))).fetchone()
