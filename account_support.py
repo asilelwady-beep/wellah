@@ -101,13 +101,14 @@ def send_code(email, code):
 def normalized_mobile(value):
     value=str(value).strip().translate(str.maketrans('٠١٢٣٤٥٦٧٨٩','0123456789'))
     value=re.sub(r'[\s()-]', '', value)
+    if value.startswith('*0020'): value=value[1:]
+    elif value.startswith('*20'): value='0'+value[3:]
     if value.startswith('0020'): value='0'+value[4:]
     elif value.startswith('+20'): value='0'+value[3:]
     elif value.startswith('20') and len(value)==12: value='0'+value[2:]
     if not re.fullmatch(r'01[0125][0-9]{8}',value):
         raise ValueError('اكتب رقم موبايل مصري صحيح من 11 رقمًا')
     return value
-
 
 def normalize_recovery_answer(value):
     answer=' '.join(str(value or '').strip().casefold().split())
