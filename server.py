@@ -685,23 +685,19 @@ def calculate_distance_fee(km, base_km, base_fee, extra_rate):
 
 
 def normalize_contact_phone(value, contact=''):
-    # Arabic WebViews can wrap an otherwise valid number in invisible bidi marks.
-    digits=str.maketrans('٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹','01234567890123456789')
-    value=str(value or '').translate(digits)
-    value=''.join(char for char in value if not unicodedata.category(char).startswith('C'))
-    value=re.sub(r'[\s().-]', '', value)
-    if value.startswith('*'):
-        value=value[1:]
-    if value.startswith('0020'):
-        value='0'+value[4:]
-    elif value.startswith('+20'):
-        value='0'+value[3:]
-    elif value.startswith('20') and len(value)==12:
-        value='0'+value[2:]
-    if not re.fullmatch(r'[+0-9]{7,25}',value):
+    # Arabic WebViews can include invisible bidi marks or localized formatting around phone digits.
+    digits_map=str.maketrans('٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹','01234567890123456789')
+    raw=str(value or '').translate(digits_map)
+    raw=''.join(char for char in raw if not unicodedata.category(char).startswith('C'))
+    number=''.join(char for char in raw if char.isdigit())
+    if number.startswith('0020'):
+        number='0'+number[4:]
+    elif number.startswith('20') and len(number)==12:
+        number='0'+number[2:]
+    if not 7 <= len(number) <= 25:
         message=f'رقم تليفون {contact} غير صحيح' if contact else 'اكتب رقم تليفون صحيح للمرسل والمستلم'
         raise ValueError(message)
-    return value
+    return number
 
 
 def quote_delivery(db,user_id,data):
