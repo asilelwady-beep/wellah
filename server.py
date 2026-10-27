@@ -307,6 +307,8 @@ def init():
         for column in ('shipping_discount_cents','order_discount_cents'):
             if column not in user_columns:
                 db.execute('ALTER TABLE users ADD COLUMN '+column+' INTEGER NOT NULL DEFAULT 0')
+        if 'customer_tier_last_reward_orders' not in user_columns:
+            db.execute('ALTER TABLE users ADD COLUMN customer_tier_last_reward_orders INTEGER NOT NULL DEFAULT 0')
         if 'discount_cents' not in {r['name'] for r in db.execute('PRAGMA table_info(orders)')}:
             db.execute('ALTER TABLE orders ADD COLUMN discount_cents INTEGER NOT NULL DEFAULT 0')
         db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('featured_min_order','35'),('customer_tier_threshold','0'),('customer_tier_percent','0'),('customer_tier_scope','shipping')")
@@ -705,8 +707,8 @@ def normalize_contact_phone(value, contact=''):
 
 
 def customer_discount_terms(db,user_id):
-    user=db.execute("SELECT COALESCE(shipping_discount_cents,0) AS shipping_recurring,COALESCE(order_discount_cents,0) AS order_recurring FROM users WHERE id=? AND role='customer'",(user_id,)).fetchone()
-    if not user: return {'shipping_recurring':0,'order_recurring':0,'shipping_reward_id':None,'shipping_reward_cents':0,'order_reward_id':None,'order_reward_cents':0,'completed_orders':0,'tier_threshold':0,'tier_percent':0.0,'tier_scope':'shipping'}
+    user=db.execute("SELECT COALESCE(shipping_discount_cents,0) AS shipping_recurring,COALESCE(order_discount_cents,0) AS order_recurring,COALESCE(customer_tier_last_reward_orders,0) AS tier_last_reward_orders FROM users WHERE id=? AND role='customer'",(user_id,)).fetchone()
+    if not user: return {'shipping_recurring':0,'order_recurring':0,'shipping_reward_id':None,'shipping_reward_cents':0,'order_reward_id':None,'order_reward_cents':0,'completed_orders':0,'tier_last_reward_orders':0,'tier_threshold':0,'tier_percent':0.0,'tier_scope':'shipping'}
     shipping=db.execute("SELECT id,amount_cents FROM featured_rewards WHERE user_id=? AND kind='customer_shipping' AND used_order_id IS NULL ORDER BY id LIMIT 1",(user_id,)).fetchone()
     order=db.execute("SELECT id,amount_cents FROM featured_rewards WHERE user_id=? AND kind='customer_order' AND used_order_id IS NULL ORDER BY id LIMIT 1",(user_id,)).fetchone()
     completed=int(db.execute("SELECT COUNT(*) FROM orders WHERE user_id=? AND status='delivered'",(user_id,)).fetchone()[0] or 0)
@@ -714,11 +716,12 @@ def customer_discount_terms(db,user_id):
     threshold=max(0,int(float(settings.get('customer_tier_threshold',0) or 0)))
     percent=float(settings.get('customer_tier_percent',0) or 0)
     scope=settings.get('customer_tier_scope','shipping') if settings.get('customer_tier_scope') in ('shipping','order') else 'shipping'
-    if threshold<=0 or completed<threshold: percent=0.0
+    last_reward_orders=max(0,int(user['tier_last_reward_orders'] or 0))
+    if threshold<=0 or completed<last_reward_orders+threshold: percent=0.0
     return {'shipping_recurring':int(user['shipping_recurring'] or 0),'order_recurring':int(user['order_recurring'] or 0),
             'shipping_reward_id':shipping['id'] if shipping else None,'shipping_reward_cents':int(shipping['amount_cents']) if shipping else 0,
             'order_reward_id':order['id'] if order else None,'order_reward_cents':int(order['amount_cents']) if order else 0,
-            'completed_orders':completed,'tier_threshold':threshold,'tier_percent':percent,'tier_scope':scope}
+            'completed_orders':completed,'tier_last_reward_orders':last_reward_orders,'tier_threshold':threshold,'tier_percent':percent,'tier_scope':scope}
 
 
 def percent_discount_cents(amount_cents,percent):
@@ -756,7 +759,7 @@ def quote_delivery(db,user_id,data):
     shipping_discount_cents=min(original_fee_cents,max(fixed_shipping,tier_shipping))
     fee=max(0,original_fee_cents-shipping_discount_cents)/100
     order_discount_cents=terms['order_reward_cents']+terms['order_recurring']
-    payload={'user_id':user_id,'kind':kind,'points':points,'km':km,'rate':float(extra),'base_km':float(base_km),'base_fee':float(base),'original_fee':original_fee,'fee':fee,'customer_shipping_discount_cents':shipping_discount_cents,'customer_order_discount_cents':order_discount_cents,'customer_shipping_reward_id':terms['shipping_reward_id'],'customer_order_reward_id':terms['order_reward_id'],'customer_shipping_recurring_cents':terms['shipping_recurring'],'customer_order_recurring_cents':terms['order_recurring'],'customer_tier_threshold':terms['tier_threshold'],'customer_tier_percent':terms['tier_percent'],'customer_tier_scope':terms['tier_scope'],'customer_completed_orders':terms['completed_orders'],'expires':int(time.time())+600}
+    payload={'user_id':user_id,'kind':kind,'points':points,'km':km,'rate':float(extra),'base_km':float(base_km),'base_fee':float(base),'original_fee':original_fee,'fee':fee,'customer_shipping_discount_cents':shipping_discount_cents,'customer_order_discount_cents':order_discount_cents,'customer_shipping_reward_id':terms['shipping_reward_id'],'customer_order_reward_id':terms['order_reward_id'],'customer_shipping_recurring_cents':terms['shipping_recurring'],'customer_order_recurring_cents':terms['order_recurring'],'customer_tier_threshold':terms['tier_threshold'],'customer_tier_percent':terms['tier_percent'],'customer_tier_scope':terms['tier_scope'],'customer_completed_orders':terms['completed_orders'],'customer_tier_last_reward_orders':terms['tier_last_reward_orders'],'expires':int(time.time())+600}
     if kind=='ride': payload['vehicle']=vehicle
     body=base64.urlsafe_b64encode(json.dumps(payload,separators=(',',':')).encode()).decode()
     secret=db.execute("SELECT value FROM settings WHERE key='quote_secret'").fetchone()[0]
@@ -776,7 +779,7 @@ def verify_delivery_quote(db,user_id,data):
         tier_shipping=percent_discount_cents(original_cents,terms['tier_percent']) if terms['tier_scope']=='shipping' else 0
         expected_shipping=min(original_cents,max(fixed_shipping,tier_shipping))
         if q['user_id']!=user_id or q['kind']!=data['kind'] or q['expires']<int(time.time()) or q['points']!=delivery_points(db,data) or (q['kind']=='ride' and q.get('vehicle')!=data.get('vehicle')): raise ValueError()
-        if q.get('customer_shipping_reward_id')!=terms['shipping_reward_id'] or q.get('customer_order_reward_id')!=terms['order_reward_id'] or q.get('customer_shipping_recurring_cents')!=terms['shipping_recurring'] or q.get('customer_order_recurring_cents')!=terms['order_recurring'] or q.get('customer_shipping_discount_cents')!=expected_shipping or q.get('customer_order_discount_cents')!=terms['order_reward_cents']+terms['order_recurring'] or q.get('customer_tier_threshold')!=terms['tier_threshold'] or q.get('customer_tier_percent')!=terms['tier_percent'] or q.get('customer_tier_scope')!=terms['tier_scope'] or q.get('customer_completed_orders')!=terms['completed_orders']: raise ValueError()
+        if q.get('customer_shipping_reward_id')!=terms['shipping_reward_id'] or q.get('customer_order_reward_id')!=terms['order_reward_id'] or q.get('customer_shipping_recurring_cents')!=terms['shipping_recurring'] or q.get('customer_order_recurring_cents')!=terms['order_recurring'] or q.get('customer_shipping_discount_cents')!=expected_shipping or q.get('customer_order_discount_cents')!=terms['order_reward_cents']+terms['order_recurring'] or q.get('customer_tier_threshold')!=terms['tier_threshold'] or q.get('customer_tier_percent')!=terms['tier_percent'] or q.get('customer_tier_scope')!=terms['tier_scope'] or q.get('customer_completed_orders')!=terms['completed_orders'] or q.get('customer_tier_last_reward_orders')!=terms['tier_last_reward_orders']: raise ValueError()
         return q
     except (ValueError,KeyError,TypeError):
         raise ValueError('احسب رسوم التوصيل مجددًا بعد تحديد الموقع؛ عرض السعر غير صالح أو انتهت صلاحيته')
@@ -1032,6 +1035,7 @@ class Handler(BaseHTTPRequestHandler):
         digest = hashlib.sha256(header[7:].encode()).hexdigest()
         user = db.execute("""SELECT u.id,u.name,u.phone,u.role,u.username,u.email,
             COALESCE((SELECT COUNT(*) FROM orders o WHERE o.user_id=u.id AND o.status='delivered'),0) AS completed_orders,
+            COALESCE(u.customer_tier_last_reward_orders,0) AS customer_tier_last_reward_orders,
             COALESCE(u.shipping_discount_cents,0) AS shipping_discount_cents,
             COALESCE(u.order_discount_cents,0) AS order_discount_cents,
             COALESCE((SELECT amount_cents FROM featured_rewards fr WHERE fr.user_id=u.id AND fr.kind='customer_shipping' AND fr.used_order_id IS NULL ORDER BY fr.id LIMIT 1),0) AS next_shipping_discount_cents,
@@ -1363,7 +1367,8 @@ class Handler(BaseHTTPRequestHandler):
                     COALESCE((SELECT amount_cents FROM featured_rewards fr WHERE fr.user_id=u.id AND fr.kind='customer_shipping' AND fr.used_order_id IS NULL ORDER BY fr.id LIMIT 1),0) AS next_shipping_discount_cents,
                     COALESCE((SELECT amount_cents FROM featured_rewards fr WHERE fr.user_id=u.id AND fr.kind='customer_order' AND fr.used_order_id IS NULL ORDER BY fr.id LIMIT 1),0) AS next_order_discount_cents,
                     COUNT(o.id) AS total_orders,
-                    SUM(CASE WHEN o.status='delivered' THEN 1 ELSE 0 END) AS completed_orders
+                    SUM(CASE WHEN o.status='delivered' THEN 1 ELSE 0 END) AS completed_orders,
+                    COALESCE(u.customer_tier_last_reward_orders,0) AS customer_tier_last_reward_orders
                     FROM users u LEFT JOIN orders o ON o.user_id=u.id WHERE u.role='customer'
                     GROUP BY u.id ORDER BY u.id DESC""")]
             else: view['customers']=[]
@@ -2198,6 +2203,7 @@ class Handler(BaseHTTPRequestHandler):
                     order_discount_cents=max(fixed_order_discount,tier_order_discount)
                     order_base_cents=int((Decimal(str(subtotal+fee))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
                     order_reward_used=bool(order_reward_id and customer_terms['order_reward_cents']>0 and min(order_base_cents,fixed_order_discount)>min(order_base_cents,max(customer_terms['order_recurring'],tier_order_discount)))
+                    tier_reward_used=bool(customer_terms['tier_percent']>0 and ((customer_terms['tier_scope']=='shipping' and min(original_fee_cents,max(fixed_shipping,tier_shipping))>min(original_fee_cents,fixed_shipping)) or (customer_terms['tier_scope']=='order' and min(order_base_cents,max(fixed_order_discount,tier_order_discount))>min(order_base_cents,fixed_order_discount))))
                     ps = "confirmed" if payment == "cash" else "pending"
                     status = "awaiting_quote" if kind != "products" else ("medicine_review" if medicine_review else ("new" if payment == "cash" else "payment_review"))
                     cur = db.execute("INSERT INTO orders(user_id,client_request_id,kind,customer,phone,area,address,details,vehicle,pickup,destination,payment,proof,reference,prescription,medicine_review,payment_status,status,total,delivery_fee,quote_accepted,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (user['id'],request_id,kind, customer, phone, data["area"], address, str(data.get("details", "")), str(data.get("vehicle", "")), str(data.get("pickup", "")), str(data.get("destination", "")), payment, proof, str(data.get("reference", "")), prescription,1 if medicine_review else 0, ps, status, subtotal+fee, fee,1 if kind=='products' else 0, now()))
@@ -2217,6 +2223,8 @@ class Handler(BaseHTTPRequestHandler):
                                 db.execute('UPDATE featured_rewards SET used_order_id=? WHERE id=?',(oid,reward['id']))
                         if shipping_reward_id and shipping_reward_used>0:
                             db.execute('UPDATE featured_rewards SET used_order_id=? WHERE id=?',(oid,shipping_reward_id))
+                        if tier_reward_used:
+                            db.execute('UPDATE users SET customer_tier_last_reward_orders=? WHERE id=? AND role=\'customer\'',(customer_terms['completed_orders'],user['id']))
                         applied_discount=shipping_discount_cents+applied_order_discount+legacy_discount
                         if applied_discount:
                             db.execute('UPDATE orders SET total=?,discount_cents=? WHERE id=?',(total_cents/100,applied_discount,oid))
