@@ -413,12 +413,14 @@ async function initMaps(){
           const label=document.getElementById('selected-point');
           if(label)label.textContent='تم تحديد المكان على الخريطة';if(kind!=='products'){const address=document.getElementById('address'),destination=document.getElementById('destination');if(address&&!address.value.trim())address.value='الوجهة على الخريطة';if(destination&&!destination.value.trim())destination.value='الوجهة على الخريطة'}
         }
+        window.refreshRouteQuote?.();
       };
       window.clearCustomerMapPoint=()=>{
         chosenPoint=null;
         if(marker){map.removeLayer(marker);marker=null}
         const selected=document.getElementById('selected-point');
         if(selected)selected.textContent='اختر نتيجة البحث أو المس الموقع الصحيح على الخريطة';
+        window.refreshRouteQuote?.();
       };
       window.setCustomerMapPoint=(lat,lon,label)=>{
         const point=validMapPoint(lat,lon);
