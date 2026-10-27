@@ -1985,8 +1985,8 @@ class Handler(BaseHTTPRequestHandler):
                     if user['role']!='customer': return self.respond({'error':'غير مصرح'},403)
                     request_id=str(data.get('client_request_id','')).strip()
                     if not request_id or len(request_id)>100: raise ValueError('معرف الطلب غير صالح')
-                    previous=db.execute('SELECT id FROM orders WHERE user_id=? AND client_request_id=?',(user['id'],request_id)).fetchone()
-                    if previous: return self.respond({'ok':True,'id':previous['id'],'duplicate':True})
+                    previous=db.execute('SELECT id,status,total,payment_status,driver_id FROM orders WHERE user_id=? AND client_request_id=?',(user['id'],request_id)).fetchone()
+                    if previous: return self.respond({'ok':True,'id':previous['id'],'status':previous['status'],'total':previous['total'],'payment_status':previous['payment_status'],'driver_id':previous['driver_id'],'duplicate':True})
                     kind = data["kind"]
                     if kind not in ("products", "delivery", "ride", "custom"): raise ValueError("نوع خدمة غير معروف")
                     parcel={}
@@ -2109,7 +2109,8 @@ class Handler(BaseHTTPRequestHandler):
                         db.execute("INSERT INTO order_items(order_id,product_id,name,quantity,unit_price,unit,stock_quantity,requested_amount) VALUES (?,?,?,?,?,?,?,?)", (oid, p["id"], p["name"], qty, p["price"] / weight_basis(p) if sold_by_weight(p) else p["price"], "كجم" if sold_by_weight(p) else "قطعة", 0 if kind=='products' and shop_anywhere and not catalog_order else qty / weight_basis(p) if sold_by_weight(p) else qty, requested_amount))
                     log(db, oid, "أنشأ العميل الطلب")
                     if status=='new' or (km_quote and kind=='delivery' and payment=='cash'): assign(db,oid)
-                    return self.respond({"ok": True, "id": oid})
+                    saved=db.execute('SELECT status,total,payment_status,driver_id FROM orders WHERE id=?',(oid,)).fetchone()
+                    return self.respond({'ok':True,'id':oid,'status':saved['status'],'total':saved['total'],'payment_status':saved['payment_status'],'driver_id':saved['driver_id']})
                 elif path == '/api/order/additional-fee':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
                     oid=int(data.get('id',0))
