@@ -1987,8 +1987,12 @@ class Handler(BaseHTTPRequestHandler):
                         if parcel['shipment_type'] not in ('ملابس','إلكترونيات وسماعات','كوزماتيكس','بيرفيوم','مواد غذائية وأطعمة','أخرى'): raise ValueError('اختر نوع الشحنة أولًا')
                         if parcel['shipment_type']=='أخرى' and not parcel['shipment_other']: raise ValueError('اكتب وصف نوع الشحنة')
                         if any(not parcel[key] or len(parcel[key])>120 for key in ('sender_name','recipient_name')): raise ValueError('اكتب اسم المرسل والمستلم')
-                        for key,contact in (('sender_phone','المرسل'),('recipient_phone','المستلم')):
-                            parcel[key]=normalize_contact_phone(parcel[key],contact)
+                        try:
+                            parcel['sender_phone']=normalize_contact_phone(parcel['sender_phone'],'المرسل')
+                        except ValueError:
+                            # Sender details default to the signed-in customer's verified account phone.
+                            parcel['sender_phone']=normalize_contact_phone(user['phone'],'المرسل')
+                        parcel['recipient_phone']=normalize_contact_phone(parcel['recipient_phone'],'المستلم')
                     service_key='products' if kind=='products' else 'delivery' if kind=='delivery' else RIDE_RATE_KEYS.get(data.get('vehicle'),'') if kind=='ride' else str(data.get('service_key',''))
                     if kind=='custom' and not service_key.startswith('custom_'): raise ValueError('الخدمة غير معروفة')
                     if not db.execute('SELECT 1 FROM services WHERE key=? AND active=1',(service_key,)).fetchone(): raise ValueError('الخدمة غير متاحة حاليًا')
@@ -2066,6 +2070,7 @@ class Handler(BaseHTTPRequestHandler):
                     km_quote=None
                     delivery_pricing={r['key']:r['value'] for r in db.execute("SELECT key,value FROM settings WHERE key IN ('delivery_base_km','delivery_base_fee','delivery_extra_rate')")}
                     delivery_priced=all(delivery_pricing.get(k) for k in ('delivery_base_km','delivery_base_fee','delivery_extra_rate'))
+                    if kind=='delivery' and not delivery_priced: raise ValueError('تعريفة التوصيل بالكيلومتر غير مكتملة في لوحة الإدارة')
                     ride_rate_key=RIDE_RATE_KEYS.get(data.get('vehicle','')) if kind=='ride' else None
                     ride_prices={r['key']:r['value'] for r in db.execute("SELECT key,value FROM settings WHERE key IN (?,?,?)",(ride_rate_key+'_base_km',ride_rate_key+'_base',ride_rate_key+'_extra'))} if ride_rate_key else {}
                     ride_priced=bool(ride_rate_key and all(ride_prices.get(ride_rate_key+suffix) for suffix in ('_base_km','_base','_extra')))
