@@ -683,6 +683,18 @@ def calculate_distance_fee(km, base_km, base_fee, extra_rate):
     return (Decimal(str(base_fee))+Decimal(str(extra_rate))*extra_km).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP)
 
 
+def normalize_contact_phone(value):
+    value=str(value or '').strip().translate(str.maketrans('٠١٢٣٤٥٦٧٨٩','0123456789'))
+    value=re.sub(r'[\s()-]', '', value)
+    if value.startswith('*0020'): value=value[1:]
+    elif value.startswith('*20'): value='0'+value[3:]
+    if value.startswith('0020'): value='0'+value[4:]
+    elif value.startswith('+20'): value='0'+value[3:]
+    elif value.startswith('20') and len(value)==12: value='0'+value[2:]
+    if not re.fullmatch(r'[+0-9]{7,25}',value): raise ValueError('اكتب رقم تليفون صحيح للمرسل والمستلم')
+    return value
+
+
 def quote_delivery(db,user_id,data):
     kind=data.get('kind')
     vehicle=str(data.get('vehicle',''))
@@ -1970,7 +1982,8 @@ class Handler(BaseHTTPRequestHandler):
                         if parcel['shipment_type'] not in ('ملابس','إلكترونيات وسماعات','كوزماتيكس','بيرفيوم','مواد غذائية وأطعمة','أخرى'): raise ValueError('اختر نوع الشحنة أولًا')
                         if parcel['shipment_type']=='أخرى' and not parcel['shipment_other']: raise ValueError('اكتب وصف نوع الشحنة')
                         if any(not parcel[key] or len(parcel[key])>120 for key in ('sender_name','recipient_name')): raise ValueError('اكتب اسم المرسل والمستلم')
-                        if any(not re.fullmatch(r'[+0-9٠-٩ ()-]{7,25}',parcel[key]) for key in ('sender_phone','recipient_phone')): raise ValueError('اكتب رقم تليفون صحيح للمرسل والمستلم')
+                        for key in ('sender_phone','recipient_phone'):
+                            parcel[key]=normalize_contact_phone(parcel[key])
                     service_key='products' if kind=='products' else 'delivery' if kind=='delivery' else RIDE_RATE_KEYS.get(data.get('vehicle'),'') if kind=='ride' else str(data.get('service_key',''))
                     if kind=='custom' and not service_key.startswith('custom_'): raise ValueError('الخدمة غير معروفة')
                     if not db.execute('SELECT 1 FROM services WHERE key=? AND active=1',(service_key,)).fetchone(): raise ValueError('الخدمة غير متاحة حاليًا')
