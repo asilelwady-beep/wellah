@@ -2185,18 +2185,19 @@ class Handler(BaseHTTPRequestHandler):
                         shipping_reward_id=km_quote.get('customer_shipping_reward_id')
                         order_reward_id=km_quote.get('customer_order_reward_id')
                         original_fee_cents=int((Decimal(str(km_quote['original_fee']))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
-                        shipping_reward_used=min(original_fee_cents,customer_terms['shipping_reward_cents']) if fixed_shipping>=tier_shipping else 0
+                        shipping_reward_used=int(min(original_fee_cents,fixed_shipping)>min(original_fee_cents,max(customer_terms['shipping_recurring'],tier_shipping)))
                     else:
                         original_fee_cents=int((Decimal(str(fee))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
                         shipping_reward_id=customer_terms['shipping_reward_id']
                         order_reward_id=customer_terms['order_reward_id']
-                        shipping_reward_used=min(original_fee_cents,customer_terms['shipping_reward_cents']) if fixed_shipping>=tier_shipping else 0
+                        shipping_reward_used=int(min(original_fee_cents,fixed_shipping)>min(original_fee_cents,max(customer_terms['shipping_recurring'],tier_shipping)))
                         shipping_discount_cents=min(original_fee_cents,max(fixed_shipping,tier_shipping))
                         fee=max(0,original_fee_cents-shipping_discount_cents)/100
                         fixed_order_discount=customer_terms['order_reward_cents']+customer_terms['order_recurring']
                     tier_order_discount=percent_discount_cents(int((Decimal(str(subtotal+fee))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP)),customer_terms['tier_percent']) if customer_terms['tier_scope']=='order' else 0
                     order_discount_cents=max(fixed_order_discount,tier_order_discount)
-                    order_reward_used=bool(order_reward_id and customer_terms['order_reward_cents']>0 and fixed_order_discount>=tier_order_discount)
+                    order_base_cents=int((Decimal(str(subtotal+fee))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+                    order_reward_used=bool(order_reward_id and customer_terms['order_reward_cents']>0 and min(order_base_cents,fixed_order_discount)>min(order_base_cents,max(customer_terms['order_recurring'],tier_order_discount)))
                     ps = "confirmed" if payment == "cash" else "pending"
                     status = "awaiting_quote" if kind != "products" else ("medicine_review" if medicine_review else ("new" if payment == "cash" else "payment_review"))
                     cur = db.execute("INSERT INTO orders(user_id,client_request_id,kind,customer,phone,area,address,details,vehicle,pickup,destination,payment,proof,reference,prescription,medicine_review,payment_status,status,total,delivery_fee,quote_accepted,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (user['id'],request_id,kind, customer, phone, data["area"], address, str(data.get("details", "")), str(data.get("vehicle", "")), str(data.get("pickup", "")), str(data.get("destination", "")), payment, proof, str(data.get("reference", "")), prescription,1 if medicine_review else 0, ps, status, subtotal+fee, fee,1 if kind=='products' else 0, now()))
