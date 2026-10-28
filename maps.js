@@ -132,4 +132,500 @@ async function searchMapAddress(mode='destination'){
         status.textContent='تم اختيار '+(place.label||address)+' — تأكد أن العلامة على مدخل المكان الصحيح قبل حساب السعر.';
         for(const item of results.querySelectorAll('button'))item.setAttribute('aria-pressed',String(item===button));
       });
-      results.appendChild(b
+      results.appendChild(button);
+    }
+  }catch(error){status.textContent=error.message||'تعذر البحث؛ حدد النقطة على الخريطة'}
+}
+window.searchCustomerMapAddress=()=>searchMapAddress('destination');
+window.searchPickupMapAddress=()=>searchMapAddress('pickup');
+
+function clearMaps(){closeExpandedMap();for(const map of mapViews){if(map._gpsWatch!=null)navigator.geolocation?.clearWatch(map._gpsWatch);map._driverRouteController?.abort();if(map._driverMoveFrame)cancelAnimationFrame(map._driverMoveFrame);map.remove()}mapViews=[]}
+function showMyLocationOnMap(id){
+  const map=mapViews.find(m=>m.getContainer().id===id);
+  if(!map||!navigator.geolocation){alert('GPS غير متاح على هذا الجهاز');return}
+  expandMap(map);
+  if(map._gpsWatch!=null)navigator.geolocation.clearWatch(map._gpsWatch);
+  let first=true;
+  map._gpsWatch=navigator.geolocation.watchPosition(pos=>{
+    if(!mapViews.includes(map))return;
+    const coords=[pos.coords.latitude,pos.coords.longitude];
+    if(!map._gpsMarker)map._gpsMarker=L.circleMarker(coords,{radius:11,color:'#fff',weight:4,fillColor:'#1686ef',fillOpacity:1,className:'live-gps-dot'}).addTo(map).bindPopup('موقعي الحالي');
+    else map._gpsMarker.setLatLng(coords);
+    if(first){map.flyTo(coords,17,{duration:0.7});first=false}
+  },()=>alert('تعذر الوصول إلى موقعك. فعّل GPS واسمح للموقع بالوصول.'),{enableHighAccuracy:true,maximumAge:3000,timeout:15000});
+}
+let googleMapsReadyPromise=null;
+function loadGoogleMaps(){
+  if(googleMapsReadyPromise)return googleMapsReadyPromise;
+  googleMapsReadyPromise=(window.appFetchWithTimeout||fetch)('/api/maps-config',{},10000).then(r=>r.ok?r.json():{}).then(config=>{
+    const key=config.google_maps_key;
+    if(!key)return false;
+    const googleReady=window.google?.maps?Promise.resolve():new Promise((resolve,reject)=>{
+      const callback='__wallahGoogleMapsReady';
+      const timer=setTimeout(()=>reject(new Error('Google Maps timed out')),15000);
+      window[callback]=()=>{clearTimeout(timer);delete window[callback];resolve()};
+      const script=document.createElement('script');
+      script.src='https://maps.googleapis.com/maps/api/js?key='+encodeURIComponent(key)+'&v=weekly&language=ar&region=EG&loading=async&callback='+callback;
+      script.async=true;
+      script.onerror=()=>{clearTimeout(timer);delete window[callback];reject(new Error('Google Maps unavailable'))};
+      document.head.appendChild(script);
+    });
+    return googleReady.then(()=>new Promise((resolve,reject)=>{
+      if(L.gridLayer?.googleMutant)return resolve(true);
+      const script=document.createElement('script');
+      script.src='https://unpkg.com/leaflet.gridlayer.googlemutant@latest/Leaflet.GoogleMutant.js';
+      script.onload=()=>resolve(!!L.gridLayer?.googleMutant);
+      script.onerror=()=>reject(new Error('Google map adapter unavailable'));
+      document.head.appendChild(script);
+    }));
+  }).catch(()=>false);
+  return googleMapsReadyPromise;
+}
+function baseMap(id,zoom=13){
+  const el=document.getElementById(id);
+  if(!el)return null;
+  if(!window.L){el.textContent='تعذر تحميل الخريطة الآن. تحقق من الاتصال ثم حدّث الصفحة.';return null}
+  el.replaceChildren();
+  const map=L.map(el,{scrollWheelZoom:false,zoomControl:false,zoomAnimation:true,fadeAnimation:true,preferCanvas:true}).setView(mapCenter,zoom);
+  L.control.zoom({position:'bottomleft'}).addTo(map);
+  const baseLayer=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    maxNativeZoom:19,maxZoom:21,updateWhenIdle:true,updateWhenZooming:false,keepBuffer:2,attribution:'&copy; OpenStreetMap contributors'
+  }).addTo(map);
+  el.dataset.mapProvider='openstreetmap';
+  // Keep the lightweight map available while the configured Google layer loads.
+  loadGoogleMaps().then(ready=>{
+    if(!ready||!mapViews.includes(map))return;
+    try{
+      const layer=L.gridLayer.googleMutant({type:'roadmap',maxZoom:21});
+      map.removeLayer(baseLayer);
+      layer.addTo(map);
+      el.dataset.mapProvider='google';
+      layer.on('error',()=>{if(mapViews.includes(map)){map.removeLayer(layer);baseLayer.addTo(map);el.dataset.mapProvider='openstreetmap'}});
+    }catch(error){if(mapViews.includes(map)&&!map.hasLayer(baseLayer))baseLayer.addTo(map)}
+  });
+  const external=L.control({position:'bottomright'});
+  external.onAdd=()=>{
+    const link=L.DomUtil.create('a','map-google-open');link.textContent='فتح في خرائط Google ↗';link.target='_blank';link.rel='noopener';
+    link.setAttribute('aria-label','عرض النقطة في تطبيق خرائط جوجل');
+    const update=()=>{const selected=id==='customer-map'&&chosenPoint?[chosenPoint.latitude,chosenPoint.longitude]:id==='pickup-map'&&chosenPickup?[chosenPickup.latitude,chosenPickup.longitude]:null;const center=map.getCenter();const lat=selected?.[0]??center.lat,lon=selected?.[1]??center.lng;link.href='https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(lat+','+lon)};
+    update();link.addEventListener('click',update);map.on('moveend',update);L.DomEvent.disableClickPropagation(link);return link;
+  };
+  external.addTo(map);
+  const locate=L.control({position:'topleft'});
+  locate.onAdd=()=>{const button=L.DomUtil.create('button','map-locate');button.type='button';button.title=id==='pickup-map'&&kind==='delivery'?'حدد مكان المرسل من موقعي الحالي':id==='customer-map'&&kind==='delivery'?'اعرض موقعي لمساعدتك في تحديد مكان المستلم':'اعرض موقعي الحالي';button.setAttribute('aria-label',button.title);button.textContent='⌖';L.DomEvent.disableClickPropagation(button);L.DomEvent.on(button,'click',()=>{if(id==='pickup-map'&&typeof window.pickupCurrentLocation==='function')window.pickupCurrentLocation();else if(id==='customer-map'&&typeof window.pickCurrentLocation==='function')window.pickCurrentLocation();else showMyLocationOnMap(id)});return button};
+  locate.addTo(map);
+  const expand=L.control({position:'topright'});
+  expand.onAdd=()=>{const button=L.DomUtil.create('button','map-expand');button.type='button';button.title='تكبير الخريطة';button.setAttribute('aria-label','تكبير الخريطة');button.textContent='⛶';L.DomEvent.disableClickPropagation(button);L.DomEvent.on(button,'click',()=>{if(el.classList.contains('map-expanded'))closeExpandedMap();else expandMap(map)});return button};
+  expand.addTo(map);
+  const close=document.createElement('button');close.type='button';close.className='map-close';close.textContent='✕ إغلاق الخريطة';close.setAttribute('aria-label','إغلاق الخريطة');close.addEventListener('click',e=>{e.stopPropagation();closeExpandedMap()});el.appendChild(close);
+  mapViews.push(map);
+  requestAnimationFrame(()=>map.invalidateSize());
+  return map;
+}
+function point(map,lat,lon,title,color='#087b5b',target=map){
+  if(!Number.isFinite(Number(lat))||!Number.isFinite(Number(lon)))return null;
+  return L.circleMarker([Number(lat),Number(lon)],{radius:10,color:'#fff',weight:2,fillColor:color,fillOpacity:1}).addTo(target).bindPopup(title);
+}
+function showMapPoints(map,points){
+  if(points.length===1)map.setView(points[0],15);
+  else if(points.length>1)map.fitBounds(points,{padding:[30,30],maxZoom:15});
+}
+window.showNearbyMapRoads=async()=>{
+  const map=mapViews.find(view=>view.getContainer().id==='customer-map');
+  const status=document.getElementById('map-roads-status');
+  if(!map||!status)return;
+  if(map.getZoom()<14){status.textContent='كبّر الخريطة على القرية أو الحارة أولاً.';return}
+  status.textContent='جارٍ تحميل الشوارع والحارات حول الجزء الظاهر من الخريطة…';
+  const center=map.getCenter();
+  try{
+    const response=await (window.appFetchWithTimeout||fetch)('/api/map-roads?lat='+center.lat.toFixed(5)+'&lon='+center.lng.toFixed(5),{},10000);
+    const data=await response.json();
+    if(!response.ok)throw Error(data.error||'تعذر تحميل الشوارع');
+    if(map._roadOverlay)map.removeLayer(map._roadOverlay);
+    const layer=L.layerGroup().addTo(map);
+    map._roadOverlay=layer;
+    for(const road of data.roads){
+      const line=L.polyline(road.points,{color:'#d12e43',weight:5,opacity:0.8}).addTo(layer);
+      const name=road.name||'حارة غير مسماة على الخريطة';
+      line.bindTooltip(name);
+      line.on('click',e=>{
+        L.DomEvent.stopPropagation(e);
+        window.setCustomerMapPoint(e.latlng.lat,e.latlng.lng,
+          road.name?road.name+'، البدرشين':'حارة محددة على الخريطة، البدرشين');
+        status.textContent='تم تحديد '+name+' — راجع العلامة وأضف رقم المنزل أو علامة مميزة.';
+      });
+    }
+    status.textContent=data.roads.length?
+      'ظهر '+data.roads.length+' شارعًا وحارة مسجلة في هذا الجزء. اضغط على الخط لتحديد مكانك الدقيق، وحرّك الخريطة ثم كرر البحث لباقي القرية.':
+      'لا توجد شوارع مسجلة في هذا الجزء؛ حدد المكان يدويًا وأضف علامة مميزة.';
+  }catch(error){status.textContent=error.message||'تعذر تحميل الشوارع'}
+};
+let leafletReady=null,mapInitVersion=0;
+function ensureLeaflet(){
+ if(window.L)return Promise.resolve();
+ if(!leafletReady)leafletReady=new Promise((resolve,reject)=>{
+  const script=document.createElement('script');let settled=false;
+  const finish=error=>{if(settled)return;settled=true;clearTimeout(timer);if(error){script.remove();leafletReady=null;reject(error)}else resolve()};
+  const timer=setTimeout(()=>finish(new Error('تعذر تحميل الخريطة؛ اضغط إعادة المحاولة.')),12000);
+  script.src='/leaflet.js?v=1.9.4';script.onload=()=>finish(window.L?null:new Error('تعذر تشغيل الخريطة'));script.onerror=()=>finish(new Error('تعذر تحميل الخريطة؛ تحقق من اتصال الإنترنت.'));document.head.append(script);
+ });
+ return leafletReady;
+}
+function showMapLoadError(error){document.querySelectorAll('.map:not(.leaflet-container)').forEach(el=>{el.replaceChildren();const message=document.createElement('p');message.textContent=error.message||'تعذر تحميل الخريطة';const retry=document.createElement('button');retry.type='button';retry.textContent='إعادة تحميل الخريطة';retry.onclick=()=>{el.replaceChildren();initMaps()};el.append(message,retry)})}
+
+function requestDriverRoadRoute(map,origin,target){
+  if(!origin||!target||target.lat==null||target.lon==null){
+    map._driverRouteController?.abort();
+    if(map._driverRouteLayer){map.removeLayer(map._driverRouteLayer);map._driverRouteLayer=null}
+    map._driverRouteDetails=null;
+    map._driverRouteTargetKey='';
+    map._driverRouteOrigin=null;
+    return;
+  }
+  const destination=[Number(target.lat),Number(target.lon)];
+  if(!destination.every(Number.isFinite))return;
+  const targetKey=destination.map(v=>v.toFixed(5)).join(',')+':'+(target.label||'');
+  const changedTarget=map._driverRouteTargetKey!==targetKey;
+  if(changedTarget){
+    map._driverRouteController?.abort();
+    map._driverRouteBusy=false;map._driverRouteDetails=null;
+    if(map._driverRouteLayer){map.removeLayer(map._driverRouteLayer);map._driverRouteLayer=null}
+    map._driverRouteTargetKey=targetKey;
+    map._driverRouteOrigin=null;
+    map._driverRouteLastAt=0;
+  }
+  if(map._driverRouteBusy)return;
+  const originLatLng=L.latLng(origin[0],origin[1]),last=map._driverRouteOrigin;
+  const moved=!last||map.distance(last,originLatLng)>=80;
+  const now=Date.now();
+  if(!changedTarget&&now-map._driverRouteLastAt<25000)return;
+  if(!changedTarget&&!moved&&now-map._driverRouteLastAt<45000)return;
+  map._driverRouteLastAt=now;
+  map._driverRouteOrigin=originLatLng;
+  map._driverRouteBusy=true;
+  const controller=new AbortController();
+  map._driverRouteController=controller;
+  const routeTimer=setTimeout(()=>controller.abort(),10000);
+  const coords=origin[1]+','+origin[0]+';'+destination[1]+','+destination[0];
+  const url='https://router.project-osrm.org/route/v1/driving/'+coords+'?overview=full&geometries=geojson&steps=false&alternatives=false';
+  fetch(url,{signal:controller.signal,mode:'cors',credentials:'omit'})
+    .then(response=>{if(!response.ok)throw Error('route request failed');return response.json()})
+    .then(data=>{
+      if(controller.signal.aborted||map._driverRouteTargetKey!==targetKey)return;
+      const coordinates=data?.routes?.[0]?.geometry?.coordinates;
+      if(!Array.isArray(coordinates)||coordinates.length<2)throw Error('route geometry unavailable');
+      const points=coordinates.map(pair=>[Number(pair[1]),Number(pair[0])]).filter(pair=>pair.every(Number.isFinite));
+      if(points.length<2)throw Error('invalid route geometry');
+      const layer=L.layerGroup();
+      L.polyline(points,{color:'#fff',weight:10,opacity:.96,lineCap:'round',lineJoin:'round'}).addTo(layer);
+      L.polyline(points,{color:'#e84b36',weight:6,opacity:.96,lineCap:'round',lineJoin:'round'}).addTo(layer);
+      layer.addTo(map);
+      if(map._driverRouteLayer)map.removeLayer(map._driverRouteLayer);
+      map._driverRouteLayer=layer;
+      map._driverRouteDetails={duration:Number(data.routes[0].duration),at:Date.now(),targetKey};
+      map._onRouteDetails?.();
+    })
+    .catch(error=>{if(map._driverRouteController===controller){map._driverRouteDetails=null;map._onRouteDetails?.()}if(error.name!=='AbortError')console.warn('تعذر تحديث مسار الطيار',error)})
+    .finally(()=>{clearTimeout(routeTimer);if(map._driverRouteController===controller){map._driverRouteBusy=false;map._driverRouteController=null}});
+}
+function moveDriverBike(map,position){
+  if(!position||!position.every(Number.isFinite))return;
+  if(!map._driverMarker){
+    const icon=L.divIcon({className:'',html:'<span role="img" aria-label="موتوسيكل الطيار" style="width:44px;height:44px;display:grid;place-items:center;border:3px solid #fff;border-radius:50%;background:#e84b36;box-shadow:0 3px 12px #18212b66;font-size:25px;line-height:1">🏍️</span>',iconSize:[44,44],iconAnchor:[22,22]});
+    map._driverMarker=L.marker(position,{icon,keyboard:false,zIndexOffset:1000}).addTo(map).bindPopup('موقع الطيار الحالي',{autoPan:false});
+    return;
+  }
+  if(map._driverMoveFrame)cancelAnimationFrame(map._driverMoveFrame);
+  const from=map._driverMarker.getLatLng(),to=L.latLng(position[0],position[1]);
+  if(map.distance(from,to)<2.5)return;
+  if(map.distance(from,to)>1000){map._driverMarker.setLatLng(to);return}
+  let startedAt=0;
+  const animate=now=>{
+    if(!startedAt)startedAt=now;
+    const t=Math.min(1,(now-startedAt)/650),ease=t*t*(3-2*t);
+    map._driverMarker.setLatLng([from.lat+(to.lat-from.lat)*ease,from.lng+(to.lng-from.lng)*ease]);
+    if(t<1)map._driverMoveFrame=requestAnimationFrame(animate);else map._driverMoveFrame=0;
+  };
+  map._driverMoveFrame=requestAnimationFrame(animate);
+}
+function updateDriverMap(){
+  const map=mapViews.find(m=>m.getContainer().id==='driver-map');
+  if(!map||!state||tab!=='driver')return;
+  if(!map._driverOverlay)map._driverOverlay=L.layerGroup().addTo(map);
+  const positions=[],active=state.orders.filter(o=>!['cancelled','delivered'].includes(o.status));
+  const current=active.find(o=>['assigned','ready','picked_up','on_way'].includes(o.status));
+  const chosen=active.find(o=>o.id===selectedTripId)||current||active.find(o=>o.status==='offered');
+  const order=current||chosen;
+  const orderKey=order?order.id+':'+order.status+':'+Boolean(order.shop_anywhere):'empty';
+  if(map._driverOrderKey!==orderKey){
+    map._driverOverlay.clearLayers();
+    map._driverOrderKey=orderKey;
+    for(const o of (current?[current]:chosen?[chosen]:active)){
+      const popup='<strong>طلب #'+o.id+'</strong> · '+esc(o.area)+'<br>'+esc(o.address)+'<br><button type="button" onclick="openTrip('+o.id+')">تفاصيل الطلب</button>'+(o.status==='offered'?'<button type="button" onclick="act('+o.id+',&#39;accept_offer&#39;)">قبول</button>':'');
+      if(o.pickup_lat!=null){point(map,o.pickup_lat,o.pickup_lon,'استلام من '+esc(o.shop_anywhere?o.pickup:o.merchant_name||o.pickup),'#2864c5',map._driverOverlay);positions.push([Number(o.pickup_lat),Number(o.pickup_lon)])}
+      if(o.latitude!=null&&o.longitude!=null){point(map,o.latitude,o.longitude,popup,'#e58029',map._driverOverlay);if(current)positions.push([Number(o.latitude),Number(o.longitude)])}
+    }
+  }else if(order){
+    if(order.pickup_lat!=null)positions.push([Number(order.pickup_lat),Number(order.pickup_lon)]);
+    if(current&&order.latitude!=null&&order.longitude!=null)positions.push([Number(order.latitude),Number(order.longitude)]);
+  }
+  const profile=state.driver_profile,driverPosition=profile?.lat!=null&&profile?.lon!=null?[Number(profile.lat),Number(profile.lon)]:null;
+  if(driverPosition){moveDriverBike(map,driverPosition);positions.push(driverPosition)}
+  else if(map._driverMarker){map.removeLayer(map._driverMarker);map._driverMarker=null}
+  const target=current&&tripRouteTarget(current);
+  if(target&&target.lat!=null&&target.lon!=null)positions.push([Number(target.lat),Number(target.lon)]);
+  requestDriverRoadRoute(map,driverPosition,target);
+  const viewKey=(current?current.id+':'+current.status:chosen?chosen.id+':'+chosen.status:'empty')+':gps'+Boolean(driverPosition);
+  if(map._driverViewKey!==viewKey){showMapPoints(map,positions);map._driverViewKey=viewKey}
+}
+
+async function initMaps(){
+  const version=++mapInitVersion;
+  if(!state||!document.querySelector('.map'))return;
+  try{await ensureLeaflet()}catch(e){showMapLoadError(e);return}
+  if(version!==mapInitVersion||!state)return;
+  const tripMap=baseMap('trip-map');
+  if(tripMap){
+    const active=state.orders.filter(o=>!['cancelled','delivered'].includes(o.status));
+    const o=state.orders.find(o=>o.id===selectedTripId)||(tab==='driver'?active.find(o=>['assigned','ready','picked_up','on_way'].includes(o.status)):null);
+    const positions=[];
+    if(o){for(const [lat,lon,label,color] of [[o.pickup_lat,o.pickup_lon,'الاستلام: '+esc(o.merchant_address||o.pickup),'#2864c5'],[o.latitude,o.longitude,'التسليم: '+esc(o.address),'#e58029'],[o.driver_lat,o.driver_lon,'آخر موقع للطيار: '+esc(o.driver_location_at||''),'#087b5b']]){if(lat!=null&&lon!=null){point(tripMap,lat,lon,label,color);positions.push([lat,lon])}}}
+    showMapPoints(tripMap,positions);
+    if(o)drawTripRoute(tripMap,o);
+  }
+  if(tab==='customer'){
+    const map=baseMap('customer-map');
+    const pickupMap=kind==='products'?null:baseMap('pickup-map');
+    if(map||pickupMap){
+      let marker=null;
+      let pickupMarker=null;
+      const choose=(latlng,mode='destination')=>{
+        if(mode==='pickup'&&pickupMap){
+          chosenPickup={lat:latlng.lat,lon:latlng.lng};
+          if(pickupMarker)pickupMarker.setLatLng(latlng);
+          else pickupMarker=point(pickupMap,latlng.lat,latlng.lng,'مكان الاستلام','#2864c5');
+          const label=document.getElementById('selected-pickup');
+          if(label)label.textContent='تم تحديد مكان الانطلاق';const pickup=document.getElementById('pickup');if(pickup&&!pickup.value.trim())pickup.value='نقطة الانطلاق على الخريطة';
+        }else if(map){
+          chosenPoint={latitude:latlng.lat,longitude:latlng.lng};
+          if(marker)marker.setLatLng(latlng);
+          else marker=point(map,latlng.lat,latlng.lng,'عنوان العميل','#e58029');
+          const label=document.getElementById('selected-point');
+          if(label)label.textContent='تم تحديد المكان على الخريطة';if(kind!=='products'){const address=document.getElementById('address'),destination=document.getElementById('destination');if(address&&!address.value.trim())address.value='الوجهة على الخريطة';if(destination&&!destination.value.trim())destination.value='الوجهة على الخريطة'}
+        }
+        window.refreshRouteQuote?.();
+      };
+      window.clearCustomerMapPoint=()=>{
+        chosenPoint=null;
+        if(marker){map.removeLayer(marker);marker=null}
+        const selected=document.getElementById('selected-point');
+        if(selected)selected.textContent='اختر نتيجة البحث أو المس الموقع الصحيح على الخريطة';
+        window.refreshRouteQuote?.();
+      };
+      window.setCustomerMapPoint=(lat,lon,label)=>{
+        const point=validMapPoint(lat,lon);
+        if(!point||!map||!mapViews.includes(map))return;
+        choose({lat:point.lat,lng:point.lon},'destination');
+        const address=document.getElementById('address'),destination=document.getElementById('destination');
+        if(address)address.value=label;
+        if(destination)destination.value=label;
+        const area=document.getElementById('area');
+        if(area){
+          const name=String(label||'');
+          const match=(state.areas||[]).find(v=>v!=='مدينة البدرشين'&&name.includes(v))||(name.includes('البدرشين')?'مدينة البدرشين':null);
+          if(match){area.value=match;area.dispatchEvent(new Event('change'))}
+        }
+        const chosen=document.getElementById('selected-point');
+        if(chosen)chosen.textContent='📍 '+label;
+        map.flyTo([point.lat,point.lon],17,{duration:0.6});
+      };
+      window.setCustomerPickupPoint=(lat,lon,label)=>{
+        const p=validMapPoint(lat,lon);
+        if(!p||!pickupMap||!mapViews.includes(pickupMap))return;
+        choose({lat:p.lat,lng:p.lon},'pickup');
+        const input=document.getElementById('pickup');
+        if(input)input.value=label;
+        const chosen=document.getElementById('selected-pickup');
+        if(chosen)chosen.textContent='📍 '+label;
+        pickupMap.flyTo([p.lat,p.lon],17,{duration:0.6});
+      };
+      window.selectMapPinMode=mode=>{mapPinMode=mode;(mode==='pickup'&&pickupMap?pickupMap:map)?.getContainer().scrollIntoView({behavior:'smooth',block:'center'});const label=document.getElementById(mode==='pickup'?'selected-pickup':'selected-point');if(label)label.textContent=mode==='pickup'?'المس الخريطة لتحديد الاستلام':'المس الخريطة لتحديد الوجهة'};
+      map?.on('click',e=>{
+        choose(e.latlng,'destination');
+        const selected=document.getElementById('selected-point');
+        if(selected)selected.textContent='📍 النقطة المحددة يدويًا — راجع العنوان المكتوب قبل تأكيد الطلب';
+      });
+      if(pickupMap)pickupMap.on('click',e=>choose(e.latlng,'pickup'));
+      if(chosenPoint&&map)choose({lat:chosenPoint.latitude,lng:chosenPoint.longitude},'destination')
+      if(chosenPickup&&pickupMap)choose({lat:chosenPickup.lat,lng:chosenPickup.lon},'pickup')
+      if(chosenPoint&&map)map.setView([chosenPoint.latitude,chosenPoint.longitude],16);
+      if(chosenPickup&&pickupMap)pickupMap.setView([chosenPickup.lat,chosenPickup.lon],16);
+      window.pickCurrentLocation=()=>{
+        mapPinMode='destination';
+        if(!navigator.geolocation)return alert('تحديد الموقع غير مدعوم');
+        navigator.geolocation.getCurrentPosition(p=>{
+          if(!map||!mapViews.includes(map))return;
+          const pos={lat:p.coords.latitude,lng:p.coords.longitude};
+          if(kind==='delivery'){map.flyTo(pos,17,{duration:0.7});return}
+          choose(pos,'destination');
+          const address=document.getElementById('address'),destination=document.getElementById('destination');
+          if(address)address.value='موقعي الحالي على الخريطة';
+          map.flyTo(pos,17,{duration:0.7});
+        },()=>{const label=document.getElementById('selected-point');if(label)label.textContent='تعذر تحديد الموقع؛ فعّل GPS وإذن الموقع أو المس المكان الصحيح'}, {enableHighAccuracy:true,maximumAge:0,timeout:20000});
+      };
+      window.pickupCurrentLocation=()=>{
+        mapPinMode='pickup';
+        if(!pickupMap||!navigator.geolocation)return alert('تحديد الموقع غير متاح؛ فعّل GPS وإذن الموقع');
+        navigator.geolocation.getCurrentPosition(p=>{
+          if(!mapViews.includes(pickupMap))return;
+          const pos={lat:p.coords.latitude,lng:p.coords.longitude};
+          choose(pos,'pickup');
+          const input=document.getElementById('pickup');
+          if(input)input.value='موقعي الحالي على الخريطة';
+          const label=document.getElementById('selected-pickup');
+          if(label)label.textContent='📍 '+(kind==='delivery'?'مكان المرسل':'نقطة الاستلام')+': موقعي الحالي · دقة GPS نحو '+Math.round(p.coords.accuracy||0)+' متر';
+          pickupMap.flyTo(pos,17,{duration:0.7});
+        },()=>{const label=document.getElementById('selected-pickup');if(label)label.textContent='تعذر تحديد موقعك؛ فعّل GPS وإذن الموقع أو المس نقطة الاستلام على الخريطة'}, {enableHighAccuracy:true,maximumAge:0,timeout:20000});
+      };
+      if(customerView==='checkout'&&!autoCheckoutLocationAttempted){
+        autoCheckoutLocationAttempted=true;
+        if(!navigator.geolocation){const label=document.getElementById(kind==='products'?'selected-point':'selected-pickup');if(label)label.textContent='الموقع غير متاح؛ المس مكانك على الخريطة'}
+        else navigator.geolocation.getCurrentPosition(p=>{
+          if(!(kind==='products'?map:pickupMap)||!mapViews.includes(kind==='products'?map:pickupMap))return;
+          const pos={lat:p.coords.latitude,lng:p.coords.longitude};
+          if(kind==='products'){if(chosenPoint)return;choose(pos,'destination');map.flyTo(pos,17,{duration:0.7})}
+          else{if(chosenPickup)return;choose(pos,'pickup');const input=document.getElementById('pickup');if(input)input.value='موقعي الحالي على الخريطة';const label=document.getElementById('selected-pickup');if(label)label.textContent='📍 '+(kind==='delivery'?'مكان المرسل':'نقطة الاستلام')+': موقعي الحالي · دقة GPS نحو '+Math.round(p.coords.accuracy||0)+' متر';pickupMap?.flyTo(pos,17,{duration:0.7})}
+        },()=>{const label=document.getElementById(kind==='products'?'selected-point':'selected-pickup');if(label)label.textContent='اسمح بالوصول إلى الموقع أو المس مكانك على الخريطة'}, {enableHighAccuracy:true,maximumAge:0,timeout:20000});
+      }
+    }
+    const track=baseMap('tracking-map');
+    if(track)updateCustomerTrackingMap();
+  }else if(tab==='admin'){
+    initMerchantLocationMap();
+    const map=baseMap('admin-map');
+    if(map)refreshAdminLiveMap(true);
+  }else if(tab==='driver'){
+    const map=baseMap('driver-map');
+    if(map)updateDriverMap();
+  }
+}
+
+function customerTrackingFresh(o){const at=Date.parse(o.driver_location_at||'');return Number.isFinite(at)&&Date.now()-at<120000&&Date.now()>=at-60000}
+function customerArrivalText(o,route){
+ if(!['assigned','ready','picked_up','on_way'].includes(o.status))return 'سيظهر تتبع الطيار بعد قبوله الطلب.';
+ if(o.driver_lat==null||o.driver_lon==null||!customerTrackingFresh(o))return 'بانتظار موقع حديث من الطيار. سنعرض حركته ووقت الوصول عند تحديث GPS.';
+ const pickup=['assigned','ready'].includes(o.status),target=tripRouteTarget(o),destination=pickup?'مكان الاستلام':'إليك';
+ if(!target||target.lat==null||target.lon==null)return pickup?'الطيار يجهّز طلبك؛ سيظهر وقت الوصول بعد تحديد نقطة الاستلام.':'الطيار في الطريق؛ وقت الوصول يحتاج نقطة تسليم دقيقة.';
+ const road=route&&Date.now()-route.at<90000&&Number.isFinite(route.duration)&&route.duration>=0;
+ let minutes;
+ if(road)minutes=Math.max(1,Math.ceil(route.duration/60));
+ else{const a=Number(o.driver_lat)*Math.PI/180,b=Number(target.lat)*Math.PI/180,da=b-a,dl=(Number(target.lon)-Number(o.driver_lon))*Math.PI/180,km=6371*2*Math.asin(Math.min(1,Math.sqrt(Math.sin(da/2)**2+Math.cos(a)*Math.cos(b)*Math.sin(dl/2)**2)));minutes=Math.max(1,Math.ceil(km*1.5/20*60))}
+ return (pickup?'الطيار متجه للاستلام':'الطيار في طريقه إليك')+' · الوصول '+destination+' خلال نحو '+minutes+' دقيقة'+(road?' حسب مسار الطريق.':' · تقدير مبدئي.')+' الوقت تقريبي ويتغير مع الحركة والزحام.';
+}
+function paintCustomerArrival(map){const o=state?.orders.find(o=>o.id===trackingOrderId),el=document.getElementById('tracking-arrival');if(o&&el)el.textContent=customerArrivalText(o,map?._driverRouteDetails)}
+function updateCustomerTrackingMap(){
+ const map=mapViews.find(m=>m.getContainer().id==='tracking-map'),o=state?.orders.find(o=>o.id===trackingOrderId);
+ if(!map||!o||tab!=='customer')return false;
+ if(!map._customerStops)map._customerStops=L.layerGroup().addTo(map);
+ const positions=[],stopsKey=JSON.stringify([o.id,o.pickup_lat,o.pickup_lon,o.latitude,o.longitude]);
+ if(map._customerStopsKey!==stopsKey){map._customerStops.clearLayers();map._customerStopsKey=stopsKey;for(const [lat,lon,label,color] of [[o.pickup_lat,o.pickup_lon,'مكان الاستلام','#2864c5'],[o.latitude,o.longitude,'عنوان التسليم','#e58029']])if(lat!=null&&lon!=null)point(map,lat,lon,label,color,map._customerStops)}
+ for(const [lat,lon] of [[o.pickup_lat,o.pickup_lon],[o.latitude,o.longitude]])if(lat!=null&&lon!=null)positions.push([Number(lat),Number(lon)]);
+ const fresh=customerTrackingFresh(o),driver=o.driver_lat!=null&&o.driver_lon!=null?[Number(o.driver_lat),Number(o.driver_lon)]:null;
+ if(driver&&driver.every(Number.isFinite)){moveDriverBike(map,driver);map._driverMarker.setOpacity(fresh?1:.45);map._driverMarker.setPopupContent(fresh?'موقع الطيار · يتحدث تلقائيًا':'آخر موقع للطيار · ننتظر تحديث GPS');positions.push(driver)}
+ else if(map._driverMarker){map.removeLayer(map._driverMarker);map._driverMarker=null}
+ map._onRouteDetails=()=>paintCustomerArrival(map);
+ const target=tripRouteTarget(o);requestDriverRoadRoute(map,fresh?driver:null,target);
+ const viewKey=o.id+':'+(['assigned','ready'].includes(o.status)?'pickup':'delivery')+':'+Boolean(driver);
+ if(map._customerViewKey!==viewKey){showMapPoints(map,positions);map._customerViewKey=viewKey}
+ paintCustomerArrival(map);return true;
+}
+
+function adminDriverMapCard(d){
+  const photo=typeof d.photo==='string'&&/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(d.photo)?d.photo:'';
+  const coords=Number(d.lat).toFixed(6)+', '+Number(d.lon).toFixed(6);
+  return `<div dir="rtl" style="min-width:220px;display:flex;gap:12px;align-items:center">${photo?`<img src="${esc(photo)}" alt="صورة ${esc(d.name)}" style="width:72px;height:72px;border-radius:16px;object-fit:cover">`:'<span style="width:72px;height:72px;display:grid;place-items:center;background:#fff0e5;border-radius:16px">بدون صورة</span>'}<div><strong>${esc(d.name)}</strong><p style="margin:6px 0">الإحداثيات: <span dir="ltr">${coords}</span></p><small>آخر ظهور: ${esc(d.location_at||'غير مسجل')}</small></div></div>`;
+}
+function refreshAdminLiveMap(fitInitially=false){
+  const map=mapViews.find(m=>m.getContainer().id==='admin-map');
+  if(!map||!state||tab!=='admin')return false;
+  if(!map._liveMarkers)map._liveMarkers=new Map();
+  const seen=new Set(),positions=[];
+  const update=(key,lat,lon,label,color)=>{
+    if(lat==null||lon==null||!Number.isFinite(Number(lat))||!Number.isFinite(Number(lon)))return;
+    const pos=[Number(lat),Number(lon)];seen.add(key);positions.push(pos);
+    let marker=map._liveMarkers.get(key);
+    if(marker){const old=marker.getLatLng();if(old.lat!==pos[0]||old.lng!==pos[1])marker.setLatLng(pos);if(marker.getPopup()?.getContent()!==label)marker.setPopupContent(label)}
+    else{marker=point(map,pos[0],pos[1],label,color);if(key.startsWith('driver-')){marker.getPopup().options.autoPan=false;marker.on('mouseover',()=>marker.openPopup())}map._liveMarkers.set(key,marker)}
+  };
+  for(const m of state.merchants.filter(x=>x.active))update('merchant-'+m.id,m.lat,m.lon,'المحل '+esc(m.name)+' · '+esc(m.address),'#2864c5');
+  for(const o of state.orders.filter(x=>!['cancelled','delivered'].includes(x.status)))update('order-'+o.id,o.latitude,o.longitude,'طلب #'+o.id+' · '+esc(o.area)+' · '+esc(o.address),'#e58029');
+  for(const d of state.drivers)update('driver-'+d.id,d.lat,d.lon,adminDriverMapCard(d),'#087b5b');
+  for(const [key,marker] of map._liveMarkers)if(!seen.has(key)){map.removeLayer(marker);map._liveMarkers.delete(key)}
+  if(fitInitially)showMapPoints(map,positions);
+  return true;
+}
+
+
+function saveMerchantEditorDraft(){
+  if(!state||tab!=='admin'||!document.getElementById('m-name'))return;
+  merchantEditorDraft={};
+  for(const id of ['m-name','m-category','m-area','m-address']){const input=document.getElementById(id);if(input)merchantEditorDraft[id]=input.value}
+  const map=mapViews.find(m=>m.getContainer().id==='merchant-map');
+  if(map){const center=map.getCenter();merchantMapView={lat:center.lat,lon:center.lng,zoom:map.getZoom()}}
+}
+function restoreMerchantEditorDraft(){
+  if(!merchantEditorDraft||!state||tab!=='admin')return;
+  for(const [id,value] of Object.entries(merchantEditorDraft)){const input=document.getElementById(id);if(input)input.value=value}
+}
+function clearMerchantEditorDraft(){
+  merchantEditorDraft=null;merchantPoint=null;merchantMapView=null;
+  for(const id of ['m-name','m-address']){const input=document.getElementById(id);if(input)input.value=''}
+  const map=mapViews.find(m=>m.getContainer().id==='merchant-map');
+  if(map?._merchantMarker){map.removeLayer(map._merchantMarker);map._merchantMarker=null}
+  const label=document.getElementById('merchant-point');if(label)label.textContent='حرّك الخريطة ثم اضغط على موقع المحل أو اختر منتصف الخريطة.';
+}
+function chooseMerchantMapCenter(){
+  const map=mapViews.find(m=>m.getContainer().id==='merchant-map');
+  if(!map?._chooseMerchantLocation)return;
+  map._chooseMerchantLocation(map.getCenter());
+}
+function initMerchantLocationMap(){
+  const map=baseMap('merchant-map');if(!map)return;
+  const initial=merchantMapView||(merchantPoint?{lat:merchantPoint.lat,lon:merchantPoint.lon,zoom:17}:null);
+  if(initial)map.setView([initial.lat,initial.lon],initial.zoom,{animate:false});
+  const remember=()=>{const center=map.getCenter();merchantMapView={lat:center.lat,lon:center.lng,zoom:map.getZoom()}};
+  map.on('moveend zoomend',remember);
+  map._chooseMerchantLocation=latlng=>{
+    if(!Number.isFinite(latlng.lat)||!Number.isFinite(latlng.lng))return;
+    merchantPoint={lat:latlng.lat,lon:latlng.lng};
+    if(map._merchantMarker)map._merchantMarker.setLatLng(latlng);
+    else map._merchantMarker=point(map,latlng.lat,latlng.lng,'موقع استلام المحل','#e05f2b');
+    const label=document.getElementById('merchant-point');
+    if(label)label.textContent='تم تحديد موقع المحل ✓ · '+latlng.lat.toFixed(6)+'، '+latlng.lng.toFixed(6)+' · يمكنك تغيير النقطة بالضغط على الخريطة.';
+    remember();
+  };
+  map.on('click',e=>map._chooseMerchantLocation(e.latlng));
+  if(merchantPoint)map._chooseMerchantLocation({lat:merchantPoint.lat,lng:merchantPoint.lon});
+  requestAnimationFrame(()=>{if(mapViews.includes(map))map.invalidateSize({pan:false})});
+  return map;
+}
+function keepMerchantEditorOnRefresh(){
+  // Refresh state and notifications without destroying an in-progress location/form edit.
+  return tab==='admin'&&adminPage==='admin-merchants'&&(!Array.isArray(state.staff_permissions)||state.staff_permissions.includes('admin-merchants'))&&!!document.getElementById('m-name')&&mapViews.some(m=>m.getContainer().id==='merchant-map');
+}
+
+function locateMerchantGPS(){
+ const label=document.getElementById('merchant-point'),button=document.getElementById('merchant-gps');
+ if(!navigator.geolocation){if(label)label.textContent='جهازك لا يدعم تحديد الموقع. حدد المحل بالضغط على الخريطة.';return}
+ if(button)button.disabled=true;
+ if(label)label.textContent='جارٍ تحديد موقعك الحالي… اسمح بالوصول للموقع وتأكد من تشغيل GPS.';
+ navigator.geolocation.getCurrentPosition(position=>{
+  if(button)button.disabled=false;
+  const map=mapViews.find(m=>m.getContainer().id==='merchant-map');
+  if(!map?._chooseMerchantLocation||!document.getElementById('m-name'))return;
+  const lat=position.coords.latitude,lng=position.coords.longitude;
+  if(!Number.isFinite(lat)||!Number.isFinite(lng))return;
+  map.setView([lat,lng],18,{animate:false});map._chooseMerchantLocation({lat,lng});
+  if(label)label.textContent='تم تحديد موقع المحل ✓ · دقة الموقع حوالي '+Math.round(position.coords.accuracy)+' متر. اضغط على الخريطة لتدقيق مكان المدخل ثم احفظ المحل.';
+ },error=>{if(button)button.disabled=false;if(label)label.textContent=error.code===1?'اسمح بالوصول للموقع من إعدادات المتصفح ثم أعد المحاولة، أو حدد المحل يدويًا على الخريطة.':error.code===3?'انتهت مهلة تحديد الموقع. تأكد من تشغيل GPS وأعد المحاولة.':'تعذر تحديد موقعك. شغّل GPS أو حدد مكان المحل على الخريطة.'},{enableHighAccuracy:true,maximumAge:0,timeout:20000});
+}
