@@ -18,6 +18,7 @@ const mapCenter=[29.8513,31.2744];
 window.pickCurrentLocation=()=>alert('الخريطة لم تُحمّل بعد. تحقق من الاتصال ثم حدّث الصفحة.');
 window.selectMapPinMode=()=>alert('الخريطة لم تُحمّل بعد. تحقق من الاتصال ثم حدّث الصفحة.');
 
+function isMapMounted(map){return !!map&&mapViews.includes(map)&&map.getContainer().isConnected&&!!map._mapPane}
 function closeExpandedMap(){
   const el=document.querySelector('.map.map-expanded');
   if(!el)return;
@@ -31,7 +32,7 @@ function closeExpandedMap(){
   el.classList.remove('map-expanded');
   document.body.classList.remove('map-open');
   const map=mapViews.find(m=>m.getContainer()===el);
-  if(map)requestAnimationFrame(()=>map.invalidateSize());
+  if(map)requestAnimationFrame(()=>{if(isMapMounted(map))map.invalidateSize()});
 }
 window.addEventListener('keydown',e=>{if(e.key==='Escape')closeExpandedMap()});
 function expandMap(map){
@@ -63,9 +64,10 @@ function expandMap(map){
       el._searchPanel={panel,form,results};
     }
   }
-  requestAnimationFrame(()=>map.invalidateSize({pan:false}));
-  setTimeout(()=>map.invalidateSize({pan:false}),250);
-  setTimeout(()=>map.invalidateSize({pan:false}),650);
+  const refresh=()=>{if(isMapMounted(map))map.invalidateSize({pan:false})};
+  requestAnimationFrame(refresh);
+  setTimeout(refresh,250);
+  setTimeout(refresh,650);
 }
 function validMapPoint(lat,lon){
   lat=Number(lat);lon=Number(lon);
@@ -219,7 +221,7 @@ function baseMap(id,zoom=13){
   expand.addTo(map);
   const close=document.createElement('button');close.type='button';close.className='map-close';close.textContent='✕ إغلاق الخريطة';close.setAttribute('aria-label','إغلاق الخريطة');close.addEventListener('click',e=>{e.stopPropagation();closeExpandedMap()});el.appendChild(close);
   mapViews.push(map);
-  requestAnimationFrame(()=>map.invalidateSize());
+  requestAnimationFrame(()=>{if(isMapMounted(map))map.invalidateSize()});
   return map;
 }
 function point(map,lat,lon,title,color='#087b5b',target=map){
@@ -458,8 +460,8 @@ async function initMaps(){
       if(pickupMap)pickupMap.on('click',e=>choose(e.latlng,'pickup'));
       if(chosenPoint&&map)choose({lat:chosenPoint.latitude,lng:chosenPoint.longitude},'destination')
       if(chosenPickup&&pickupMap)choose({lat:chosenPickup.lat,lng:chosenPickup.lon},'pickup')
-      if(chosenPoint&&map)map.setView([chosenPoint.latitude,chosenPoint.longitude],16);
-      if(chosenPickup&&pickupMap)pickupMap.setView([chosenPickup.lat,chosenPickup.lon],16);
+      if(chosenPoint&&isMapMounted(map))map.setView([chosenPoint.latitude,chosenPoint.longitude],16);
+      if(chosenPickup&&isMapMounted(pickupMap))pickupMap.setView([chosenPickup.lat,chosenPickup.lon],16);
       window.pickCurrentLocation=()=>{
         mapPinMode='destination';
         if(!navigator.geolocation)return alert('تحديد الموقع غير مدعوم');
