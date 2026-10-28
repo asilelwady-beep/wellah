@@ -686,7 +686,7 @@ def road_km(points):
 def calculate_distance_fee(km, base_km, base_fee, extra_rate):
     distance=Decimal(str(km))
     threshold=Decimal(str(base_km))
-    extra_km=max(0,int((distance-threshold).to_integral_value(rounding=ROUND_CEILING)))
+    extra_km=max(Decimal('0'),distance-threshold)
     return (Decimal(str(base_fee))+Decimal(str(extra_rate))*extra_km).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP)
 
 
