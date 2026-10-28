@@ -191,20 +191,30 @@ function baseMap(id,zoom=13){
   const map=L.map(el,{scrollWheelZoom:false,zoomControl:false,zoomAnimation:true,fadeAnimation:true,preferCanvas:true}).setView(mapCenter,zoom);
   L.control.zoom({position:'bottomleft'}).addTo(map);
   const baseLayer=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
-    maxNativeZoom:19,maxZoom:21,updateWhenIdle:true,updateWhenZooming:false,keepBuffer:2,attribution:'&copy; OpenStreetMap contributors'
+    maxNativeZoom:19,maxZoom:21,updateWhenIdle:true,updateWhenZooming:false,keepBuffer:1,attribution:'&copy; OpenStreetMap contributors'
   }).addTo(map);
   el.dataset.mapProvider='openstreetmap';
-  // Keep the lightweight map available while the configured Google layer loads.
-  loadGoogleMaps().then(ready=>{
-    if(!ready||!mapViews.includes(map))return;
-    try{
-      const layer=L.gridLayer.googleMutant({type:'roadmap',maxZoom:21});
-      map.removeLayer(baseLayer);
-      layer.addTo(map);
-      el.dataset.mapProvider='google';
-      layer.on('error',()=>{if(mapViews.includes(map)){map.removeLayer(layer);baseLayer.addTo(map);el.dataset.mapProvider='openstreetmap'}});
-    }catch(error){if(mapViews.includes(map)&&!map.hasLayer(baseLayer))baseLayer.addTo(map)}
-  });
+  // Let the first OpenStreetMap tiles render before loading the heavier Google layer.
+  let googleUpgradeScheduled=false;
+  const scheduleGoogleUpgrade=()=>{
+    if(googleUpgradeScheduled)return;
+    googleUpgradeScheduled=true;
+    setTimeout(()=>{
+      if(!isMapMounted(map))return;
+      loadGoogleMaps().then(ready=>{
+        if(!ready||!isMapMounted(map))return;
+        try{
+          const layer=L.gridLayer.googleMutant({type:'roadmap',maxZoom:21});
+          map.removeLayer(baseLayer);
+          layer.addTo(map);
+          el.dataset.mapProvider='google';
+          layer.on('error',()=>{if(isMapMounted(map)){map.removeLayer(layer);baseLayer.addTo(map);el.dataset.mapProvider='openstreetmap'}});
+        }catch(error){if(isMapMounted(map)&&!map.hasLayer(baseLayer))baseLayer.addTo(map)}
+      });
+    },700);
+  };
+  baseLayer.once('load',scheduleGoogleUpgrade);
+  setTimeout(scheduleGoogleUpgrade,2500);
   const external=L.control({position:'bottomright'});
   external.onAdd=()=>{
     const link=L.DomUtil.create('a','map-google-open');link.textContent='فتح في خرائط Google ↗';link.target='_blank';link.rel='noopener';

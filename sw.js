@@ -1,4 +1,4 @@
-const SHELL='wallaha-shell-v87-delivery-map-fix-20261028';
+const SHELL='wallaha-shell-v88-delivery-map-speed-20261028';
 const ASSETS=['/','/customer','/driver','/admin','/maps.js','/leaflet.js','/leaflet.css','/features.js','/icon.svg','/icon-192.png','/icon-512.png'];
 const PRODUCT_ASSET=/^\/(?:product-photo-[0-9]+\.jpg|product-illustration\/[0-9]+\.svg)$/;
 self.addEventListener('install',event=>{
