@@ -754,12 +754,13 @@ def quote_delivery(db,user_id,data):
     original_fee=float(calculate_distance_fee(km,base_km,base,extra))
     original_fee_cents=int((Decimal(str(original_fee))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
     terms=customer_discount_terms(db,user_id)
+    featured=db.execute("SELECT id,amount_cents FROM featured_rewards WHERE user_id=? AND kind='discount' AND used_order_id IS NULL ORDER BY id LIMIT 1",(user_id,)).fetchone() if kind=='delivery' else None
     fixed_shipping=terms['shipping_reward_cents']+terms['shipping_recurring']
     tier_shipping=percent_discount_cents(original_fee_cents,terms['tier_percent']) if terms['tier_scope']=='shipping' else 0
     shipping_discount_cents=min(original_fee_cents,max(fixed_shipping,tier_shipping))
     fee=max(0,original_fee_cents-shipping_discount_cents)/100
     order_discount_cents=terms['order_reward_cents']+terms['order_recurring']
-    payload={'user_id':user_id,'kind':kind,'points':points,'km':km,'rate':float(extra),'base_km':float(base_km),'base_fee':float(base),'original_fee':original_fee,'fee':fee,'customer_shipping_discount_cents':shipping_discount_cents,'customer_order_discount_cents':order_discount_cents,'customer_shipping_reward_id':terms['shipping_reward_id'],'customer_order_reward_id':terms['order_reward_id'],'customer_shipping_recurring_cents':terms['shipping_recurring'],'customer_order_recurring_cents':terms['order_recurring'],'customer_tier_threshold':terms['tier_threshold'],'customer_tier_percent':terms['tier_percent'],'customer_tier_scope':terms['tier_scope'],'customer_completed_orders':terms['completed_orders'],'customer_tier_last_reward_orders':terms['tier_last_reward_orders'],'expires':int(time.time())+600}
+    payload={'user_id':user_id,'kind':kind,'points':points,'km':km,'rate':float(extra),'base_km':float(base_km),'base_fee':float(base),'original_fee':original_fee,'fee':fee,'customer_shipping_discount_cents':shipping_discount_cents,'customer_order_discount_cents':order_discount_cents,'customer_featured_discount_cents':int(featured['amount_cents']) if featured else 0,'customer_featured_discount_id':featured['id'] if featured else None,'customer_shipping_reward_id':terms['shipping_reward_id'],'customer_order_reward_id':terms['order_reward_id'],'customer_shipping_recurring_cents':terms['shipping_recurring'],'customer_order_recurring_cents':terms['order_recurring'],'customer_tier_threshold':terms['tier_threshold'],'customer_tier_percent':terms['tier_percent'],'customer_tier_scope':terms['tier_scope'],'customer_completed_orders':terms['completed_orders'],'customer_tier_last_reward_orders':terms['tier_last_reward_orders'],'expires':int(time.time())+600}
     if kind=='ride': payload['vehicle']=vehicle
     body=base64.urlsafe_b64encode(json.dumps(payload,separators=(',',':')).encode()).decode()
     secret=db.execute("SELECT value FROM settings WHERE key='quote_secret'").fetchone()[0]
@@ -774,12 +775,13 @@ def verify_delivery_quote(db,user_id,data):
         if not hmac.compare_digest(signature,hmac.new(secret.encode(),body.encode(),hashlib.sha256).hexdigest()): raise ValueError()
         q=json.loads(base64.urlsafe_b64decode(body))
         terms=customer_discount_terms(db,user_id)
+        featured=db.execute("SELECT id,amount_cents FROM featured_rewards WHERE user_id=? AND kind='discount' AND used_order_id IS NULL ORDER BY id LIMIT 1",(user_id,)).fetchone() if q.get('kind')=='delivery' else None
         original_cents=int((Decimal(str(q.get('original_fee',0)))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
         fixed_shipping=terms['shipping_reward_cents']+terms['shipping_recurring']
         tier_shipping=percent_discount_cents(original_cents,terms['tier_percent']) if terms['tier_scope']=='shipping' else 0
         expected_shipping=min(original_cents,max(fixed_shipping,tier_shipping))
         if q['user_id']!=user_id or q['kind']!=data['kind'] or q['expires']<int(time.time()) or q['points']!=delivery_points(db,data) or (q['kind']=='ride' and q.get('vehicle')!=data.get('vehicle')): raise ValueError()
-        if q.get('customer_shipping_reward_id')!=terms['shipping_reward_id'] or q.get('customer_order_reward_id')!=terms['order_reward_id'] or q.get('customer_shipping_recurring_cents')!=terms['shipping_recurring'] or q.get('customer_order_recurring_cents')!=terms['order_recurring'] or q.get('customer_shipping_discount_cents')!=expected_shipping or q.get('customer_order_discount_cents')!=terms['order_reward_cents']+terms['order_recurring'] or q.get('customer_tier_threshold')!=terms['tier_threshold'] or q.get('customer_tier_percent')!=terms['tier_percent'] or q.get('customer_tier_scope')!=terms['tier_scope'] or q.get('customer_completed_orders')!=terms['completed_orders'] or q.get('customer_tier_last_reward_orders')!=terms['tier_last_reward_orders']: raise ValueError()
+        if q.get('customer_shipping_reward_id')!=terms['shipping_reward_id'] or q.get('customer_order_reward_id')!=terms['order_reward_id'] or q.get('customer_shipping_recurring_cents')!=terms['shipping_recurring'] or q.get('customer_order_recurring_cents')!=terms['order_recurring'] or q.get('customer_shipping_discount_cents')!=expected_shipping or q.get('customer_order_discount_cents')!=terms['order_reward_cents']+terms['order_recurring'] or q.get('customer_featured_discount_id')!=(featured['id'] if featured else None) or q.get('customer_featured_discount_cents')!=(int(featured['amount_cents']) if featured else 0) or q.get('customer_tier_threshold')!=terms['tier_threshold'] or q.get('customer_tier_percent')!=terms['tier_percent'] or q.get('customer_tier_scope')!=terms['tier_scope'] or q.get('customer_completed_orders')!=terms['completed_orders'] or q.get('customer_tier_last_reward_orders')!=terms['tier_last_reward_orders']: raise ValueError()
         return q
     except (ValueError,KeyError,TypeError):
         raise ValueError('احسب رسوم التوصيل مجددًا بعد تحديد الموقع؛ عرض السعر غير صالح أو انتهت صلاحيته')
@@ -2216,7 +2218,7 @@ class Handler(BaseHTTPRequestHandler):
                         if order_reward_used and min(customer_terms['order_reward_cents'],int((Decimal(str(subtotal+fee))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP)))>0:
                             db.execute('UPDATE featured_rewards SET used_order_id=? WHERE id=?',(oid,order_reward_id))
                         legacy_discount=0
-                        if kind=='products' and payment=='cash' and not medicine_review:
+                        if kind in ('products','delivery') and payment=='cash' and not medicine_review:
                             reward=db.execute("SELECT id,amount_cents FROM featured_rewards WHERE user_id=? AND kind='discount' AND used_order_id IS NULL ORDER BY id LIMIT 1",(user['id'],)).fetchone()
                             if reward:
                                 legacy_discount=min(reward['amount_cents'],total_cents)
