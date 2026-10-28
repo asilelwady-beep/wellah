@@ -1,4 +1,4 @@
-const SHELL='wallaha-shell-v83-compact-delivery-checkout-20261028';
+const SHELL='wallaha-shell-v84-compact-delivery-polish-20261028';
 const ASSETS=['/','/customer','/driver','/admin','/maps.js','/leaflet.js','/leaflet.css','/features.js','/icon.svg','/icon-192.png','/icon-512.png'];
 const PRODUCT_ASSET=/^\/(?:product-photo-[0-9]+\.jpg|product-illustration\/[0-9]+\.svg)$/;
 self.addEventListener('install',event=>{
