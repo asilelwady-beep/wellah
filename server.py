@@ -663,7 +663,25 @@ def google_maps_request(url, body, field_mask):
         return json.loads(response.read(1_000_000))
 
 
+ROUTE_DISTANCE_CACHE = {}
+ROUTE_DISTANCE_LOCK = Lock()
+
 def road_km(points):
+    # Cache road distance only; prices and discounts are always read anew.
+    provider=hashlib.sha256(os.environ.get('WALLAHA_GOOGLE_MAPS_SERVER_KEY','').strip().encode()).hexdigest()
+    key=(provider,tuple(points))
+    current=time.monotonic()
+    with ROUTE_DISTANCE_LOCK:
+        cached=ROUTE_DISTANCE_CACHE.get(key)
+        if cached and current-cached[0]<300: return cached[1]
+    distance=fetch_road_km(points)
+    with ROUTE_DISTANCE_LOCK:
+        if len(ROUTE_DISTANCE_CACHE)>=256: ROUTE_DISTANCE_CACHE.pop(next(iter(ROUTE_DISTANCE_CACHE)))
+        ROUTE_DISTANCE_CACHE[key]=(time.monotonic(),distance)
+    return distance
+
+
+def fetch_road_km(points):
     lat,lon,dlat,dlon=points
     if os.environ.get('WALLAHA_GOOGLE_MAPS_SERVER_KEY', '').strip():
         try:
