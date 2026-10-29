@@ -1,0 +1,22 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const html=fs.readFileSync('index.html','utf8'),features=fs.readFileSync('features.js','utf8');
+const context=vm.createContext({URLSearchParams,window:{},calls:[],state:{},pending:[]});
+vm.runInContext(`async function performRefresh(force){calls.push(force);await new Promise(resolve=>pending.push(resolve))}`+html.slice(html.indexOf('let refreshInFlight='),html.indexOf('async function performRefresh(')),context);
+const tick=()=>new Promise(r=>setImmediate(r));
+(async()=>{
+ const first=context.refresh();const a=context.refresh(true),b=context.refresh(true);assert.equal(a,b);
+ assert.equal(context.calls.length,1);context.pending.shift()();await tick();assert.equal(context.calls.length,2);
+ context.pending.shift()();await Promise.all([first,a,b]);assert.equal(context.calls.length,2);
+ const previous={user:{id:1},products:[{id:2}],draft_catalog:[],categories:[],merchants:[],archived_products:[]};
+ const merged=context.mergeAdminCatalog({user:{id:1,role:'admin'},admin_catalog_unchanged:true},previous);
+ assert.equal(merged.products,previous.products);
+ assert.equal(context.mergeAdminCatalog({user:{id:2,role:'admin'},admin_catalog_unchanged:true},previous).products,undefined);
+ context.window.appConfirm=async()=>false;context.featureAPI=async(...a)=>context.calls.push(a);context.alert=()=>{};
+ context.$=id=>({value:id.includes('scope')?'shipping':id.includes('frequency')?'once':'15'});
+ vm.runInContext(features.split('\n').find(s=>s.startsWith('async function saveCustomerDiscount(')),context);
+ const count=context.calls.length;await context.saveCustomerDiscount(1);assert.equal(context.calls.length,count);
+ context.window.appConfirm=async()=>true;context.window.appNotify=()=>{};context.refresh=async()=>{};
+ await context.saveCustomerDiscount(1);assert.equal(context.calls.length,count+1);assert.equal(context.calls.at(-1)[1].amount,15);
+ assert.ok(!/\bconfirm\(/.test(features));
+ console.log('Passed: refresh coalescing, account-isolated catalog merge, cancellation prevents discount mutation, confirmation submits exact amount.');
+})().catch(e=>{console.error(e);process.exitCode=1});

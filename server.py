@@ -299,6 +299,10 @@ def init():
         db.execute('CREATE INDEX IF NOT EXISTS featured_rewards_available ON featured_rewards(user_id,kind,used_order_id)')
         db.execute('CREATE INDEX IF NOT EXISTS order_items_order_lookup ON order_items(order_id)')
         db.execute('CREATE INDEX IF NOT EXISTS events_order_lookup ON events(order_id,id)')
+        db.execute('CREATE INDEX IF NOT EXISTS orders_customer_status ON orders(user_id,status)')
+        db.execute('CREATE INDEX IF NOT EXISTS orders_driver_status ON orders(driver_id,status)')
+        init_admin_catalog_revision(db)
+
         if 'featured' not in {r['name'] for r in db.execute('PRAGMA table_info(drivers)')}:
             db.execute('ALTER TABLE drivers ADD COLUMN featured INTEGER NOT NULL DEFAULT 0')
         user_columns={r['name'] for r in db.execute('PRAGMA table_info(users)')}
@@ -934,6 +938,26 @@ def warehouse_for_category(db, category):
     return cur.lastrowid
 
 
+def init_admin_catalog_revision(db):
+    db.execute('CREATE TABLE IF NOT EXISTS admin_catalog_revision (id INTEGER PRIMARY KEY CHECK(id=1), revision TEXT NOT NULL)')
+    db.execute("INSERT OR IGNORE INTO admin_catalog_revision VALUES (1,lower(hex(randomblob(16))))")
+    for table in ('products','categories','merchants'):
+        for action in ('INSERT','UPDATE','DELETE'):
+            db.execute(f"CREATE TRIGGER IF NOT EXISTS admin_catalog_{table}_{action.lower()} AFTER {action} ON {table} BEGIN UPDATE admin_catalog_revision SET revision=lower(hex(randomblob(16))) WHERE id=1; END")
+
+
+def admin_catalog_state(db, known_revision=''):
+    revision=db.execute('SELECT revision FROM admin_catalog_revision WHERE id=1').fetchone()['revision']
+    result={'admin_catalog_revision':revision,'admin_catalog_unchanged':revision==known_revision}
+    if revision==known_revision: return result
+    result.update(products=rows(db,'SELECT * FROM products WHERE deleted=0 ORDER BY id DESC'),
+                  draft_catalog=preview_catalog(db),
+                  categories=rows(db,'SELECT * FROM categories WHERE deleted=0 ORDER BY sort_order,name'),
+                  merchants=rows(db,'SELECT * FROM merchants ORDER BY id DESC'),
+                  archived_products=rows(db,'SELECT p.id,p.name,p.category,p.price,p.stock FROM products p JOIN categories c ON c.name=p.category WHERE p.deleted=1 AND c.deleted=0 ORDER BY p.id DESC'))
+    return result
+
+
 def preview_catalog(db):
     return rows(db,"SELECT p.id,p.name,p.category,p.price,p.price_pending,p.price_basis_weight_kg,p.stock,p.active,p.merchant_id,p.catalog_preview,p.requires_prescription,CASE WHEN p.image<>'' THEN p.image ELSE '/product-illustration/' || p.id || '.svg' END AS image FROM products p JOIN categories c ON c.name=p.category WHERE p.deleted=0 AND p.catalog_preview=1 AND c.active=1 ORDER BY CASE WHEN p.price_pending=0 AND p.price>0 THEN 0 ELSE 1 END,CASE WHEN p.image<>'' AND (p.name LIKE '%لانشون%فراخ%بالوزن' OR p.name LIKE '%لانشون%دجاج%بالوزن') THEN 0 WHEN p.image<>'' AND (p.name LIKE '%لانشون%بالوزن' OR p.name LIKE '%سلامي%بالوزن') THEN 1 WHEN p.name IN ('ثوم بلدي طازج','ثوم صيني طازج') THEN 2 ELSE 3 END,(p.image LIKE '/product-photo-%') DESC,c.sort_order,p.category,p.id")
 
@@ -1315,6 +1339,8 @@ class Handler(BaseHTTPRequestHandler):
             if not user: return self.respond({'error':'سجل الدخول أولًا'}, 401)
             refresh_offers(db)
             cleanup_order_calls(db)
+            # Keep the revision and catalog rows in the same SQLite snapshot.
+            if user['role']=='admin' and not db.in_transaction: db.execute('BEGIN')
             driver_state_view=parse_qs(urlparse(self.path).query).get('driver_view',['active'])[0]
             if driver_state_view not in ('active','history','settings'): driver_state_view='active'
             if user['role']=='admin':
@@ -1358,8 +1384,12 @@ class Handler(BaseHTTPRequestHandler):
                         o.pop('driver_earning_cents',None);o.pop('driver_earning_paid',None)
             profile=db.execute('SELECT id,name,phone,photo,area,vehicle_type,available,break_until,lat,lon,location_at,identity_blocked_shift FROM drivers WHERE user_id=?',(user['id'],)).fetchone() if user['role']=='driver' else None
             wallets={str(d['id']):driver_wallet(db,d['id']) for d in db.execute('SELECT id FROM drivers')} if user['role']=='admin' and unlocked(self,db) else {}
-            view={**feature_state(db,user),"draft_catalog":preview_catalog(db) if user['role'] in ('customer','admin') else [],"driver_profile":dict(profile) if profile else None,"wallet_unlocked":unlocked(self,db) if user['role']=='admin' else False,"driver_wallet":redact_wallet(driver_wallet(db,profile['id'])) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": rows(db,"SELECT * FROM categories WHERE deleted=0 ORDER BY sort_order,name") if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":rows(db,"SELECT * FROM merchants ORDER BY id DESC") if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": rows(db, "SELECT * FROM products WHERE deleted=0 ORDER BY id DESC") if user['role']=='admin' else rows(db, "SELECT p.* FROM products p JOIN merchants m ON m.id=p.merchant_id JOIN categories c ON c.name=p.category WHERE p.deleted=0 AND p.active=1 AND p.stock>0 AND m.active=1 AND c.active=1 ORDER BY p.id DESC") if user['role']=='customer' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username,u.disabled,u.email FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}, "privacy_policy_url": (db.execute("SELECT value FROM settings WHERE key='privacy_policy_url'").fetchone() or [''])[0]}
-            view['archived_products']=rows(db,"SELECT p.id,p.name,p.category,p.price,p.stock FROM products p JOIN categories c ON c.name=p.category WHERE p.deleted=1 AND c.deleted=0 ORDER BY p.id DESC") if user['role']=='admin' and user['staff_permissions'] is None else []
+            view={**feature_state(db,user),"draft_catalog":preview_catalog(db) if user['role']=='customer' else [],"driver_profile":dict(profile) if profile else None,"wallet_unlocked":unlocked(self,db) if user['role']=='admin' else False,"driver_wallet":redact_wallet(driver_wallet(db,profile['id'])) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": [] if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":[] if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": [] if user['role']=='admin' else rows(db, "SELECT p.* FROM products p JOIN merchants m ON m.id=p.merchant_id JOIN categories c ON c.name=p.category WHERE p.deleted=0 AND p.active=1 AND p.stock>0 AND m.active=1 AND c.active=1 ORDER BY p.id DESC") if user['role']=='customer' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username,u.disabled,u.email FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}, "privacy_policy_url": (db.execute("SELECT value FROM settings WHERE key='privacy_policy_url'").fetchone() or [''])[0]}
+            view['archived_products']=[]
+            if user['role']=='admin':
+                catalog=admin_catalog_state(db,parse_qs(urlparse(self.path).query).get('admin_catalog_revision',[''])[0])
+                for key in ('products','draft_catalog','categories','merchants','archived_products'): view.pop(key,None)
+                view.update(catalog)
             if user['staff_permissions'] is not None: staff_state(view,json.loads(user['staff_permissions']))
             else: view['staff_permissions']=None
             if user['role']=='admin' and user['staff_permissions'] is None: view['staff_members']=[dict(r) for r in db.execute("SELECT u.id,u.name,u.username,u.disabled,s.permissions FROM staff_members s JOIN users u ON u.id=s.user_id ORDER BY u.id DESC")]
