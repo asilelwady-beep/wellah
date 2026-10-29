@@ -21,12 +21,20 @@ class AdminCatalogRefreshTests(unittest.TestCase):
                 def log_message(self,*args): pass
             http=server.ThreadingHTTPServer(('127.0.0.1',0),Quiet)
             thread=threading.Thread(target=http.serve_forever,daemon=True);thread.start()
-            def get(revision=''):
-                req=Request(f'http://127.0.0.1:{http.server_port}/api/state'+('?admin_catalog_revision='+revision if revision else ''),headers={'Authorization':'Bearer test-token'})
+            def get(revision='',summary=False):
+                req=Request(f'http://127.0.0.1:{http.server_port}/api/state'+('?admin_catalog=summary' if summary else '?admin_catalog_revision='+revision if revision else ''),headers={'Authorization':'Bearer test-token'})
                 with urlopen(req,timeout=15) as response: return json.load(response)
             try:
                 before=time.perf_counter();full=get();full_time=time.perf_counter()-before
                 self.assertTrue(full['products'])
+                lightweight=get(summary=True)
+                self.assertFalse(lightweight['admin_products_loaded'])
+                self.assertEqual(lightweight['products'],[])
+                self.assertNotIn('admin_catalog_revision',lightweight)
+                self.assertEqual(lightweight['orders'],full['orders'])
+                self.assertEqual(lightweight['customers'],full['customers'])
+                self.assertTrue(get()['admin_products_loaded'])
+                print(f"Initial summary: {len(json.dumps(lightweight))} bytes")
                 revision=full['admin_catalog_revision']
                 before=time.perf_counter();delta=get(revision);delta_time=time.perf_counter()-before
                 self.assertTrue(delta['admin_catalog_unchanged'])

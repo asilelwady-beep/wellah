@@ -27,7 +27,7 @@ const context = vm.createContext({
   render(){},
 });
 for (const name of ['adminProductItems','adminProductRows']) vm.runInContext(definition(index,name),context);
-for (const name of ['openAdminPage','openAdminCategoryProducts','changeAdminProductCategory','toggleAdminProductTrash','adminProductStudio','archivedAdminProductRows','adminCatalogCards']) vm.runInContext(definition(features,name),context);
+for (const name of ['adminNeedsProducts','openAdminPage','openAdminCategoryProducts','changeAdminProductCategory','toggleAdminProductTrash','adminProductStudio','archivedAdminProductRows','adminCatalogCards']) vm.runInContext(definition(features,name),context);
 (async()=>{
   await context.openAdminCategoryProducts('خضار');
   assert.equal(context.adminPage,'admin-products');
