@@ -1072,6 +1072,18 @@ def staff_state(view, permissions):
     return view
 
 
+def app_document(path):
+    html = (ROOT / 'index.html').read_text()
+    if path == '/admin':
+        # One response supplies the startup code; maps must not block the dashboard.
+        for name in ('maps.js', 'features.js'):
+            source = (ROOT / name).read_text().replace('</script', '<\\/script')
+            html = re.sub(r'<script src="/' + re.escape(name) + r'\?[^"<>]*"></script>',
+                          lambda match: '<script>' + source + '</script>', html)
+            html = re.sub(r'<link rel="preload" as="script" href="/' + re.escape(name) + r'\?[^"<>]*">', '', html)
+    return html.encode()
+
+
 class Handler(BaseHTTPRequestHandler):
     def end_headers(self):
         # Apply browser protections to JSON, HTML, and static responses alike.
@@ -1278,7 +1290,7 @@ class Handler(BaseHTTPRequestHandler):
                     'services': rows(db, 'SELECT * FROM services WHERE active=1 ORDER BY rowid'),
                 })
         if path in ('/', '/customer', '/driver', '/driver/settings', '/admin'):
-            data = (ROOT / "index.html").read_bytes()
+            data = app_document(path)
             compressed = len(data)>2048 and 'gzip' in self.headers.get('Accept-Encoding','').lower()
             if compressed: data=gzip.compress(data,compresslevel=5)
             self.send_response(200)

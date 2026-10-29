@@ -1,4 +1,4 @@
-const SHELL='wallaha-shell-v100-admin-save-speed-20261029';
+const SHELL='wallaha-shell-v101-admin-startup-20261029';
 const ASSETS=['/','/customer','/driver','/admin','/maps.js','/leaflet.js','/leaflet.css','/features.js','/icon.svg','/icon-192.png','/icon-512.png'];
 const PRODUCT_ASSET=/^\/(?:product-photo-[0-9]+\.jpg|product-illustration\/[0-9]+\.svg)$/;
 self.addEventListener('install',event=>{
@@ -34,7 +34,7 @@ self.addEventListener('fetch',event=>{
  event.waitUntil(update.then(()=>undefined));
  event.respondWith((async()=>{
   const cached=await caches.match(request,{ignoreSearch:stableMapAsset||!versionedScript});
-  if((versionedScript||stableMapAsset)&&cached)return cached;
+  if((versionedScript||stableMapAsset||(request.mode==='navigate'&&url.pathname==='/admin'))&&cached)return cached;
   return (request.mode==='navigate'||/\.(?:js|css)$/.test(url.pathname))?(await update||cached||Response.error()):(cached||await update||Response.error());
  })());
 });
