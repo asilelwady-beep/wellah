@@ -317,6 +317,8 @@ def init():
                 db.execute('ALTER TABLE users ADD COLUMN '+column+' INTEGER NOT NULL DEFAULT 0')
         if 'customer_tier_last_reward_orders' not in user_columns:
             db.execute('ALTER TABLE users ADD COLUMN customer_tier_last_reward_orders INTEGER NOT NULL DEFAULT 0')
+        if 'original_delivery_fee' not in {r['name'] for r in db.execute('PRAGMA table_info(orders)')}:
+            db.execute('ALTER TABLE orders ADD COLUMN original_delivery_fee REAL')
         if 'discount_cents' not in {r['name'] for r in db.execute('PRAGMA table_info(orders)')}:
             db.execute('ALTER TABLE orders ADD COLUMN discount_cents INTEGER NOT NULL DEFAULT 0')
         db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('featured_min_order','35'),('customer_tier_threshold','0'),('customer_tier_percent','0'),('customer_tier_scope','shipping')")
@@ -872,7 +874,7 @@ def assign(db, oid):
     d=min(candidates,key=lambda x:(distance(x),x['id'])) if candidates else None
     if d:
         if not o['commission_locked']:
-            percent,share,net=commission_split(db,o['kind'],d['vehicle_type'],o['delivery_fee'])
+            percent,share,net=order_commission_split(db,o,d['vehicle_type'])
             db.execute('UPDATE orders SET commission_percent=?,commission_cents=?,driver_earning_cents=?,commission_locked=1 WHERE id=?',(percent,share,net,oid))
         db.execute("UPDATE orders SET driver_id=?,status='offered',offer_until=? WHERE id=?", (d['id'],int(time.time())+90,oid))
         log(db, oid, "عُرض الطلب تلقائيًا على أقرب طيار متاح إلى "+("المحل" if o['kind']=='products' and not o['shop_anywhere'] else "مكان المرسل" if o['kind']=='delivery' else "نقطة الاستلام"))
@@ -1006,8 +1008,24 @@ def commission_split(db, kind, vehicle, amount):
     return float(percent),share,cents-share
 
 
+def order_commission_split(db, order, vehicle, extra=0):
+    order = dict(order)
+    original = order.get('original_delivery_fee')
+    fare = Decimal(str(original if original is not None else order['delivery_fee'])) + Decimal(str(extra))
+    percent, share, earning = commission_split(db, order['kind'], vehicle, fare)
+    if order.get('commission_locked'):
+        percent = float(order['commission_percent'])
+        cents = int((fare * 100).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+        share = int((Decimal(cents) * Decimal(str(percent)) / 100).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+        earning = cents - share
+    # Customer promotions are a platform expense, including amounts above our commission.
+    # Legacy settled orders have no original fare snapshot and retain their accounting.
+    subsidy = int(order.get('discount_cents') or 0) if original is not None else 0
+    return percent, share - subsidy, earning
+
+
 def driver_wallet(db, driver_id):
-    entries=rows(db,"SELECT id,status,total,payment,cash_collected,cash_settled,driver_earning_cents,driver_earning_paid,commission_percent,commission_cents,commission_settled,created_at FROM orders WHERE driver_id=? AND status='delivered' ORDER BY id DESC",(driver_id,))
+    entries=rows(db,"SELECT id,status,total,payment,cash_collected,cash_settled,original_delivery_fee,discount_cents,driver_earning_cents,driver_earning_paid,commission_percent,commission_cents,commission_settled,created_at FROM orders WHERE driver_id=? AND status='delivered' ORDER BY id DESC",(driver_id,))
     adjustments=rows(db,'SELECT id,amount_cents,reason,at,settled FROM wallet_adjustments WHERE driver_id=? ORDER BY id DESC',(driver_id,))
     audit=rows(db,'SELECT action,details,at FROM wallet_audit WHERE driver_id=? ORDER BY id DESC LIMIT 100',(driver_id,))
     return {'balance':(sum(o['driver_earning_cents'] for o in entries if not o['driver_earning_paid'])+sum(a['amount_cents'] for a in adjustments if not a['settled']))/100,
@@ -2135,7 +2153,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not o or not d or (o['kind']=='ride' and d['vehicle_type']!=o['vehicle']) or o['area']!=d['area'] or not d['available'] or d['break_until']>int(time.time()) or o['payment_status']!='confirmed' or o['status'] not in ('assigned','awaiting_driver','ready') or (o['kind']!='products' and not o['quote_accepted']):
                         raise ValueError('تعذر إسناد الطلب لهذا المندوب')
                     if not o['commission_locked']:
-                        percent,share,net=commission_split(db,o['kind'],d['vehicle_type'],o['delivery_fee'])
+                        percent,share,net=order_commission_split(db,o,d['vehicle_type'])
                         db.execute('UPDATE orders SET commission_percent=?,commission_cents=?,driver_earning_cents=?,commission_locked=1 WHERE id=?',(percent,share,net,oid))
                     db.execute('UPDATE orders SET driver_id=?,status=? WHERE id=?',(did,'ready' if o['status']=='ready' else 'assigned',oid))
                     log(db,oid,'أعاد المسؤول إسناد الطلب إلى مندوب آخر')
@@ -2285,6 +2303,7 @@ class Handler(BaseHTTPRequestHandler):
                     status = "awaiting_quote" if kind != "products" else ("medicine_review" if medicine_review else ("new" if payment == "cash" else "payment_review"))
                     cur = db.execute("INSERT INTO orders(user_id,client_request_id,kind,customer,phone,area,address,details,vehicle,pickup,destination,payment,proof,reference,prescription,medicine_review,payment_status,status,total,delivery_fee,quote_accepted,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (user['id'],request_id,kind, customer, phone, data["area"], address, str(data.get("details", "")), str(data.get("vehicle", "")), str(data.get("pickup", "")), str(data.get("destination", "")), payment, proof, str(data.get("reference", "")), prescription,1 if medicine_review else 0, ps, status, subtotal+fee, fee,1 if kind=='products' else 0, now()))
                     oid = cur.lastrowid
+                    db.execute('UPDATE orders SET original_delivery_fee=? WHERE id=?',(0 if prescription_only else original_fee_cents/100,oid))
                     if not prescription_only:
                         total_cents=int((Decimal(str(subtotal+fee))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
                         applied_order_discount=min(order_discount_cents,total_cents)
@@ -2320,6 +2339,7 @@ class Handler(BaseHTTPRequestHandler):
                     log(db, oid, "أنشأ العميل الطلب")
                     if status=='new' or (km_quote and kind=='delivery' and payment=='cash'): assign(db,oid)
                     saved=db.execute('SELECT status,total,payment_status,driver_id FROM orders WHERE id=?',(oid,)).fetchone()
+                    db.commit()
                     return self.respond({'ok':True,'id':oid,'status':saved['status'],'total':saved['total'],'payment_status':saved['payment_status'],'driver_id':saved['driver_id']})
                 elif path == '/api/order/additional-fee':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
@@ -2339,13 +2359,13 @@ class Handler(BaseHTTPRequestHandler):
                     total=Decimal(str(o['total'] or 0))+delta
                     delivery=Decimal(str(o['delivery_fee'] or 0))+delta
                     if total<0 or delivery<0: raise ValueError('تعذر تحديث إجمالي الطلب')
-                    db.execute('UPDATE orders SET additional_fee=?,total=?,delivery_fee=? WHERE id=?',(float(amount),float(total),float(delivery),oid))
+                    db.execute('UPDATE orders SET additional_fee=?,total=?,delivery_fee=?,original_delivery_fee=CASE WHEN original_delivery_fee IS NULL THEN NULL ELSE original_delivery_fee+? END WHERE id=?',(float(amount),float(total),float(delivery),float(delta),oid))
                     if delta and o['payment']!='cash' and o['proof']:
                         db.execute("UPDATE orders SET proof='',reference='',payment_status='pending' WHERE id=?",(oid,))
                     if o['commission_locked'] and o['driver_id']:
                         driver=db.execute('SELECT vehicle_type FROM drivers WHERE id=?',(o['driver_id'],)).fetchone()
                         if driver:
-                            percent,share,net=commission_split(db,o['kind'],driver['vehicle_type'],float(delivery))
+                            percent,share,net=order_commission_split(db,o,driver['vehicle_type'],delta)
                             db.execute('UPDATE orders SET commission_percent=?,commission_cents=?,driver_earning_cents=? WHERE id=?',(percent,share,net,oid))
                     log(db,oid,'عدّلت الإدارة الرسوم الإضافية إلى '+str(amount)+' جنيه')
                     return self.respond({'ok':True,'additional_fee':float(amount),'total':float(total),'delivery_fee':float(delivery)})
@@ -2396,7 +2416,7 @@ class Handler(BaseHTTPRequestHandler):
                             try: delivery_amount=Decimal(str(data.get('delivery_amount','')))
                             except InvalidOperation: raise ValueError('حدد مبلغ التوصيل')
                             if not delivery_amount.is_finite() or delivery_amount<0 or delivery_amount>amount or delivery_amount!=delivery_amount.quantize(Decimal('0.01')): raise ValueError('التوصيل يجب أن يكون مبلغًا صحيحًا لا يتجاوز الإجمالي')
-                        db.execute("UPDATE orders SET total=?,delivery_fee=?,status='quote_pending',quote_accepted=0 WHERE id=?", (float(amount),float(delivery_amount),oid))
+                        db.execute("UPDATE orders SET total=?,delivery_fee=?,original_delivery_fee=?,status='quote_pending',quote_accepted=0 WHERE id=?", (float(amount),float(delivery_amount),float(delivery_amount),oid))
                         log(db, oid, "حدد المسؤول سعر الخدمة وينتظر موافقة العميل")
                     elif action == 'accept_quote' and o['status']=='quote_pending':
                         db.execute("UPDATE orders SET quote_accepted=1,status=? WHERE id=?",('payment_review' if o['payment']=='wallet' else 'new',oid))
@@ -2430,7 +2450,7 @@ class Handler(BaseHTTPRequestHandler):
                         if action=='delivered' and o['payment']=='cash' and data.get('cash_collected') is not True: raise ValueError('أكد تحصيل المبلغ النقدي أولًا')
                         if action=='delivered' and not o['commission_locked']:
                             driver=db.execute('SELECT vehicle_type FROM drivers WHERE id=?',(o['driver_id'],)).fetchone()
-                            percent,share,net=commission_split(db,o['kind'],driver['vehicle_type'] if driver else o['vehicle'],o['delivery_fee'])
+                            percent,share,net=order_commission_split(db,o,driver['vehicle_type'] if driver else o['vehicle'])
                             db.execute('UPDATE orders SET commission_percent=?,commission_cents=?,driver_earning_cents=?,commission_locked=1 WHERE id=?',(percent,share,net,oid))
                         if action=='picked_up' and o['shop_anywhere']:
                             shop=str(data.get('purchase_shop','')).strip()
