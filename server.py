@@ -317,6 +317,10 @@ def init():
                 db.execute('ALTER TABLE users ADD COLUMN '+column+' INTEGER NOT NULL DEFAULT 0')
         if 'customer_tier_last_reward_orders' not in user_columns:
             db.execute('ALTER TABLE users ADD COLUMN customer_tier_last_reward_orders INTEGER NOT NULL DEFAULT 0')
+        if 'tier_reward_base' not in {r['name'] for r in db.execute('PRAGMA table_info(orders)')}:
+            db.execute('ALTER TABLE orders ADD COLUMN tier_reward_base INTEGER')
+        # Return one-time promotions attached to cancelled orders, including older cancellations.
+        db.execute("UPDATE featured_rewards SET used_order_id=NULL WHERE kind IN ('discount','customer_shipping','customer_order') AND used_order_id IN (SELECT id FROM orders WHERE status='cancelled')")
         if 'original_delivery_fee' not in {r['name'] for r in db.execute('PRAGMA table_info(orders)')}:
             db.execute('ALTER TABLE orders ADD COLUMN original_delivery_fee REAL')
         if 'discount_cents' not in {r['name'] for r in db.execute('PRAGMA table_info(orders)')}:
@@ -745,7 +749,8 @@ def customer_discount_terms(db,user_id):
     percent=float(settings.get('customer_tier_percent',0) or 0)
     scope=settings.get('customer_tier_scope','shipping') if settings.get('customer_tier_scope') in ('shipping','order') else 'shipping'
     last_reward_orders=max(0,int(user['tier_last_reward_orders'] or 0))
-    if threshold<=0 or completed<last_reward_orders+threshold: percent=0.0
+    reserved=db.execute("SELECT 1 FROM orders WHERE user_id=? AND tier_reward_base IS NOT NULL AND status NOT IN ('delivered','cancelled') LIMIT 1",(user_id,)).fetchone()
+    if threshold<=0 or completed<last_reward_orders+threshold or reserved: percent=0.0
     return {'shipping_recurring':int(user['shipping_recurring'] or 0),'order_recurring':int(user['order_recurring'] or 0),
             'shipping_reward_id':shipping['id'] if shipping else None,'shipping_reward_cents':int(shipping['amount_cents']) if shipping else 0,
             'order_reward_id':order['id'] if order else None,'order_reward_cents':int(order['amount_cents']) if order else 0,
@@ -2320,7 +2325,7 @@ class Handler(BaseHTTPRequestHandler):
                         if shipping_reward_id and shipping_reward_used>0:
                             db.execute('UPDATE featured_rewards SET used_order_id=? WHERE id=?',(oid,shipping_reward_id))
                         if tier_reward_used:
-                            db.execute('UPDATE users SET customer_tier_last_reward_orders=? WHERE id=? AND role=\'customer\'',(customer_terms['completed_orders'],user['id']))
+                            db.execute('UPDATE orders SET tier_reward_base=? WHERE id=?',(customer_terms['completed_orders'],oid))
                         applied_discount=shipping_discount_cents+applied_order_discount+legacy_discount
                         if applied_discount:
                             db.execute('UPDATE orders SET total=?,discount_cents=? WHERE id=?',(total_cents/100,applied_discount,oid))
@@ -2465,6 +2470,8 @@ class Handler(BaseHTTPRequestHandler):
                         if action=='picked_up': db.execute("UPDATE orders SET pickup_photo=?,status=? WHERE id=?",(pickup_photo,action,oid))
                         elif action=='delivered': db.execute("UPDATE orders SET delivery_photo=?,status=? WHERE id=?",(delivery_photo,action,oid))
                         else: db.execute("UPDATE orders SET status=? WHERE id=?",(action,oid))
+                        if action=='delivered' and o['tier_reward_base'] is not None:
+                            db.execute('UPDATE users SET customer_tier_last_reward_orders=MAX(COALESCE(customer_tier_last_reward_orders,0),?) WHERE id=?',(o['tier_reward_base'],o['user_id']))
                         if action=='delivered' and o['payment']=='cash': db.execute('UPDATE orders SET cash_collected=1 WHERE id=?',(oid,))
                         log(db, oid, {"picked_up": "استلم المندوب الطلب وأرفق صورة الاستلام", "on_way": "المندوب في الطريق", "delivered": "تم التسليم وأرفق الطيار صورة المكان"}[action])
                     elif action=='settle_cash' and o['payment']=='cash' and o['status']=='delivered' and o['cash_collected'] and not o['cash_settled']:
@@ -2474,8 +2481,9 @@ class Handler(BaseHTTPRequestHandler):
                         log(db,oid,'أكد المسؤول استلام الكاش من المندوب')
                     elif action in ('cancel','reject_medicine','customer_cancel') and o["status"] not in ("delivered", "cancelled") and (action!='reject_medicine' or o['status']=='medicine_review') and (action!='customer_cancel' or (o['status'] in ('awaiting_quote','quote_pending','medicine_review','payment_review','new','awaiting_driver','offered','assigned') and not (o['payment']=='wallet' and (o['payment_status']=='confirmed' or bool(o['proof']))))):
                         db.execute("UPDATE orders SET status='cancelled' WHERE id=?", (oid,))
-                        if o['discount_cents']:
-                            db.execute('UPDATE featured_rewards SET used_order_id=NULL WHERE used_order_id=? AND kind=\'discount\'',(oid,))
+                        # used_order_id reserves a one-time reward while its order is active.
+                        # Cancellation releases the reservation; delivery keeps it consumed.
+                        db.execute("UPDATE featured_rewards SET used_order_id=NULL WHERE used_order_id=? AND kind IN ('discount','customer_shipping','customer_order')",(oid,))
                         for it in db.execute("SELECT * FROM order_items WHERE order_id=?", (oid,)):
                             db.execute("UPDATE products SET stock=stock+? WHERE id=?", (it["stock_quantity"] if it["stock_quantity"] is not None else it["quantity"], it["product_id"]))
                         log(db, oid, "ألغي الطلب وأعيدت المنتجات للكمية المتاحة")

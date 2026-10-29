@@ -48,4 +48,37 @@ class PlatformDiscountTests(unittest.TestCase):
       db.execute('UPDATE orders SET driver_earning_paid=1,cash_settled=1,commission_settled=1 WHERE id=?',(o['id'],))
       self.assertEqual(server.driver_wallet(db,did)['balance'],0)
       self.assertEqual(server.driver_wallet(db,did)['cash_due'],0)
+    def post(path,payload,token='test-token'):
+     req=Request(f'http://127.0.0.1:{http.server_port}/api/'+path,data=json.dumps(payload).encode(),headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'})
+     with urlopen(req,timeout=15) as response:return json.load(response)
+    def new_order():
+     data['client_request_id']=str(time.time_ns())
+     with server.connect() as db:data['delivery_quote']=server.quote_delivery(db,uid,data)['quote_token']
+     return post('order',data)['id']
+    with server.connect() as db:
+     db.execute('UPDATE users SET shipping_discount_cents=0,order_discount_cents=0 WHERE id=?',(uid,))
+     for kind in ('customer_shipping','customer_order','discount'):
+      db.execute('INSERT INTO featured_rewards(user_id,kind,amount_cents,created_at) VALUES(?,?,100,?)',(uid,kind,server.now()))
+    cancelled=new_order()
+    with server.connect() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM featured_rewards WHERE used_order_id=?',(cancelled,)).fetchone()[0],3)
+    post('order/action',{'id':cancelled,'action':'customer_cancel'})
+    with server.connect() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM featured_rewards WHERE user_id=? AND used_order_id IS NULL',(uid,)).fetchone()[0],3)
+    with server.connect() as db:
+     db.executemany('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)',[('customer_tier_threshold','2'),('customer_tier_percent','50'),('customer_tier_scope','shipping')])
+    tier_order=new_order()
+    with server.connect() as db:
+     self.assertEqual(db.execute('SELECT customer_tier_last_reward_orders FROM users WHERE id=?',(uid,)).fetchone()[0],0)
+     self.assertEqual(server.customer_discount_terms(db,uid)['tier_percent'],0)
+    post('order/action',{'id':tier_order,'action':'customer_cancel'})
+    with server.connect() as db:self.assertEqual(server.customer_discount_terms(db,uid)['tier_percent'],50)
+    completed=new_order()
+    with server.connect() as db:
+     base=db.execute('SELECT tier_reward_base FROM orders WHERE id=?',(completed,)).fetchone()[0]
+     db.execute("UPDATE orders SET status='on_way',driver_id=? WHERE id=?",(did,completed))
+     db.execute('INSERT INTO sessions(token_hash,user_id,expires) VALUES(?,?,?)',(hashlib.sha256(b'driver-token').hexdigest(),duid,int(time.time())+300))
+    post('order/action',{'id':completed,'action':'delivered','cash_collected':True,'delivery_photo':'data:image/png;base64,iVBORw0KGgo='},'driver-token')
+    with server.connect() as db:
+     self.assertEqual(db.execute('SELECT customer_tier_last_reward_orders FROM users WHERE id=?',(uid,)).fetchone()[0],base)
+     self.assertEqual(server.customer_discount_terms(db,uid)['tier_percent'],0)
+     self.assertGreater(db.execute('SELECT COUNT(*) FROM featured_rewards WHERE used_order_id=?',(completed,)).fetchone()[0],0)
    finally:http.shutdown();http.server_close();thread.join()
