@@ -1,5 +1,6 @@
 let featureConfig={email_otp_ready:false,sms_otp_ready:false,ai_ready:false,whatsapp:''},authChallenge='',authPurpose='register',adminPage=location.hash==='#products'?'admin-products':'admin-overview',lastSupportId=null;
-async function featureAPI(path,data){const {response:r,data:v}=await fetchJsonWithTimeout('/api/'+path,{method:'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},body:JSON.stringify(data)},20000);if(!r.ok)throw Error(v.error||'تعذر إتمام الطلب');return v}
+function featureAPI(path,data){return window.runAppAction(path,data,()=>featureRequest(path,data))}
+async function featureRequest(path,data){const {response:r,data:v}=await fetchJsonWithTimeout('/api/'+path,{method:'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},body:JSON.stringify(data)},20000);if(!r.ok)throw Error(v.error||'تعذر إتمام الطلب');return v}
 async function loadFeatureConfig(){try{let r=await fetch('/api/auth-config');if(r.ok)featureConfig=await r.json()}catch{}paintSupport()}
 function installCustomerLoginStyles(){if(document.getElementById('customer-login-styles'))return;const style=document.createElement('style');style.id='customer-login-styles';style.textContent=[
 'body:has(.customer-login-shell){background:radial-gradient(ellipse at 12% 8%,#ffe8b4 0,transparent 34%),linear-gradient(145deg,#fff8ef,#fff0e2 55%,#fff9ef);min-height:100vh}',

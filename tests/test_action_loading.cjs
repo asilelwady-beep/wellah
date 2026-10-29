@@ -1,0 +1,20 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const html=fs.readFileSync('index.html','utf8');
+const overlays=[],main={inert:false},header={inert:true},focus={isConnected:true,focus(){this.restored=true}};
+const doc={activeElement:focus,querySelector:s=>s==='main'?main:s==='body > header'?header:null,createElement:()=>({setAttribute(){},append(){},focus(){},addEventListener(){},remove(){this.removed=true}}),body:{append(node){overlays.push(node)}}};
+const ctx=vm.createContext({window:{},document:doc});
+vm.runInContext(html.slice(html.indexOf('let appLoadingCount='),html.indexOf('async function apiRequest(')),ctx);
+(async()=>{
+ let resolve,calls=0;
+ const action=()=>{calls++;return new Promise(r=>resolve=r)};
+ const first=ctx.window.runAppAction('order',{id:1},action);
+ const duplicate=ctx.window.runAppAction('order',{id:1},action);
+ assert.equal(first,duplicate);await Promise.resolve();assert.equal(calls,1);assert.equal(main.inert,true);assert.equal(overlays.length,1);
+ const finishNested=ctx.window.beginAppLoading();resolve({ok:true});await first;
+ assert.notEqual(overlays[0].removed,true);finishNested();finishNested();assert.equal(overlays[0].removed,true);assert.equal(main.inert,false);assert.equal(header.inert,true);assert.equal(focus.restored,true);
+ await assert.rejects(ctx.window.runAppAction('settings',{},()=>Promise.reject(Error('offline'))),/offline/);
+ assert.equal(overlays[1].removed,true);assert.equal(main.inert,false);
+ const before=overlays.length;await ctx.window.runAppAction('location',{},async()=>true);await ctx.window.runAppAction('delivery-quote',{},async()=>true);assert.equal(overlays.length,before);
+ await ctx.window.runAppAction('settings',{},async()=>true);assert.equal(overlays.length,before+1);assert.equal(overlays.at(-1).removed,true);
+ console.log('Passed: spinner stays during request, duplicate sends blocked, nested loading tracked, error cleanup, focus/inert restored, background requests silent, retry allowed.');
+})().catch(e=>{console.error(e);process.exitCode=1});
