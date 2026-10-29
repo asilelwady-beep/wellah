@@ -252,7 +252,8 @@ def feature_state(db, user):
     second_required=bool(shift and not shift_required and not shift['second_photo_at'] and datetime.fromisoformat(shift['started_at']).timestamp()+21600<=time.time())
     rating=db.execute('SELECT ROUND(AVG(stars),2) AS average,COUNT(*) AS count FROM ratings WHERE target_id=?',(user['id'],)).fetchone()
     featured=[dict(r) for r in db.execute("""SELECT u.id,u.name,u.role,u.featured,ROUND(AVG(r.stars),2) AS average,COUNT(r.stars) AS rating_count,
-        (SELECT COUNT(*) FROM orders o WHERE o.status='delivered' AND (o.user_id=u.id OR o.driver_id IN (SELECT id FROM drivers WHERE user_id=u.id))) AS completed,
+        CASE WHEN u.role='customer' THEN (SELECT COUNT(*) FROM orders o WHERE o.user_id=u.id AND o.status='delivered')
+        ELSE (SELECT COUNT(*) FROM orders o WHERE o.driver_id IN (SELECT id FROM drivers WHERE user_id=u.id) AND o.status='delivered') END AS completed,
         (SELECT id FROM drivers WHERE user_id=u.id) AS driver_id
         FROM users u LEFT JOIN ratings r ON r.target_id=u.id WHERE u.role IN ('customer','driver') AND u.disabled=0 GROUP BY u.id
         ORDER BY u.featured DESC,completed DESC,CASE WHEN COUNT(r.stars)>=3 THEN AVG(r.stars) ELSE 0 END DESC LIMIT 100""")] if user['role']=='admin' else []

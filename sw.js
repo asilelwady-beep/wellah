@@ -1,4 +1,4 @@
-const SHELL='wallaha-shell-v99-stable-navigation-20261029';
+const SHELL='wallaha-shell-v100-admin-save-speed-20261029';
 const ASSETS=['/','/customer','/driver','/admin','/maps.js','/leaflet.js','/leaflet.css','/features.js','/icon.svg','/icon-192.png','/icon-512.png'];
 const PRODUCT_ASSET=/^\/(?:product-photo-[0-9]+\.jpg|product-illustration\/[0-9]+\.svg)$/;
 self.addEventListener('install',event=>{

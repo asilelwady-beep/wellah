@@ -208,6 +208,8 @@ def apply_verified_catalog_prices(db, filename='verified-market-prices-20261013.
 
 def init():
     with connect() as db:
+        # Readers must not block discount/settings writes during dashboard refreshes.
+        db.execute("PRAGMA journal_mode=WAL")
         db.executescript("""
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS area_fees (area TEXT PRIMARY KEY, fee REAL NOT NULL CHECK(fee>=0));
@@ -301,6 +303,8 @@ def init():
         db.execute('CREATE INDEX IF NOT EXISTS events_order_lookup ON events(order_id,id)')
         db.execute('CREATE INDEX IF NOT EXISTS orders_customer_status ON orders(user_id,status)')
         db.execute('CREATE INDEX IF NOT EXISTS orders_driver_status ON orders(driver_id,status)')
+        db.execute("CREATE INDEX IF NOT EXISTS orders_dispatch_status ON orders(status)")
+        db.execute("CREATE INDEX IF NOT EXISTS ratings_target_lookup ON ratings(target_id)")
         init_admin_catalog_revision(db)
 
         if 'featured' not in {r['name'] for r in db.execute('PRAGMA table_info(drivers)')}:
@@ -1362,6 +1366,8 @@ class Handler(BaseHTTPRequestHandler):
             if not user: return self.respond({'error':'سجل الدخول أولًا'}, 401)
             refresh_offers(db)
             cleanup_order_calls(db)
+            # Release maintenance writes before building the potentially large snapshot.
+            db.commit()
             # Keep the revision and catalog rows in the same SQLite snapshot.
             if user['role']=='admin' and not db.in_transaction: db.execute('BEGIN')
             driver_state_view=parse_qs(urlparse(self.path).query).get('driver_view',['active'])[0]
@@ -1429,6 +1435,8 @@ class Handler(BaseHTTPRequestHandler):
                     FROM users u LEFT JOIN orders o ON o.user_id=u.id WHERE u.role='customer'
                     GROUP BY u.id ORDER BY u.id DESC""")]
             else: view['customers']=[]
+            # Never hold the snapshot lock while serializing or sending to a slow client.
+            db.commit()
             self.respond(view)
 
     def do_POST(self):
@@ -1616,7 +1624,7 @@ class Handler(BaseHTTPRequestHandler):
                     if action in ('disable','enable'):
                         db.execute('UPDATE users SET disabled=? WHERE id=?',(int(action=='disable'),uid))
                         if action=='disable': db.execute('DELETE FROM sessions WHERE user_id=?',(uid,))
-                        return self.respond({'ok':True})
+                        db.commit(); return self.respond({'ok':True})
                     if action=='discount':
                         scope=str(data.get('scope',''))
                         frequency=str(data.get('frequency',''))
@@ -1632,11 +1640,11 @@ class Handler(BaseHTTPRequestHandler):
                             kind='customer_shipping' if scope=='shipping' else 'customer_order'
                             if cents==0:
                                 db.execute('DELETE FROM featured_rewards WHERE user_id=? AND kind=? AND used_order_id IS NULL',(uid,kind))
-                                return self.respond({'ok':True})
+                                db.commit(); return self.respond({'ok':True})
                             pending=db.execute('SELECT id FROM featured_rewards WHERE user_id=? AND kind=? AND used_order_id IS NULL ORDER BY id LIMIT 1',(uid,kind)).fetchone()
                             if pending: db.execute('UPDATE featured_rewards SET amount_cents=? WHERE id=?',(cents,pending['id']))
                             else: db.execute('INSERT INTO featured_rewards(user_id,kind,amount_cents,created_at) VALUES (?,?,?,?)',(uid,kind,cents,now()))
-                        return self.respond({'ok':True})
+                        db.commit(); return self.respond({'ok':True})
                     raise ValueError('الإجراء غير صحيح')
                 if path == '/api/admin/customer-tier':
                     if user['role']!='admin' or user['staff_permissions'] is not None:

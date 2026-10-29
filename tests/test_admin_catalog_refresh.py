@@ -17,6 +17,13 @@ class AdminCatalogRefreshTests(unittest.TestCase):
             with server.connect() as db:
                 uid=db.execute("SELECT id FROM users WHERE role='admin'").fetchone()['id']
                 db.execute('INSERT INTO sessions(token_hash,user_id,expires) VALUES(?,?,?)',(hashlib.sha256(b'test-token').hexdigest(),uid,int(time.time())+300))
+            with server.connect() as reader, server.connect() as writer:
+                self.assertEqual(reader.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+                reader.execute("BEGIN")
+                reader.execute("SELECT * FROM settings").fetchall()
+                writer.execute("UPDATE settings SET value=value")
+                writer.commit()  # An open dashboard read must not block saves.
+                reader.rollback()
             class Quiet(server.Handler):
                 def log_message(self,*args): pass
             http=server.ThreadingHTTPServer(('127.0.0.1',0),Quiet)
