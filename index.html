@@ -1,4 +1,27 @@
-<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ولعه</title><script id="admin-early-state">(()=>{if(location.pathname!=='/admin')return;try{const saved=localStorage.getItem('wallaha_token_admin')||localStorage.getItem('wallaha_token');if(!saved)return;const controller=new AbortController();let timer;const request=Promise.race([fetch('/api/state?admin_catalog=summary',{headers:{Authorization:'Bearer '+saved},signal:controller.signal}).then(async response=>({response,data:await response.json()})),new Promise(resolve=>{timer=setTimeout(()=>{controller.abort();resolve(null)},20000)})]).catch(()=>null).finally(()=>clearTimeout(timer));window.wallahaAdminBoot={token:saved,request}}catch{}})();</script><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="preconnect" href="https://tile.openstreetmap.org" crossorigin><link rel="dns-prefetch" href="//tile.openstreetmap.org"><link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'"><link rel="preload" as="script" href="/maps.js?v=delivery-wizard-20261028-r3"><link rel="preload" as="script" href="/features.js?v=discount-completion-20261029-r9"><meta name="theme-color" content="#c44816"><link id="manifest" rel="manifest" href="/manifest/customer.json"><link rel="stylesheet" href="/leaflet.css?v=1.9.4" media="print" onload="this.media='all'"><link rel="preload" as="script" href="/leaflet.js?v=1.9.4"><style>.driver-product-item{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid #dce7df;border-radius:12px;padding:10px;margin:8px 0}.driver-product-item img{width:72px;height:72px;object-fit:contain;border-radius:8px;background:#f7f8f6}.driver-product-item span{flex:1}.driver-product-item input{width:22px;height:22px;flex:none}.driver-products{margin:16px 0} .driver-nav-main{display:block;text-align:center;padding:18px;margin:14px 0;font-size:1.13rem;font-weight:800;background:#116a44;color:#fff!important;border-radius:14px;text-decoration:none;box-shadow:0 4px 14px #0002}.driver-nav-main:active{transform:scale(.99)}
+<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ولعه</title><script id="admin-early-state">async function fetchAdminState(url,token){
+  const controller=new AbortController();
+  let timer;
+  const resetTimeout=()=>{clearTimeout(timer);timer=setTimeout(()=>controller.abort(),45000)};
+  resetTimeout();
+  try{
+    const response=await fetch(url,{headers:{Authorization:'Bearer '+token},signal:controller.signal});
+    if(!response.ok)return {response,data:null};
+    if(!response.body?.getReader)return {response,data:await response.json()};
+    const reader=response.body.getReader(),decoder=new TextDecoder(),parts=[];
+    while(true){
+      const {done,value}=await reader.read();
+      if(done)break;
+      resetTimeout();
+      parts.push(decoder.decode(value,{stream:true}));
+    }
+    parts.push(decoder.decode());
+    return {response,data:JSON.parse(parts.join(''))};
+  }finally{clearTimeout(timer)}
+}
+(()=>{if(location.pathname!=='/admin')return;try{
+  const saved=localStorage.getItem('wallaha_token_admin')||localStorage.getItem('wallaha_token');
+  if(saved)window.wallahaAdminBoot={token:saved,request:fetchAdminState('/api/state?admin_catalog=summary',saved).catch(()=>null)};
+}catch{}})();</script><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="preconnect" href="https://tile.openstreetmap.org" crossorigin><link rel="dns-prefetch" href="//tile.openstreetmap.org"><link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'"><link rel="preload" as="script" href="/maps.js?v=delivery-wizard-20261028-r3"><link rel="preload" as="script" href="/features.js?v=discount-completion-20261029-r9"><meta name="theme-color" content="#c44816"><link id="manifest" rel="manifest" href="/manifest/customer.json"><link rel="stylesheet" href="/leaflet.css?v=1.9.4" media="print" onload="this.media='all'"><link rel="preload" as="script" href="/leaflet.js?v=1.9.4"><style>.driver-product-item{display:flex;align-items:center;gap:12px;background:#fff;border:1px solid #dce7df;border-radius:12px;padding:10px;margin:8px 0}.driver-product-item img{width:72px;height:72px;object-fit:contain;border-radius:8px;background:#f7f8f6}.driver-product-item span{flex:1}.driver-product-item input{width:22px;height:22px;flex:none}.driver-products{margin:16px 0} .driver-nav-main{display:block;text-align:center;padding:18px;margin:14px 0;font-size:1.13rem;font-weight:800;background:#116a44;color:#fff!important;border-radius:14px;text-decoration:none;box-shadow:0 4px 14px #0002}.driver-nav-main:active{transform:scale(.99)}
  .route-point-entry{border:1px solid #d9e7de;background:#f8fcf8;border-radius:14px;padding:14px;margin:14px 0}.route-point-entry button{margin:5px}
 .activity-search-form{margin:0;min-width:260px}.activity-search-form label{display:block;margin-bottom:8px}.activity-search-field{display:flex;align-items:center;gap:8px}.activity-search-field input{flex:1;min-width:0;margin:0}.activity-search-field button{display:inline-flex;align-items:center;justify-content:center;gap:7px;flex-shrink:0;margin:0;min-height:44px}.activity-search-field button svg{display:block}@media(max-width:600px){.activity-search-form{min-width:0;width:100%}}
 
@@ -1307,7 +1330,8 @@ async function performRefresh(force=false){
     const stateParams=new URLSearchParams();if(stateView)stateParams.set('driver_view',stateView);if(expectedAppRole==='admin'){if(!state?.admin_products_loaded&&!adminNeedsProducts())stateParams.set('admin_catalog','summary');else if(state?.admin_products_loaded&&state.admin_catalog_revision)stateParams.set('admin_catalog_revision',state.admin_catalog_revision)}
     const early=window.wallahaAdminBoot;window.wallahaAdminBoot=null;
     const prefetched=expectedAppRole==='admin'&&!state&&early?.token===token?await early.request:null;
-    const {response:r,data:loadedState}=prefetched||await fetchJsonWithTimeout('/api/state'+(stateParams.size?'?'+stateParams:''),{headers:{Authorization:'Bearer '+token}},30000);
+    const url='/api/state'+(stateParams.toString()?'?'+stateParams:'');
+    const {response:r,data:loadedState}=prefetched||(expectedAppRole==='admin'?await fetchAdminState(url,token):await fetchJsonWithTimeout(url,{headers:{Authorization:'Bearer '+token}},30000));
     if(!r.ok&&r.status!==401)throw new Error('تعذر تحميل البيانات');
     if(!r.ok){token='';localStorage.removeItem(appTokenKey);localStorage.removeItem('wallaha_token');state=null;cachedReadOnly=false;render();return}
     if(!force&&tab==='admin'&&window._wallahConfirmClose)return;

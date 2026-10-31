@@ -1433,7 +1433,11 @@ class Handler(BaseHTTPRequestHandler):
                 clause,args=" WHERE d.user_id=? AND o.status NOT IN ('delivered','cancelled')",(user['id'],)
             if user['staff_permissions'] is not None and not set(json.loads(user['staff_permissions'])).intersection({'admin-orders','admin-driver-list','admin-map-section','admin-daily','admin-overview'}):
                 clause, args = ' WHERE 0', ()
-            orders = rows(db, "SELECT o.*,d.name AS driver_name,d.phone AS driver_phone,d.photo AS driver_photo,d.lat AS driver_lat,d.lon AS driver_lon,d.location_at AS driver_location_at,m.name AS merchant_name,m.address AS merchant_address FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id LEFT JOIN merchants m ON m.id=o.merchant_id"+clause+" ORDER BY o.id DESC", args)
+            # Proof photos have a separate authenticated endpoint. Read only their presence here.
+            columns=[f'o."{col[1]}"' for col in db.execute('PRAGMA table_info(orders)') if col[1] not in ('pickup_photo','delivery_photo')]
+            columns.extend(["length(o.pickup_photo)>0 AS has_pickup_photo","length(o.delivery_photo)>0 AS has_delivery_photo"])
+            driver_photo="NULL" if user['role']=='admin' else "d.photo"
+            orders = rows(db, "SELECT "+",".join(columns)+",d.name AS driver_name,d.phone AS driver_phone,"+driver_photo+" AS driver_photo,d.lat AS driver_lat,d.lon AS driver_lon,d.location_at AS driver_location_at,m.name AS merchant_name,m.address AS merchant_address FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id LEFT JOIN merchants m ON m.id=o.merchant_id"+clause+" ORDER BY o.id DESC", args)
             item_groups, event_groups = {}, {}
             order_scope = "SELECT o.id FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id" + clause
             if orders:
@@ -1442,10 +1446,8 @@ class Handler(BaseHTTPRequestHandler):
                 for event in rows(db, "SELECT order_id,action,at FROM events WHERE order_id IN ("+order_scope+") ORDER BY id", args):
                     event_groups.setdefault(event.pop('order_id'), []).append(event)
             for o in orders:
-                o["has_pickup_photo"] = bool(o.get("pickup_photo"))
-                o["has_delivery_photo"] = bool(o.get("delivery_photo"))
-                o.pop("pickup_photo", None)
-                o.pop("delivery_photo", None)
+                o["has_pickup_photo"]=bool(o["has_pickup_photo"])
+                o["has_delivery_photo"]=bool(o["has_delivery_photo"])
                 redact_order_contacts(o, user['role'])
                 o["items"] = item_groups.get(o['id'], [])
                 o["events"] = event_groups.get(o['id'], [])
