@@ -1173,6 +1173,27 @@ window.appConfirm=(message,options={})=>new Promise(resolve=>{
   accept.className='app-confirm-accept';
   accept.textContent=options.confirmText||'نعم، أكمل';
   card.append(mark,title,body,actions);
+  let reasonSelect, reasonNote;
+  if(options.reasons){
+    reasonSelect=document.createElement('select');
+    reasonSelect.setAttribute('aria-label','سبب إلغاء الطلب');
+    reasonSelect.add(new Option('اختار السبب',''));
+    for(const reason of options.reasons)reasonSelect.add(new Option(reason,reason));
+    reasonNote=document.createElement('textarea');
+    reasonNote.placeholder='اكتب سبب الإلغاء';
+    reasonNote.setAttribute('aria-label','اكتب سبب الإلغاء');
+    reasonNote.maxLength=240;
+    reasonNote.hidden=true;
+    const update=()=>{
+      reasonNote.hidden=reasonSelect.value!=='سبب آخر';
+      accept.disabled=!reasonSelect.value||(!reasonNote.hidden&&!reasonNote.value.trim());
+    };
+    reasonSelect.addEventListener('change',update);
+    reasonNote.addEventListener('input',update);
+    update();
+    card.insertBefore(reasonSelect,actions);
+    card.insertBefore(reasonNote,actions);
+  }
   if(!options.notice)actions.append(cancel);
   actions.append(accept);
   backdrop.append(card);
@@ -1186,14 +1207,14 @@ window.appConfirm=(message,options={})=>new Promise(resolve=>{
     if(previousFocus?.isConnected)previousFocus.focus({preventScroll:true});
     resolve(answer);
   };
-  const onKeyDown=event=>{if(event.key==='Escape'){event.preventDefault();close(false)}else if(event.key==='Tab'){const first=options.notice?accept:cancel,last=accept;if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus()}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus()}}};
+  const onKeyDown=event=>{if(event.key==='Escape'){event.preventDefault();close(false)}else if(event.key==='Tab'){const first=reasonSelect||(options.notice?accept:cancel),last=accept.disabled?cancel:accept;if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus()}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus()}}};
   window._wallahConfirmClose=close;
   cancel.addEventListener('click',()=>close(false));
-  accept.addEventListener('click',()=>close(true));
+  accept.addEventListener('click',()=>close(reasonSelect?(reasonNote.hidden?reasonSelect.value:reasonNote.value.trim()):true));
   backdrop.addEventListener('click',event=>{if(event.target===backdrop)close(false)});
   window.addEventListener('keydown',onKeyDown);
   document.body.append(backdrop);
-  requestAnimationFrame(()=>accept.focus({preventScroll:true}));
+  requestAnimationFrame(()=>(reasonSelect||accept).focus({preventScroll:true}));
 });
 const nativeAppAlert=window.alert.bind(window);
 let appNoticeStack=null,notifiedSecondShiftId=null;
@@ -1570,7 +1591,7 @@ function driverArrivalEstimate(o){return `<div class="tracking-arrival" id="trac
 function customerDriverCard(o){if(!o.driver_name||!['assigned','ready','picked_up','on_way','delivered'].includes(o.status))return '';return `<section class="customer-driver-card"><div class="customer-driver-person">${driverAvatar(o.driver_photo,o.driver_name)}<div><small>طيارك في هذا الطلب</small><strong>${esc(o.driver_name)}</strong>${o.driver_phone?`<div class="customer-driver-phone">${contactLink(o.driver_phone)}</div>`:'<small>رقم الهاتف غير مسجل</small>'}</div></div></section>`}
 function trackingPanel(){let o=state.orders.find(x=>x.id===trackingOrderId);if(!o)return '';return `<h3>متابعة طلب #${o.id}</h3><div class="pill">${status[o.status]} · ${customerOrderPriceMarkup(o)}${o.driver_name?` · المندوب: ${esc(o.driver_name)}`:''}${o.shop_anywhere?' · الشراء من سوبر ماركت قريب':o.merchant_name?` · الاستلام من: ${esc(o.merchant_name)} (${esc(o.merchant_address)})`:''}</div>${driverArrivalEstimate(o)}<details class="card" open><summary>موقع الطيار والطلب على الخريطة</summary><div id="tracking-map" class="map"></div></details><p class="map-legend">الأزرق مكان الاستلام، البرتقالي عنوانك، والموتوسيكل موقع الطيار${o.driver_location_at?' في '+esc(o.driver_location_at):''}. تتحرك العلامة مع تحديث GPS من تطبيق الطيار.</p>${canCancel(o)?`<button onclick="cancelMyOrder(${o.id})">إلغاء الطلب</button>`:''}${o.status==='quote_pending'?`<div class="pill">السعر المقترح ${money(o.total)}. <button onclick="act(${o.id},'accept_quote')">أوافق على السعر</button> <button onclick="act(${o.id},'decline_quote')">رفض</button></div>`:''}${o.payment==='wallet'&&o.status==='payment_review'&&!o.has_proof?transferPaymentPanel(o):''}${['assigned','ready','picked_up','on_way'].includes(o.status)?complaintPanel(o):''}${ratingPanel(o)}<p class="small">${o.events.filter(e=>!/(رسوم الطريق|كم\s*[×x])/u.test(String(e.action||''))).map(e=>esc(e.action)).join(' ← ')}</p>`}
 
-async function cancelMyOrder(id){if(!await window.appConfirm('هل تريد إلغاء الطلب قبل تنفيذه؟',{title:'إلغاء الطلب',confirmText:'نعم، ألغِ الطلب',tone:'danger'}))return;try{await api('order/action',{id,action:'customer_cancel'});const order=state?.orders?.find(o=>o.id===id);if(order){order.status='cancelled';render()}alert('تم إلغاء الطلب وإعادة الكمية المتاحة')}catch(e){alert(e.message)}}
+async function cancelMyOrder(id){const reason=await window.appConfirm('إيه سبب إلغاء الطلب؟',{title:'إلغاء الطلب',confirmText:'تأكيد الإلغاء',cancelText:'الاحتفاظ بالطلب',tone:'danger',reasons:['تأخر وصول الطيار','مشكلة مع الطيار','طلبت بالغلط','لم أعد بحاجة للطلب','سبب آخر']});if(!reason)return;try{await api('order/action',{id,action:'customer_cancel',reason});const order=state?.orders?.find(o=>o.id===id);if(order){order.status='cancelled';render()}alert('تم إلغاء الطلب وإعادة الكمية المتاحة')}catch(e){alert(e.message)}}
 async function sendProof(id){try{await api('order/action',{id,action:'submit_proof',proof:await fileData('track-proof'),reference:$('track-ref').value});alert('وصل الإثبات للمراجعة')}catch(e){alert(e.message)}}
 let selectedTripId=null;
 function openTrip(id){selectedTripId=id;if(tab==='driver'){driverView=['delivered','cancelled'].includes(state.orders.find(o=>o.id===id)?.status)?'history':'trips';try{sessionStorage.setItem('wallaha_driver_view',driverView)}catch{}}render();document.getElementById('trip-details')?.scrollIntoView({behavior:'smooth',block:'start'})}

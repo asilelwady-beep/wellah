@@ -2502,7 +2502,13 @@ class Handler(BaseHTTPRequestHandler):
                         db.execute("UPDATE featured_rewards SET used_order_id=NULL WHERE used_order_id=? AND kind IN ('discount','customer_shipping','customer_order')",(oid,))
                         for it in db.execute("SELECT * FROM order_items WHERE order_id=?", (oid,)):
                             db.execute("UPDATE products SET stock=stock+? WHERE id=?", (it["stock_quantity"] if it["stock_quantity"] is not None else it["quantity"], it["product_id"]))
-                        log(db, oid, "ألغي الطلب وأعيدت المنتجات للكمية المتاحة")
+                        reason=data.get('reason','') if action=='customer_cancel' else ''
+                        if not isinstance(reason,str) or len(reason)>240:
+                            raise ValueError('اكتب سبب الإلغاء في 240 حرف أو أقل')
+                        message="ألغي الطلب وأعيدت المنتجات للكمية المتاحة"
+                        if reason.strip():
+                            message+=" · سبب الإلغاء: "+reason.strip()
+                        log(db, oid, message)
                     else: raise ValueError("الإجراء غير متاح في حالة الطلب الحالية")
                 elif path == '/api/location':
                     if user['role']!='driver': return self.respond({'error':'غير مصرح'},403)

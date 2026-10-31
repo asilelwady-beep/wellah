@@ -61,7 +61,8 @@ class PlatformDiscountTests(unittest.TestCase):
       db.execute('INSERT INTO featured_rewards(user_id,kind,amount_cents,created_at) VALUES(?,?,100,?)',(uid,kind,server.now()))
     cancelled=new_order()
     with server.connect() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM featured_rewards WHERE used_order_id=?',(cancelled,)).fetchone()[0],3)
-    post('order/action',{'id':cancelled,'action':'customer_cancel'})
+    post('order/action',{'id':cancelled,'action':'customer_cancel','reason':'مشكلة مع الطيار'})
+    with server.connect() as db:self.assertIn('مشكلة مع الطيار',db.execute('SELECT action FROM events WHERE order_id=? ORDER BY id DESC LIMIT 1',(cancelled,)).fetchone()[0])
     with server.connect() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM featured_rewards WHERE user_id=? AND used_order_id IS NULL',(uid,)).fetchone()[0],3)
     with server.connect() as db:
      db.executemany('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)',[('customer_tier_threshold','2'),('customer_tier_percent','50'),('customer_tier_scope','shipping')])
