@@ -21,6 +21,7 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode
 from urllib.request import urlopen, Request, build_opener, HTTPRedirectHandler
 from decimal import Decimal, ROUND_HALF_UP, ROUND_CEILING, InvalidOperation
+from concurrent.futures import Future
 from threading import Lock
 from wallet_controls import init_wallet_controls, wallet_post, unlocked, verify_owner, redact_wallet
 from account_support import init_features, feature_post, feature_state, normalized_username, normalized_mobile, complete_registration, set_recovery_answer
@@ -675,6 +676,7 @@ def google_maps_request(url, body, field_mask):
 
 ROUTE_DISTANCE_CACHE = {}
 ROUTE_DISTANCE_LOCK = Lock()
+ROUTE_DISTANCE_PENDING = {}
 
 def road_km(points):
     # Cache road distance only; prices and discounts are always read anew.
@@ -683,12 +685,26 @@ def road_km(points):
     current=time.monotonic()
     with ROUTE_DISTANCE_LOCK:
         cached=ROUTE_DISTANCE_CACHE.get(key)
-        if cached and current-cached[0]<300: return cached[1]
-    distance=fetch_road_km(points)
-    with ROUTE_DISTANCE_LOCK:
-        if len(ROUTE_DISTANCE_CACHE)>=256: ROUTE_DISTANCE_CACHE.pop(next(iter(ROUTE_DISTANCE_CACHE)))
-        ROUTE_DISTANCE_CACHE[key]=(time.monotonic(),distance)
-    return distance
+        if cached and current-cached[0]<86400: return cached[1]
+        pending=ROUTE_DISTANCE_PENDING.get(key)
+        owner=pending is None
+        if owner:
+            pending=ROUTE_DISTANCE_PENDING[key]=Future()
+    if not owner:
+        return pending.result()
+    try:
+        distance=fetch_road_km(points)
+        with ROUTE_DISTANCE_LOCK:
+            if len(ROUTE_DISTANCE_CACHE)>=2048: ROUTE_DISTANCE_CACHE.pop(next(iter(ROUTE_DISTANCE_CACHE)))
+            ROUTE_DISTANCE_CACHE[key]=(time.monotonic(),distance)
+        pending.set_result(distance)
+        return distance
+    except Exception as exc:
+        pending.set_exception(exc)
+        raise
+    finally:
+        with ROUTE_DISTANCE_LOCK:
+            ROUTE_DISTANCE_PENDING.pop(key,None)
 
 
 def fetch_road_km(points):
@@ -1484,8 +1500,8 @@ class Handler(BaseHTTPRequestHandler):
                     readable=path=='/api/admin/activity' and staff_access(actor,'admin-activity') or path=='/api/admin/chat/archive' and (staff_access(actor,'admin-orders') or staff_access(actor,'admin-driver-list'))
                     if not readable and path not in ('/api/logout','/api/change-password','/api/login','/api/admin/login'):
                         return self.respond({'error':'حساب الفريق للعرض فقط؛ هذا الإجراء يحتاج المسؤول الرئيسي'},403)
-                if wallet_post(self,db,path,data,self.user(db),now,driver_wallet): return
-                if feature_post(self, db, path, data, self.user(db), create_user, AREAS, now): return
+                if wallet_post(self,db,path,data,actor,now,driver_wallet): return
+                if feature_post(self, db, path, data, actor, create_user, AREAS, now): return
                 if path == '/api/register':
                     if data.get('challenge_id') or data.get('code'):
                         uid=complete_registration(db,data,create_user)
@@ -1537,7 +1553,7 @@ class Handler(BaseHTTPRequestHandler):
                         expires=0  # Customer and driver sessions end only on explicit logout.
                     db.execute('INSERT INTO sessions VALUES (?,?,?)',(hashlib.sha256(token.encode()).hexdigest(),u['id'],expires))
                     return self.respond({'token':token,'role':u['role']})
-                user=self.user(db)
+                user=actor
                 if not user: return self.respond({'error':'سجل الدخول أولًا'},401)
                 if path == '/api/order/call':
                     return self.respond({'error':'الاتصال داخل التطبيق غير متاح. استخدم رقم الهاتف أو الشات.'},410)
