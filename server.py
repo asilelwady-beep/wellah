@@ -227,6 +227,7 @@ def init():
         CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, user_id INTEGER REFERENCES users(id), client_request_id TEXT, kind TEXT NOT NULL, customer TEXT NOT NULL, phone TEXT NOT NULL, area TEXT NOT NULL, address TEXT NOT NULL, details TEXT DEFAULT '', vehicle TEXT DEFAULT '', pickup TEXT DEFAULT '', destination TEXT DEFAULT '', payment TEXT NOT NULL, proof TEXT DEFAULT '', reference TEXT DEFAULT '', prescription TEXT DEFAULT '', medicine_review INTEGER DEFAULT 0, cash_collected INTEGER DEFAULT 0, cash_settled INTEGER DEFAULT 0, payment_status TEXT NOT NULL, status TEXT NOT NULL, total REAL NOT NULL DEFAULT 0, delivery_fee REAL NOT NULL DEFAULT 0, quote_accepted INTEGER DEFAULT 0, driver_id INTEGER REFERENCES drivers(id), pickup_photo TEXT NOT NULL DEFAULT '', delivery_photo TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS order_items (order_id INTEGER REFERENCES orders(id), product_id INTEGER REFERENCES products(id), name TEXT NOT NULL, quantity INTEGER NOT NULL, unit_price REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS order_messages (id INTEGER PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders(id), driver_id INTEGER NOT NULL REFERENCES drivers(id), sender_id INTEGER NOT NULL REFERENCES users(id), request_id TEXT NOT NULL, body TEXT NOT NULL, at TEXT NOT NULL, UNIQUE(sender_id,request_id));
+        CREATE INDEX IF NOT EXISTS order_messages_order_id ON order_messages(order_id,id);
         CREATE INDEX IF NOT EXISTS order_messages_thread ON order_messages(order_id,driver_id,id);
         CREATE TABLE IF NOT EXISTS order_calls (id TEXT PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders(id), driver_id INTEGER NOT NULL REFERENCES drivers(id), customer_id INTEGER NOT NULL REFERENCES users(id), caller_id INTEGER NOT NULL REFERENCES users(id), status TEXT NOT NULL, offer TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS order_calls_order_status ON order_calls(order_id,status,created_at);
@@ -1740,6 +1741,15 @@ class Handler(BaseHTTPRequestHandler):
                         return self.respond({'error':'الدردشة متاحة لصاحب الطلب والمندوب الذي قبله فقط'},403)
                     mode=data.get('mode','list')
                     if mode not in ('list','send'): raise ValueError('إجراء دردشة غير معروف')
+                    if mode == 'list' and 'known_last_id' in data:
+                        query = 'SELECT MAX(id) FROM order_messages WHERE order_id=?'
+                        params = (oid,)
+                        if is_driver:
+                            query += ' AND driver_id=?'
+                            params += (o['driver_id'],)
+                        last_id = db.execute(query, params).fetchone()[0] or 0
+                        if data['known_last_id'] == last_id:
+                            return self.respond({'unchanged': True})
                     if mode=='send':
                         db.execute('BEGIN IMMEDIATE')
                         # Check assignment again under the write lock before recording a private message.
