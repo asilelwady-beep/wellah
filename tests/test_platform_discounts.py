@@ -82,4 +82,17 @@ class PlatformDiscountTests(unittest.TestCase):
      self.assertEqual(db.execute('SELECT customer_tier_last_reward_orders FROM users WHERE id=?',(uid,)).fetchone()[0],base)
      self.assertEqual(server.customer_discount_terms(db,uid)['tier_percent'],0)
      self.assertGreater(db.execute('SELECT COUNT(*) FROM featured_rewards WHERE used_order_id=?',(completed,)).fetchone()[0],0)
+    with server.connect() as db:
+     db.execute("UPDATE settings SET value='38' WHERE key='delivery_base_fee'")
+    parcel=new_order()
+    with server.connect() as db:
+     db.execute("UPDATE settings SET value='25' WHERE key='return_percent'")
+     db.execute("UPDATE orders SET status='on_way',driver_id=? WHERE id=?",(did,parcel))
+    post('order/action',{'id':parcel,'action':'returning'},'driver-token')
+    with self.assertRaises(HTTPError):post('order/action',{'id':parcel,'action':'returning'},'driver-token')
+    post('order/action',{'id':parcel,'action':'returned','cash_collected':True},'driver-token')
+    with server.connect() as db:
+     entry=next(o for o in server.driver_wallet(db,did)['entries'] if o['id']==parcel)
+     self.assertEqual((entry['status'],entry['return_fee'],entry['total']),('returned',19,57-entry['discount_cents']/100))
+     self.assertEqual(entry['commission_cents']+entry['driver_earning_cents'],5700-entry['discount_cents'])
    finally:http.shutdown();http.server_close();thread.join()

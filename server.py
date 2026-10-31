@@ -322,6 +322,10 @@ def init():
             db.execute('ALTER TABLE orders ADD COLUMN tier_reward_base INTEGER')
         # Return one-time promotions attached to cancelled orders, including older cancellations.
         db.execute("UPDATE featured_rewards SET used_order_id=NULL WHERE kind IN ('discount','customer_shipping','customer_order') AND used_order_id IN (SELECT id FROM orders WHERE status='cancelled')")
+        db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('return_percent','50')")
+        for name,definition in [('return_percent','REAL'),('return_fee','REAL NOT NULL DEFAULT 0')]:
+            if name not in {r['name'] for r in db.execute('PRAGMA table_info(orders)')}:
+                db.execute(f'ALTER TABLE orders ADD COLUMN {name} {definition}')
         if 'original_delivery_fee' not in {r['name'] for r in db.execute('PRAGMA table_info(orders)')}:
             db.execute('ALTER TABLE orders ADD COLUMN original_delivery_fee REAL')
         if 'discount_cents' not in {r['name'] for r in db.execute('PRAGMA table_info(orders)')}:
@@ -626,7 +630,7 @@ def admin_daily_stats(db):
 
 
 def record_driver_distance(db, driver_id, lat, lon):
-    active = db.execute("""SELECT id FROM orders WHERE driver_id=? AND status IN ('assigned','ready','picked_up','on_way') ORDER BY id DESC LIMIT 1""",(driver_id,)).fetchone()
+    active = db.execute("""SELECT id FROM orders WHERE driver_id=? AND status IN ('assigned','ready','picked_up','on_way','returning') ORDER BY id DESC LIMIT 1""",(driver_id,)).fetchone()
     if not active: return
     oid = active['id']
     stamp = datetime.now(timezone.utc)
@@ -765,7 +769,7 @@ def customer_discount_terms(db,user_id):
     percent=float(settings.get('customer_tier_percent',0) or 0)
     scope=settings.get('customer_tier_scope','shipping') if settings.get('customer_tier_scope') in ('shipping','order') else 'shipping'
     last_reward_orders=max(0,int(user['tier_last_reward_orders'] or 0))
-    reserved=db.execute("SELECT 1 FROM orders WHERE user_id=? AND tier_reward_base IS NOT NULL AND status NOT IN ('delivered','cancelled') LIMIT 1",(user_id,)).fetchone()
+    reserved=db.execute("SELECT 1 FROM orders WHERE user_id=? AND tier_reward_base IS NOT NULL AND status NOT IN ('delivered','cancelled','returned') LIMIT 1",(user_id,)).fetchone()
     if threshold<=0 or completed<last_reward_orders+threshold or reserved: percent=0.0
     return {'shipping_recurring':int(user['shipping_recurring'] or 0),'order_recurring':int(user['order_recurring'] or 0),
             'shipping_reward_id':shipping['id'] if shipping else None,'shipping_reward_cents':int(shipping['amount_cents']) if shipping else 0,
@@ -810,6 +814,8 @@ def quote_delivery(db,user_id,data):
     fee=max(0,original_fee_cents-shipping_discount_cents)/100
     order_discount_cents=terms['order_reward_cents']+terms['order_recurring']
     payload={'user_id':user_id,'kind':kind,'points':points,'km':km,'rate':float(extra),'base_km':float(base_km),'base_fee':float(base),'original_fee':original_fee,'fee':fee,'customer_shipping_discount_cents':shipping_discount_cents,'customer_order_discount_cents':order_discount_cents,'customer_featured_discount_cents':int(featured['amount_cents']) if featured else 0,'customer_featured_discount_id':featured['id'] if featured else None,'customer_shipping_reward_id':terms['shipping_reward_id'],'customer_order_reward_id':terms['order_reward_id'],'customer_shipping_recurring_cents':terms['shipping_recurring'],'customer_order_recurring_cents':terms['order_recurring'],'customer_tier_threshold':terms['tier_threshold'],'customer_tier_percent':terms['tier_percent'],'customer_tier_scope':terms['tier_scope'],'customer_completed_orders':terms['completed_orders'],'customer_tier_last_reward_orders':terms['tier_last_reward_orders'],'expires':int(time.time())+600}
+    if kind=='delivery':
+        payload['return_percent']=float(db.execute("SELECT value FROM settings WHERE key='return_percent'").fetchone()[0])
     if kind=='ride': payload['vehicle']=vehicle
     body=base64.urlsafe_b64encode(json.dumps(payload,separators=(',',':')).encode()).decode()
     secret=db.execute("SELECT value FROM settings WHERE key='quote_secret'").fetchone()[0]
@@ -874,7 +880,7 @@ def assign(db, oid):
     # Area labels and featured status must not override distance from pickup.
     candidates = db.execute("""SELECT d.id,d.lat,d.lon,d.location_at,d.area,d.vehicle_type,d.featured FROM drivers d JOIN users du ON du.id=d.user_id WHERE du.disabled=0 AND d.identity_blocked_shift IS NULL AND d.available=1 AND d.break_until<=?
         AND NOT EXISTS (SELECT 1 FROM orders x WHERE x.driver_id=d.id AND x.id<>?
-            AND x.status IN ('offered','assigned','ready','picked_up','on_way'))
+            AND x.status IN ('offered','assigned','ready','picked_up','on_way','returning'))
         AND NOT EXISTS (SELECT 1 FROM order_declines x WHERE x.order_id=? AND x.driver_id=d.id)
         AND NOT EXISTS (SELECT 1 FROM order_offer_timeouts t WHERE t.order_id=? AND t.driver_id=d.id AND t.retry_after>?)
         AND EXISTS (SELECT 1 FROM driver_shifts s WHERE s.driver_id=d.id AND s.ended_at IS NULL AND s.started_at>=? AND (s.started_at>? OR s.second_selfie IS NOT NULL))""",
@@ -1046,14 +1052,14 @@ def order_commission_split(db, order, vehicle, extra=0):
 
 
 def driver_wallet(db, driver_id):
-    entries=rows(db,"SELECT id,status,total,payment,cash_collected,cash_settled,original_delivery_fee,discount_cents,driver_earning_cents,driver_earning_paid,commission_percent,commission_cents,commission_settled,created_at FROM orders WHERE driver_id=? AND status='delivered' ORDER BY id DESC",(driver_id,))
+    entries=rows(db,"SELECT id,status,total,return_fee,payment,cash_collected,cash_settled,original_delivery_fee,discount_cents,driver_earning_cents,driver_earning_paid,commission_percent,commission_cents,commission_settled,created_at FROM orders WHERE driver_id=? AND status IN ('delivered','returned') ORDER BY id DESC",(driver_id,))
     adjustments=rows(db,'SELECT id,amount_cents,reason,at,settled FROM wallet_adjustments WHERE driver_id=? ORDER BY id DESC',(driver_id,))
     audit=rows(db,'SELECT action,details,at FROM wallet_audit WHERE driver_id=? ORDER BY id DESC LIMIT 100',(driver_id,))
     return {'balance':(sum(o['driver_earning_cents'] for o in entries if not o['driver_earning_paid'])+sum(a['amount_cents'] for a in adjustments if not a['settled']))/100,
             'earned':(sum(o['driver_earning_cents'] for o in entries)+sum(a['amount_cents'] for a in adjustments))/100,
             'paid':(sum(o['driver_earning_cents'] for o in entries if o['driver_earning_paid'])+sum(a['amount_cents'] for a in adjustments if a['settled']))/100,
             'commission_due':sum(o['commission_cents'] for o in entries if not o['commission_settled'])/100,
-            'cash_due':round(sum(o['total'] for o in entries if o['payment']=='cash' and o['cash_collected'] and not o['cash_settled']),2),
+            'cash_due':round(sum((o['total'] if o['payment']=='cash' else o['return_fee']) for o in entries if o['cash_collected'] and not o['cash_settled']),2),
             'entries':entries,'adjustments':adjustments,'audit':audit}
 
 STAFF_SECTIONS = {'admin-overview','admin-orders','admin-driver-list','admin-driver-shifts','admin-map-section','admin-daily','admin-activity','admin-products','admin-merchants','admin-categories','admin-delivery-rate','admin-commission','admin-services','admin-ratings','admin-featured','admin-support'}
@@ -1407,7 +1413,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not order or user['role']!='customer' or order['user_id']!=user['id']:
                     return self.respond({'error':'التتبع متاح لصاحب الطلب فقط'},403)
                 result=dict(order);result.pop('user_id')
-                if result['status'] not in ('assigned','ready','picked_up','on_way'):
+                if result['status'] not in ('assigned','ready','picked_up','on_way','returning'):
                     result['driver_lat']=result['driver_lon']=result['driver_location_at']=None
                 return self.respond({'order':result})
         if path != "/api/state":
@@ -1430,7 +1436,7 @@ class Handler(BaseHTTPRequestHandler):
             elif driver_state_view=='history':
                 clause,args=' WHERE d.user_id=?',(user['id'],)
             else:
-                clause,args=" WHERE d.user_id=? AND o.status NOT IN ('delivered','cancelled')",(user['id'],)
+                clause,args=" WHERE d.user_id=? AND o.status NOT IN ('delivered','cancelled','returned')",(user['id'],)
             if user['staff_permissions'] is not None and not set(json.loads(user['staff_permissions'])).intersection({'admin-orders','admin-driver-list','admin-map-section','admin-daily','admin-overview'}):
                 clause, args = ' WHERE 0', ()
             # Proof photos have a separate authenticated endpoint. Read only their presence here.
@@ -1452,14 +1458,14 @@ class Handler(BaseHTTPRequestHandler):
                 o["items"] = item_groups.get(o['id'], [])
                 o["events"] = event_groups.get(o['id'], [])
                 if user['role']!='admin':
-                    if user['role']=='customer' and o['status'] not in ('assigned','ready','picked_up','on_way','delivered'):
+                    if user['role']=='customer' and o['status'] not in ('assigned','ready','picked_up','on_way','returning','delivered'):
                         o['driver_lat']=o['driver_lon']=o['driver_location_at']=None
                         o['driver_name']=o['driver_phone']=o['driver_photo']=None
                     o['has_proof']=bool(o['proof'])
                     o['has_prescription']=bool(o['prescription'])
                     o.pop('proof', None)
                     o.pop('reference', None)
-                    if user['role']!='driver' or o['status'] not in ('assigned','ready','picked_up','on_way'): o.pop('prescription', None)
+                    if user['role']!='driver' or o['status'] not in ('assigned','ready','picked_up','on_way','returning'): o.pop('prescription', None)
                     for key in list(o):
                         if key.startswith('commission_'): o.pop(key)
                     if user['role']=='customer':
@@ -1635,7 +1641,7 @@ class Handler(BaseHTTPRequestHandler):
                         if not valid_image(selfie,1_500_000): raise ValueError('التقط صورة وجه حديثة بالكاميرا')
                         db.execute('UPDATE driver_shifts SET second_selfie=?,second_photo_at=? WHERE id=?',(selfie,now(),active['id']))
                         return self.respond({'ok':True})
-                    if db.execute("SELECT 1 FROM orders WHERE driver_id=? AND status IN ('assigned','ready','picked_up','on_way')",(did,)).fetchone(): raise ValueError('أكمل الطلب الجاري قبل إنهاء الشيفت')
+                    if db.execute("SELECT 1 FROM orders WHERE driver_id=? AND status IN ('assigned','ready','picked_up','on_way','returning')",(did,)).fetchone(): raise ValueError('أكمل الطلب الجاري قبل إنهاء الشيفت')
                     db.execute('UPDATE driver_shifts SET ended_at=? WHERE driver_id=? AND ended_at IS NULL',(now(),did))
                     db.execute('UPDATE drivers SET available=0 WHERE id=?',(did,))
                     return self.respond({'ok':True})
@@ -1728,9 +1734,9 @@ class Handler(BaseHTTPRequestHandler):
                     d=db.execute('SELECT user_id FROM drivers WHERE id=?',(o['driver_id'],)).fetchone() if o and o['driver_id'] else None
                     is_customer=bool(o and user['role']=='customer' and o['user_id']==user['id'])
                     is_driver=bool(d and user['role']=='driver' and d['user_id']==user['id'])
-                    if is_customer and o['status'] in ('delivered','cancelled'):
+                    if is_customer and o['status'] in ('delivered','cancelled','returned'):
                         return self.respond({'error':'انتهى الطلب؛ سجل المحادثة محفوظ لدى إدارة ولعه'},403)
-                    if not o or not d or not (is_customer or is_driver) or o['status'] not in ('assigned','ready','picked_up','on_way','delivered','cancelled'):
+                    if not o or not d or not (is_customer or is_driver) or o['status'] not in ('assigned','ready','picked_up','on_way','returning','delivered','cancelled'):
                         return self.respond({'error':'الدردشة متاحة لصاحب الطلب والمندوب الذي قبله فقط'},403)
                     mode=data.get('mode','list')
                     if mode not in ('list','send'): raise ValueError('إجراء دردشة غير معروف')
@@ -1738,7 +1744,7 @@ class Handler(BaseHTTPRequestHandler):
                         db.execute('BEGIN IMMEDIATE')
                         # Check assignment again under the write lock before recording a private message.
                         current=db.execute('SELECT driver_id,status FROM orders WHERE id=?',(oid,)).fetchone()
-                        if current['driver_id']!=o['driver_id'] or current['status'] not in ('assigned','ready','picked_up','on_way'):
+                        if current['driver_id']!=o['driver_id'] or current['status'] not in ('assigned','ready','picked_up','on_way','returning'):
                             raise ValueError('انتهى الطلب أو تغيّر المندوب؛ لا يمكن إرسال رسالة الآن')
                         body=str(data.get('body','')).strip()
                         request_id=str(data.get('request_id',''))
@@ -1753,7 +1759,7 @@ class Handler(BaseHTTPRequestHandler):
                                 return self.respond({'error':'رسائل كثيرة؛ انتظر قليلًا ثم أرسل'},429)
                             db.execute('INSERT INTO order_messages(order_id,driver_id,sender_id,request_id,body,at) VALUES (?,?,?,?,?,?)',(oid,o['driver_id'],user['id'],request_id,body,now()))
                     messages=rows(db,"SELECT id,sender_id,body,at FROM (SELECT id,sender_id,body,at FROM order_messages WHERE order_id=? AND (driver_id=? OR ?=1) ORDER BY id DESC LIMIT 200) ORDER BY id",(oid,o['driver_id'],int(is_customer)))
-                    return self.respond({'messages':messages,'driver_id':o['driver_id'],'can_send':o['status'] in ('assigned','ready','picked_up','on_way')})
+                    return self.respond({'messages':messages,'driver_id':o['driver_id'],'can_send':o['status'] in ('assigned','ready','picked_up','on_way','returning')})
                 if path == '/api/delivery-quote':
                     if user['role']!='customer': return self.respond({'error':'غير مصرح'},403)
                     return self.respond(quote_delivery(db,user['id'],data))
@@ -1946,6 +1952,10 @@ class Handler(BaseHTTPRequestHandler):
                     db.execute('INSERT INTO services(key,name) VALUES (?,?)',('custom_'+secrets.token_hex(6),name))
                 elif path == '/api/delivery-rate':
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
+                    if 'return_percent' in data:
+                        rate=Decimal(str(data['return_percent']))
+                        if not rate.is_finite() or not 0<=rate<=100: raise ValueError('نسبة المرتجع من صفر إلى 100')
+                        db.execute("UPDATE settings SET value=? WHERE key='return_percent'",(str(rate),))
                     legacy=data.get('per_km_rate')
                     base_km=str(data.get('base_km','3')).strip() or '3'
                     base=str(data.get('base_fee','')).strip()
@@ -2326,6 +2336,8 @@ class Handler(BaseHTTPRequestHandler):
                     status = "awaiting_quote" if kind != "products" else ("medicine_review" if medicine_review else ("new" if payment == "cash" else "payment_review"))
                     cur = db.execute("INSERT INTO orders(user_id,client_request_id,kind,customer,phone,area,address,details,vehicle,pickup,destination,payment,proof,reference,prescription,medicine_review,payment_status,status,total,delivery_fee,quote_accepted,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (user['id'],request_id,kind, customer, phone, data["area"], address, str(data.get("details", "")), str(data.get("vehicle", "")), str(data.get("pickup", "")), str(data.get("destination", "")), payment, proof, str(data.get("reference", "")), prescription,1 if medicine_review else 0, ps, status, subtotal+fee, fee,1 if kind=='products' else 0, now()))
                     oid = cur.lastrowid
+                    if kind=='delivery' and km_quote:
+                        db.execute('UPDATE orders SET return_percent=? WHERE id=?',(km_quote.get('return_percent'),oid))
                     db.execute('UPDATE orders SET original_delivery_fee=? WHERE id=?',(0 if prescription_only else original_fee_cents/100,oid))
                     if not prescription_only:
                         total_cents=int((Decimal(str(subtotal+fee))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
@@ -2394,6 +2406,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond({'ok':True,'additional_fee':float(amount),'total':float(total),'delivery_fee':float(delivery)})
                 elif path == "/api/order/action":
                     oid, action = int(data["id"]), data["action"]
+                    if action!='get_delivery_photos' and not db.in_transaction: db.execute('BEGIN IMMEDIATE')
                     o = db.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
                     if not o: raise ValueError("الطلب غير موجود")
                     if action=='get_delivery_photos':
@@ -2405,7 +2418,7 @@ class Handler(BaseHTTPRequestHandler):
                         if user['role']!='customer' or o['user_id']!=user['id']: return self.respond({'error':'غير مصرح'},403)
                     elif action=='customer_cancel':
                         if user['role']!='customer' or o['user_id']!=user['id']: return self.respond({'error':'غير مصرح'},403)
-                    elif action in ('accept_offer','decline_offer','picked_up','on_way','delivered'):
+                    elif action in ('accept_offer','decline_offer','picked_up','on_way','delivered','returning','returned'):
                         d=db.execute('SELECT id FROM drivers WHERE user_id=?',(user['id'],)).fetchone()
                         if user['role']!='driver' or not d or o['driver_id']!=d['id']: return self.respond({'error':'غير مصرح'},403)
                         if action=='accept_offer':
@@ -2465,6 +2478,17 @@ class Handler(BaseHTTPRequestHandler):
                         db.execute('INSERT OR IGNORE INTO order_declines VALUES (?,?)',(oid,o['driver_id']))
                         log(db,oid,'اعتذر المندوب عن الطلب')
                         assign(db,oid)
+                    elif action=='returning' and o['kind']=='delivery' and o['status']=='on_way' and o['return_percent'] is not None:
+                        fee=(Decimal(str(o['original_delivery_fee']))*Decimal(str(o['return_percent']))/100).quantize(Decimal('.01'),rounding=ROUND_HALF_UP)
+                        db.execute("UPDATE orders SET status='returning',return_fee=?,total=ROUND(total+?,2) WHERE id=?",(float(fee),float(fee),oid))
+                        log(db,oid,f'جاري الإرجاع للمرسل · رسوم الرجوع {fee} جنيه')
+                    elif action=='returned' and o['kind']=='delivery' and o['status']=='returning':
+                        if data.get('cash_collected') is not True: raise ValueError('أكد استلام المرسل والتحصيل أولًا')
+                        driver=db.execute('SELECT vehicle_type FROM drivers WHERE id=?',(o['driver_id'],)).fetchone()
+                        percent,share,earning=order_commission_split(db,o,driver[0],o['return_fee'])
+                        db.execute("UPDATE orders SET status='returned',cash_collected=1,commission_percent=?,commission_cents=?,driver_earning_cents=?,commission_locked=1 WHERE id=?",(percent,share,earning,oid))
+                        db.execute("UPDATE featured_rewards SET used_order_id=NULL WHERE used_order_id=? AND kind IN ('discount','customer_shipping','customer_order')",(oid,))
+                        log(db,oid,'تم إرجاع الشحنة للمرسل والتحصيل')
                     elif action in ("picked_up", "on_way", "delivered") and o["driver_id"] and o["status"] in ({'picked_up': ('assigned','ready'),'on_way':('picked_up',),'delivered':('on_way',)}[action]):
                         pickup_photo=str(data.get('pickup_photo',''))
                         delivery_photo=str(data.get('delivery_photo',''))
@@ -2492,12 +2516,12 @@ class Handler(BaseHTTPRequestHandler):
                             db.execute('UPDATE users SET customer_tier_last_reward_orders=MAX(COALESCE(customer_tier_last_reward_orders,0),?) WHERE id=?',(o['tier_reward_base'],o['user_id']))
                         if action=='delivered' and o['payment']=='cash': db.execute('UPDATE orders SET cash_collected=1 WHERE id=?',(oid,))
                         log(db, oid, {"picked_up": "استلم المندوب الطلب وأرفق صورة الاستلام", "on_way": "المندوب في الطريق", "delivered": "تم التسليم وأرفق الطيار صورة المكان"}[action])
-                    elif action=='settle_cash' and o['payment']=='cash' and o['status']=='delivered' and o['cash_collected'] and not o['cash_settled']:
+                    elif action=='settle_cash' and (o['payment']=='cash' or o['status']=='returned') and o['status'] in ('delivered','returned') and o['cash_collected'] and not o['cash_settled']:
                         if not unlocked(self,db): raise ValueError('افتح المحفظة بكلمة السر أولًا')
                         verify_owner(self,db,user,data.get('wallet_password'))
                         db.execute('UPDATE orders SET cash_settled=1,commission_settled=1 WHERE id=?',(oid,))
                         log(db,oid,'أكد المسؤول استلام الكاش من المندوب')
-                    elif action in ('cancel','reject_medicine','customer_cancel') and o["status"] not in ("delivered", "cancelled") and (action!='reject_medicine' or o['status']=='medicine_review') and (action!='customer_cancel' or (o['status'] in ('awaiting_quote','quote_pending','medicine_review','payment_review','new','awaiting_driver','offered','assigned') and not (o['payment']=='wallet' and (o['payment_status']=='confirmed' or bool(o['proof']))))):
+                    elif action in ('cancel','reject_medicine','customer_cancel') and o["status"] not in ("delivered", "cancelled","returning","returned") and (action!='reject_medicine' or o['status']=='medicine_review') and (action!='customer_cancel' or (o['status'] in ('awaiting_quote','quote_pending','medicine_review','payment_review','new','awaiting_driver','offered','assigned') and not (o['payment']=='wallet' and (o['payment_status']=='confirmed' or bool(o['proof']))))):
                         db.execute("UPDATE orders SET status='cancelled' WHERE id=?", (oid,))
                         # used_order_id reserves a one-time reward while its order is active.
                         # Cancellation releases the reservation; delivery keeps it consumed.

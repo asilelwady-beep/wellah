@@ -42,7 +42,7 @@ def redact_wallet(wallet):
     wallet.pop('commission_due',None)
     wallet.pop('audit',None)
     wallet['paid']=0
-    wallet['entries']=[entry for entry in wallet['entries'] if not entry['driver_earning_paid'] or (entry['payment']=='cash' and entry['cash_collected'] and not entry['cash_settled'])]
+    wallet['entries']=[entry for entry in wallet['entries'] if not entry['driver_earning_paid'] or (entry['cash_collected'] and not entry['cash_settled'])]
     wallet['adjustments']=[entry for entry in wallet['adjustments'] if not entry['settled']]
     for entry in wallet['entries']:
         for key in list(entry):
@@ -87,10 +87,10 @@ def wallet_post(handler,db,path,data,user,now,driver_wallet):
         db.execute('INSERT INTO wallet_adjustments(driver_id,admin_id,amount_cents,reason,at) VALUES (?,?,?,?,?)',(driver_id,user['id'],int(amount*100),reason,now()))
     elif action in ('settle','pay','cash'):
         if action in ('settle','pay'):
-            db.execute("UPDATE orders SET driver_earning_paid=1 WHERE driver_id=? AND status='delivered'",(driver_id,))
+            db.execute("UPDATE orders SET driver_earning_paid=1 WHERE driver_id=? AND status IN ('delivered','returned')",(driver_id,))
             db.execute('UPDATE wallet_adjustments SET settled=1 WHERE driver_id=?',(driver_id,))
         if action in ('settle','cash'):
-            db.execute("UPDATE orders SET cash_settled=1,commission_settled=1 WHERE driver_id=? AND status='delivered'",(driver_id,))
+            db.execute("UPDATE orders SET cash_settled=1,commission_settled=1 WHERE driver_id=? AND status IN ('delivered','returned')",(driver_id,))
     elif action=='identity':
         email=intent['email']
         if len(email)>254 or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',email): raise ValueError('اكتب بريد الطيار الصحيح')

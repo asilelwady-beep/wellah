@@ -1,5 +1,5 @@
 const tripRouteCache=new Map();
-function tripRouteTarget(o){return ['assigned','ready'].includes(o.status)?(o.shop_anywhere?null:{lat:o.pickup_lat,lon:o.pickup_lon,label:'مكان الاستلام'}):['picked_up','on_way'].includes(o.status)?{lat:o.latitude,lon:o.longitude,label:'عنوان العميل'}:null}
+function tripRouteTarget(o){if(o.status==='returning')return {lat:o.pickup_lat,lon:o.pickup_lon,label:'مكان المرسل'};return ['assigned','ready'].includes(o.status)?(o.shop_anywhere?null:{lat:o.pickup_lat,lon:o.pickup_lon,label:'مكان الاستلام'}):['picked_up','on_way'].includes(o.status)?{lat:o.latitude,lon:o.longitude,label:'عنوان العميل'}:null}
 function drawTripRoute(map,o){
  const info=document.getElementById('trip-route-info'),target=tripRouteTarget(o);
  if(info)info.textContent=target?'اضغط الاتجاهات إلى '+target.label+' لفتح الملاحة من موقعك الحالي.':o.shop_anywhere&&['assigned','ready'].includes(o.status)?'اختار سوبر ماركت قريب، راجع صور المنتجات، ثم أكد شراءها.':'تابع حالة الطلب على الخريطة.';
@@ -364,8 +364,8 @@ function updateDriverMap(){
   const map=mapViews.find(m=>m.getContainer().id==='driver-map');
   if(!map||!state||tab!=='driver')return;
   if(!map._driverOverlay)map._driverOverlay=L.layerGroup().addTo(map);
-  const positions=[],active=state.orders.filter(o=>!['cancelled','delivered'].includes(o.status));
-  const current=active.find(o=>['assigned','ready','picked_up','on_way'].includes(o.status));
+  const positions=[],active=state.orders.filter(o=>!['cancelled','delivered','returned'].includes(o.status));
+  const current=active.find(o=>['assigned','ready','picked_up','on_way','returning'].includes(o.status));
   const chosen=active.find(o=>o.id===selectedTripId)||current||active.find(o=>o.status==='offered');
   const order=current||chosen;
   const orderKey=order?order.id+':'+order.status+':'+Boolean(order.shop_anywhere):'empty';
@@ -398,8 +398,8 @@ async function initMaps(){
   if(version!==mapInitVersion||!state)return;
   const tripMap=baseMap('trip-map');
   if(tripMap){
-    const active=state.orders.filter(o=>!['cancelled','delivered'].includes(o.status));
-    const o=state.orders.find(o=>o.id===selectedTripId)||(tab==='driver'?active.find(o=>['assigned','ready','picked_up','on_way'].includes(o.status)):null);
+    const active=state.orders.filter(o=>!['cancelled','delivered','returned'].includes(o.status));
+    const o=state.orders.find(o=>o.id===selectedTripId)||(tab==='driver'?active.find(o=>['assigned','ready','picked_up','on_way','returning'].includes(o.status)):null);
     const positions=[];
     if(o){for(const [lat,lon,label,color] of [[o.pickup_lat,o.pickup_lon,'الاستلام: '+esc(o.merchant_address||o.pickup),'#2864c5'],[o.latitude,o.longitude,'التسليم: '+esc(o.address),'#e58029'],[o.driver_lat,o.driver_lon,'آخر موقع للطيار: '+esc(o.driver_location_at||''),'#087b5b']]){if(lat!=null&&lon!=null){point(tripMap,lat,lon,label,color);positions.push([lat,lon])}}}
     showMapPoints(tripMap,positions);
@@ -524,7 +524,7 @@ async function initMaps(){
 
 function customerTrackingFresh(o){const at=Date.parse(o.driver_location_at||'');return Number.isFinite(at)&&Date.now()-at<120000&&Date.now()>=at-60000}
 function customerArrivalText(o,route){
- if(!['assigned','ready','picked_up','on_way'].includes(o.status))return 'سيظهر تتبع الطيار بعد قبوله الطلب.';
+ if(!['assigned','ready','picked_up','on_way','returning'].includes(o.status))return 'سيظهر تتبع الطيار بعد قبوله الطلب.';
  if(o.driver_lat==null||o.driver_lon==null||!customerTrackingFresh(o))return 'بانتظار موقع حديث من الطيار. سنعرض حركته ووقت الوصول عند تحديث GPS.';
  const pickup=['assigned','ready'].includes(o.status),target=tripRouteTarget(o),destination=pickup?'مكان الاستلام':'إليك';
  if(!target||target.lat==null||target.lon==null)return pickup?'الطيار يجهّز طلبك؛ سيظهر وقت الوصول بعد تحديد نقطة الاستلام.':'الطيار في الطريق؛ وقت الوصول يحتاج نقطة تسليم دقيقة.';
@@ -570,7 +570,7 @@ function refreshAdminLiveMap(fitInitially=false){
     else{marker=point(map,pos[0],pos[1],label,color);if(key.startsWith('driver-')){marker.getPopup().options.autoPan=false;marker.on('mouseover',()=>marker.openPopup())}map._liveMarkers.set(key,marker)}
   };
   for(const m of state.merchants.filter(x=>x.active))update('merchant-'+m.id,m.lat,m.lon,'المحل '+esc(m.name)+' · '+esc(m.address),'#2864c5');
-  for(const o of state.orders.filter(x=>!['cancelled','delivered'].includes(x.status)))update('order-'+o.id,o.latitude,o.longitude,'طلب #'+o.id+' · '+esc(o.area)+' · '+esc(o.address),'#e58029');
+  for(const o of state.orders.filter(x=>!['cancelled','delivered','returned'].includes(x.status)))update('order-'+o.id,o.latitude,o.longitude,'طلب #'+o.id+' · '+esc(o.area)+' · '+esc(o.address),'#e58029');
   for(const d of state.drivers)update('driver-'+d.id,d.lat,d.lon,adminDriverMapCard(d),'#087b5b');
   for(const [key,marker] of map._liveMarkers)if(!seen.has(key)){map.removeLayer(marker);map._liveMarkers.delete(key)}
   if(fitInitially)showMapPoints(map,positions);
