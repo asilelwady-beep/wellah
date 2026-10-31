@@ -5,5 +5,7 @@ const stack=[{wallaCustomerApp:true,wallaCustomerView:'checkout',wallaCustomerDe
 const ctx=vm.createContext({history,tab:'customer',deliveryStep:1,shipmentType:'ملابس',chosenPickup:{lat:29.8},chosenPoint:{latitude:29.9},checkoutDraft:{pickup:'pickup',address:'address'},$:()=>null,saveCheckoutDraft(){},appNotify(){},render(){},refreshCheckoutQuote(){},window:{scrollTo(){}},location:{href:'https://walla3ha.com/customer'}});
 vm.runInContext(html.slice(html.indexOf('function goDeliveryStep('),html.indexOf('\nfunction ',html.indexOf('function goDeliveryStep(')+1)),ctx);
 ctx.goDeliveryStep(2);ctx.goDeliveryStep(3);assert.equal(stack.length,3);assert.equal(ctx.deliveryStep,3);ctx.goDeliveryStep(1);assert.equal(ctx.deliveryStep,1);assert.equal(stack.length,1);
-console.log('Passed: update cannot force reload, wizard history returns to requested step, map library preloaded.');
-assert.ok(html.includes('as="script" href="/leaflet.js?v=1.9.4"'));
+assert.ok(!html.includes('as="script" href="/leaflet.js?v=1.9.4"'));
+const maps = fs.readFileSync('maps.js','utf8');
+assert.match(maps, /if\(!state\|\|!document\.querySelector\('\.map'\)\)return;\s*try\{await ensureLeaflet\(\)/);
+console.log('Passed: navigation history, update safety and on-demand map loading.');
