@@ -19,7 +19,85 @@ window.pickCurrentLocation=()=>alert('الخريطة لم تُحمّل بعد. �
 window.selectMapPinMode=()=>alert('الخريطة لم تُحمّل بعد. تحقق من الاتصال ثم حدّث الصفحة.');
 
 function isMapMounted(map){return !!map&&mapViews.includes(map)&&map.getContainer().isConnected&&!!map._mapPane}
+// Full-screen Android Maps SDK; the web map remains the source of checkout state.
+let nativeMapSession=null;
+let nativeMapSequence=0;
+const nativeMapTitles={
+  'customer-map':'حدد مكان التسليم','pickup-map':'حدد مكان الاستلام',
+  'merchant-map':'حدد مكان المحل','driver-map':'خريطة الطيار',
+  'tracking-map':'تتبع الطيار','trip-map':'خريطة الطلب','admin-map':'خريطة الطلبات'
+};
+function nativeMapPicker(id){return ['customer-map','pickup-map','merchant-map'].includes(id)}
+function nativeMapSnapshot(map,requestId){
+  const center=map.getCenter(),markers=[],lines=[],seen=new Set();
+  if(typeof center.lat!=='number'||typeof center.lng!=='number')return null;
+  const lon=((center.lng+180)%360+360)%360-180;
+  if(!validMapPoint(center.lat,lon))return null;
+  const visit=layer=>{
+    if(!layer||seen.has(layer))return;seen.add(layer);
+    if(typeof layer.eachLayer==='function'){layer.eachLayer(visit);return}
+    if(typeof layer.getLatLng==='function'&&markers.length<100){
+      const p=layer.getLatLng();
+      if(typeof p?.lat==='number'&&typeof p?.lng==='number'&&validMapPoint(p.lat,p.lng))
+        markers.push({lat:p.lat,lon:p.lng,driver:layer===map._driverMarker});
+    }else if(typeof layer.getLatLngs==='function'&&lines.length<4){
+      const points=layer.getLatLngs();
+      if(Array.isArray(points)&&points.length>1&&points.every(p=>typeof p?.lat==='number'&&typeof p?.lng==='number')){
+        const step=Math.max(1,Math.ceil(points.length/1000));
+        const sampled=points.filter((p,i)=>i%step===0||i===points.length-1)
+          .filter(p=>validMapPoint(p.lat,p.lng)).map(p=>({lat:p.lat,lon:p.lng}));
+        if(sampled.length>1)lines.push({points:sampled,color:layer.options?.color||'#e84b36',width:layer.options?.weight||5});
+      }
+    }
+  };
+  map.eachLayer(visit);
+  return {requestId,mapId:map.getContainer().id,title:nativeMapTitles[map.getContainer().id],
+    lat:center.lat,lon,zoom:map.getZoom(),markers,lines};
+}
+function closeNativeMap(){
+  const session=nativeMapSession;if(!session)return;
+  nativeMapSession=null;clearInterval(session.timer);
+  try{window.WallahaNative.closeMap(session.requestId)}catch{}
+}
+window.WallahaMaps={receive(result){
+  const session=nativeMapSession;
+  if(!session||!result||result.requestId!==session.requestId)return;
+  nativeMapSession=null;clearInterval(session.timer);
+  const map=session.map;
+  if(!isMapMounted(map))return;
+  if(result.status==='unavailable'){expandMap(map,false);return}
+  if(result.status!=='selected'||!nativeMapPicker(map.getContainer().id))return;
+  if(typeof result.lat!=='number'||typeof result.lon!=='number')return;
+  const pos=validMapPoint(result.lat,result.lon);if(!pos)return;
+  const zoom=typeof result.zoom==='number'&&Number.isFinite(result.zoom)?Math.max(3,Math.min(21,result.zoom)):17;
+  map.setView([pos.lat,pos.lon],zoom,{animate:false});
+  // Fire the same handler as a web tap: do not overwrite a typed street/address.
+  map.fire('click',{latlng:{lat:pos.lat,lng:pos.lon}});
+}};
+function openNativeMap(map){
+  const bridge=window.WallahaNative;
+  if(!isMapMounted(map)||!Object.prototype.hasOwnProperty.call(nativeMapTitles,map.getContainer().id))return false;
+  try{if(typeof bridge?.mapsSdkAvailable!=='function'||!bridge.mapsSdkAvailable())return false}catch{return false}
+  closeNativeMap();
+  const requestId='map-'+Date.now()+'-'+(++nativeMapSequence);
+  const snapshot=nativeMapSnapshot(map,requestId);if(!snapshot)return false;
+  const session={requestId,map,timer:null};nativeMapSession=session;
+  try{
+    bridge.openMap(JSON.stringify(snapshot));
+    if(nativeMapSession!==session)return true;
+    session.timer=setInterval(()=>{
+      if(nativeMapSession!==session)return;
+      if(!isMapMounted(map)){closeNativeMap();return}
+      try{
+        const update=nativeMapSnapshot(map,requestId);
+        if(update)bridge.updateMap(JSON.stringify(update));else closeNativeMap();
+      }catch{closeNativeMap()}
+    },1000);
+    return true;
+  }catch{closeNativeMap();return false}
+}
 function closeExpandedMap(){
+  closeNativeMap();
   const el=document.querySelector('.map.map-expanded');
   if(!el)return;
   if(el._searchPanel){
@@ -35,8 +113,9 @@ function closeExpandedMap(){
   if(map)requestAnimationFrame(()=>{if(isMapMounted(map))map.invalidateSize()});
 }
 window.addEventListener('keydown',e=>{if(e.key==='Escape')closeExpandedMap()});
-function expandMap(map){
+function expandMap(map,allowNative=true){
   closeExpandedMap();
+  if(allowNative&&openNativeMap(map))return;
   const el=map.getContainer();
   el.classList.add('map-expanded');
   document.body.classList.add('map-open');
@@ -158,6 +237,8 @@ function showMyLocationOnMap(id){
 }
 let googleMapsReadyPromise=null;
 function loadGoogleMaps(){
+  // Native SDK builds use only the native map and must not opt into web-map billing.
+  if(typeof window.WallahaNative?.mapsSdkAvailable==='function')return Promise.resolve(false);
   if(googleMapsReadyPromise)return googleMapsReadyPromise;
   googleMapsReadyPromise=(window.appFetchWithTimeout||fetch)('/api/maps-config',{},10000).then(r=>r.ok?r.json():{}).then(config=>{
     const key=config.google_maps_key;

@@ -19,6 +19,8 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.webkit.JavascriptInterface;
 import android.widget.Toast;
+import android.widget.FrameLayout;
+import android.graphics.Bitmap;
 import android.os.Build;
 import android.os.SystemClock;
 import com.google.android.gms.common.api.ResolvableApiException;
@@ -43,6 +45,7 @@ public class MainActivity extends Activity {
     private static final long BACK_PRESS_WINDOW_MS = 2000;
     private PermissionRequest cameraRequest;
     private WebView web;
+    private NativeMapController nativeMaps;
     private boolean driverPageLoaded = false;
     private Bundle pendingState;
     private String pendingDestination;
@@ -89,7 +92,14 @@ public class MainActivity extends Activity {
         getWindow().setNavigationBarColor(0xffe95716);
         web = new WebView(this);
         web.setFitsSystemWindows(true);
-        setContentView(web);
+        FrameLayout root = new FrameLayout(this);
+        root.setFitsSystemWindows(true);
+        root.addView(web, new FrameLayout.LayoutParams(-1, -1));
+        setContentView(root);
+        nativeMaps = new NativeMapController(this, root, result -> {
+            if (isTrustedMapPage() && !isFinishing() && !isDestroyed())
+                web.evaluateJavascript("window.WallahaMaps&&window.WallahaMaps.receive("+result.toString()+")", null);
+        });
         WebSettings settings = web.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
@@ -104,6 +114,9 @@ public class MainActivity extends Activity {
             appPrefs.edit().putInt("version", BuildConfig.VERSION_CODE).apply();
         }
         web.setWebViewClient(new WebViewClient() {
+            @Override public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                if (nativeMaps != null) nativeMaps.close("cancelled");
+            }
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri url = request.getUrl();
                 if ("https".equals(url.getScheme()) && isAppHost(url.getHost())) return false;
@@ -178,6 +191,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        if (nativeMaps != null) nativeMaps.onResume();
         if (!"customer".equals(BuildConfig.FLAVOR)) return;
         LocationManager locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
         boolean locationEnabled;
@@ -228,6 +242,10 @@ public class MainActivity extends Activity {
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grants) {
         super.onRequestPermissionsResult(requestCode, permissions, grants);
+        if (requestCode == NativeMapController.LOCATION_PERMISSION_REQUEST && nativeMaps != null) {
+            nativeMaps.onLocationPermissionResult();
+            return;
+        }
         if (requestCode == NOTIFICATION_REQUEST) {
             notificationPermissionAsked = true;
             startPendingDriverService();
@@ -276,6 +294,7 @@ public class MainActivity extends Activity {
     }
 
     private void handleBackPressed() {
+        if (nativeMaps != null && nativeMaps.onBackPressed()) return;
         if (web.canGoBack()) {
             web.goBack();
             lastBackPressAt = 0;
@@ -291,6 +310,22 @@ public class MainActivity extends Activity {
     }
 
     private final class DriverBridge {
+        @JavascriptInterface public boolean mapsSdkAvailable() {
+            return BuildConfig.NATIVE_MAPS_CONFIGURED;
+        }
+
+        @JavascriptInterface public void openMap(String json) {
+            runOnUiThread(() -> { if (isTrustedMapPage()) nativeMaps.open(json); });
+        }
+
+        @JavascriptInterface public void updateMap(String json) {
+            runOnUiThread(() -> { if (isTrustedMapPage()) nativeMaps.update(json); });
+        }
+
+        @JavascriptInterface public void closeMap(String requestId) {
+            runOnUiThread(() -> { if (isTrustedMapPage()) nativeMaps.closeRequest(requestId); });
+        }
+
         @JavascriptInterface public void startDriverTracking(String token, String baseUrl) {
             if (!"driver".equals(BuildConfig.FLAVOR) || token == null || token.trim().isEmpty()) return;
             Uri base = Uri.parse(baseUrl == null ? "" : baseUrl);
@@ -324,7 +359,20 @@ public class MainActivity extends Activity {
         else startService(pendingDriverServiceIntent);
     }
 
+    private boolean isTrustedMapPage() {
+        if (isFinishing() || isDestroyed() || web == null || web.getUrl() == null) return false;
+        Uri page = Uri.parse(web.getUrl());
+        return "https".equals(page.getScheme()) && isAppHost(page.getHost())
+            && (page.getPort() == -1 || page.getPort() == 443);
+    }
+
+    @Override protected void onStart() { super.onStart();if (nativeMaps != null) nativeMaps.onStart(); }
+    @Override protected void onPause() { if (nativeMaps != null) nativeMaps.onPause();super.onPause(); }
+    @Override protected void onStop() { if (nativeMaps != null) nativeMaps.onStop();super.onStop(); }
+    @Override public void onLowMemory() { super.onLowMemory();if (nativeMaps != null) nativeMaps.onLowMemory(); }
+
     @Override protected void onDestroy() {
+        if (nativeMaps != null) nativeMaps.destroy();
         if (fileCallback != null) fileCallback.onReceiveValue(null);
         if (cameraRequest != null) { cameraRequest.deny(); cameraRequest = null; }
         web.destroy();
