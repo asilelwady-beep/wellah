@@ -4,7 +4,7 @@ on:
     paths: ['android-app/**', 'maps.js', 'tests/test_native_maps.cjs', '.github/workflows/android-native-maps-check.yml']
 jobs:
   native-maps:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -22,7 +22,10 @@ jobs:
         with:
           gradle-version: '8.13'
       - name: Install Android platform
-        run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+        run: |
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -maxdepth 3 -type f -name sdkmanager | head -n 1)"
+          test -x "$SDKMANAGER"
+          "$SDKMANAGER" 'platforms;android-36' 'build-tools;36.0.0'
       - name: Unit tests and Android compilation without an activation key
         working-directory: android-app
         run: gradle :app:testCustomerDebugUnitTest :app:assembleCustomerDebug :app:assembleDriverDebug :app:assembleAdminDebug --no-daemon
