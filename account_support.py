@@ -110,6 +110,13 @@ def normalized_mobile(value):
         raise ValueError('اكتب رقم موبايل مصري صحيح من 11 رقمًا')
     return value
 
+def registration_mobile(value):
+    digits=str(value).translate(str.maketrans('٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹','01234567890123456789'))
+    if not re.fullmatch(r'01[0125][0-9]{8}', digits):
+        raise ValueError('اكتب رقم موبايل مصري صحيح من 11 رقمًا')
+    return digits
+
+
 def normalize_recovery_answer(value):
     answer=' '.join(str(value or '').strip().casefold().split())
     if len(answer)<3 or len(answer)>120:
@@ -228,7 +235,7 @@ def complete_registration(db, data, create_user):
     # Every customer account stores an Egyptian national mobile number, including
     # registrations verified by email. Do not let the email path bypass the
     # phone validation used by SMS registration.
-    phone=normalized_mobile(data.get('phone',''))
+    phone=registration_mobile(data.get('phone',''))
     if mobile and phone != code['email'][4:]: raise ValueError('رقم الموبايل لا يطابق الرقم الذي تم تأكيده')
     data=dict(data,phone=phone)
     if not mobile and str(data.get('email', '')).strip().lower() != code['email']:
