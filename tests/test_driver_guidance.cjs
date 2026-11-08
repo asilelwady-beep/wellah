@@ -18,8 +18,16 @@ const ctx=vm.createContext({window,L,document:{createElement:()=>dialog,body:{ap
 vm.runInContext(maps,ctx);
 const fix=async(lat,lon)=>{watch({timestamp:clock,coords:{latitude:lat,longitude:lon,accuracy:5}});await new Promise(setImmediate)};
 (async()=>{
-  const button=html.slice(html.indexOf('function driverNavigationButton('),html.indexOf('\n}',html.indexOf('function driverNavigationButton('))+2);
-  vm.runInContext(button,ctx);ctx.driverIcon=()=>'';
+  const button=html.slice(html.indexOf('function driverGoogleMapsUrl('),html.indexOf('\n}',html.indexOf('function driverNavigationButton('))+2);
+  vm.runInContext(button,ctx);ctx.driverIcon=()=>'';ctx.esc=s=>s.replaceAll('&','&amp;');
+  const target=(o,point)=>new URL(ctx.driverGoogleMapsUrl(o,point)).searchParams.get('destination');
+  assert.equal(target(order),'29.85,31.28');
+  assert.equal(target({...order,status:'on_way'}),'29.87,31.29');
+  assert.equal(target({...order,status:'returning'}),'29.85,31.28');
+  assert.equal(target({...order,status:'picked_up',latitude:null,address:'شارع النيل',area:'البدرشين'}),'شارع النيل، البدرشين');
+  assert.match(ctx.driverGoogleMapsUrl({...order,shop_anywhere:true}),/maps\/search/);
+  assert.equal(target({...order,shop_anywhere:true},latLng(29.8,31.2)),'29.8,31.2');
+  assert.match(ctx.driverNavigationButton(order),/href="https:\/\/www.google.com\/maps\/dir/);
   assert.match(ctx.driverNavigationButton(order),/startDriverGuidance\(4\)/);
   await ctx.startDriverGuidance(4);assert.ok(dialog.open);
   await fix(29.84,31.27);assert.match(cells.get('.guidance-text').textContent,/خُد يمين/);
@@ -29,6 +37,7 @@ const fix=async(lat,lon)=>{watch({timestamp:clock,coords:{latitude:lat,longitude
   clock+=8000;await fix(29.83,31.265);assert.equal(routes.length,2);
   order.status='picked_up';tick();await new Promise(setImmediate);
   assert.deepEqual(routes.at(-1).end,[31.29,29.87]);
+  assert.equal(new URL(cells.get('[data-google]').href).searchParams.get('destination'),'29.87,31.29');
   clock+=8000;await fix(29.87,31.29);assert.match(cells.get('.guidance-text').textContent,/وصلت/);
   windowEvents.popstate();assert.equal(dialog.open,false);assert.ok(cleared&&removed);
   console.log('Passed: driver CTA, pickup maneuver, deviation reroute, delivery switch, arrival, back and GPS cleanup.');

@@ -693,7 +693,7 @@ async function startDriverGuidance(orderId){
   const initial=order();if(!initial||driverGuidanceDialog)return;
   const dialog=document.createElement('dialog');driverGuidanceDialog=dialog;
   dialog.className='driver-guidance';dialog.dir='rtl';dialog.setAttribute('aria-label','ملاحة الطيار');
-  dialog.innerHTML='<header><strong></strong><button type="button" data-close>رجوع للطلب</button></header><div class="guidance-text" role="status"></div><div class="guidance-estimate"></div><div class="guidance-map"></div><footer><button type="button" data-voice hidden>تشغيل الصوت</button><button type="button" data-overview>عرض الرحلة</button><button type="button" data-follow>تتبّع موقعي</button><button type="button" data-choose hidden>تأكيد الوجهة</button></footer>';
+  dialog.innerHTML='<header><strong></strong><button type="button" data-close>رجوع للطلب</button></header><div class="guidance-text" role="status"></div><div class="guidance-estimate"></div><div class="guidance-map"></div><footer><a class="route-link" data-google hidden>فتح في Google Maps</a><button type="button" data-voice hidden>تشغيل الصوت</button><button type="button" data-overview>عرض الرحلة</button><button type="button" data-follow>تتبّع موقعي</button><button type="button" data-choose hidden>تأكيد الوجهة</button></footer>';
   document.body.append(dialog);dialog.showModal();
   const text=dialog.querySelector('.guidance-text'),estimate=dialog.querySelector('.guidance-estimate');
   const title=dialog.querySelector('strong'),choose=dialog.querySelector('[data-choose]');
@@ -753,6 +753,12 @@ async function startDriverGuidance(orderId){
     showMapPoints(map,points);
   }
   dialog.querySelector('[data-overview]').onclick=showTrip;
+  const external=dialog.querySelector('[data-google]');
+  function updateGoogleLink(o){
+    const url=driverGoogleMapsUrl(o,dest);
+    external.hidden=!url;
+    if(url)external.href=url;else external.removeAttribute('href');
+  }
   function updateTarget(o){
     syncStop('مكان الاستلام',o.shop_anywhere?null:o.pickup_lat,o.pickup_lon,'#2864c5');
     syncStop('عنوان العميل',o.latitude,o.longitude,'#e35a29');
@@ -761,6 +767,7 @@ async function startDriverGuidance(orderId){
     if(stage===key)return;
     stage=key;reset();endMarker?.remove();endMarker=null;candidate=null;choose.hidden=true;
     dest=t?.lat!=null&&t?.lon!=null&&[+t.lat,+t.lon].every(Number.isFinite)?L.latLng(+t.lat,+t.lon):null;
+    updateGoogleLink(o);
     title.textContent=t?.label||'اختيار سوبر ماركت';
     if(!dest)text.textContent=(o.shop_anywhere&&!t?'اختار السوبر ماركت':'حدّد الوجهة')+' على الخريطة ثم اضغط تأكيد الوجهة'+(t?' · '+(['picked_up','on_way'].includes(o.status)?o.address||'':o.merchant_address||o.pickup||''):'');
   }
@@ -809,7 +816,7 @@ async function startDriverGuidance(orderId){
       if(dest)return;
       candidate=e.latlng;endMarker?.remove();endMarker=L.circleMarker(candidate,{radius:9,color:'#fff',fillColor:'#e35a29',fillOpacity:1}).addTo(map);choose.hidden=false;
     });
-    choose.onclick=()=>{if(candidate){dest=candidate;choose.hidden=true;update()}};
+    choose.onclick=()=>{if(candidate&&order()){dest=candidate;choose.hidden=true;updateGoogleLink(order());update()}};
     dialog.querySelector('[data-follow]').onclick=()=>{following=true;if(position)map.setView(position,17)};
     update();showTrip();following=true;
     const bike=L.divIcon({className:'guidance-pin',html:'🏍',iconSize:[32,32],iconAnchor:[16,16]});
