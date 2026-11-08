@@ -601,8 +601,12 @@ def init():
 
 
 def create_user(db, name, phone, role, password, username=None):
-    if not name.strip() or not phone.strip() or len(password) < 10:
-        raise ValueError('الاسم والهاتف وكلمة مرور من 10 أحرف على الأقل مطلوبة')
+    if not name.strip():
+        raise ValueError('اكتب الاسم قبل إنشاء الحساب')
+    if not phone.strip():
+        raise ValueError('اكتب رقم الهاتف قبل إنشاء الحساب')
+    if len(password) < 10:
+        raise ValueError('كلمة المرور لازم تكون 10 أحرف على الأقل')
     if username is not None:
         username=normalized_username(username)
     salt = secrets.token_hex(16)
