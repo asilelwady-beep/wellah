@@ -258,9 +258,16 @@ def init():
         CREATE TABLE IF NOT EXISTS order_call_signals (id INTEGER PRIMARY KEY, call_id TEXT NOT NULL REFERENCES order_calls(id) ON DELETE CASCADE, sender_id INTEGER NOT NULL REFERENCES users(id), kind TEXT NOT NULL, payload TEXT NOT NULL, at INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS order_call_signals_thread ON order_call_signals(call_id,id);
         CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, order_id INTEGER REFERENCES orders(id), action TEXT NOT NULL, at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS cancelled_trip_checks (
+            order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+            driver_id INTEGER NOT NULL REFERENCES drivers(id) ON DELETE CASCADE,
+            reason TEXT NOT NULL, since REAL NOT NULL, seen REAL, distance_m INTEGER, accuracy_m INTEGER,
+            reviewed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(order_id,driver_id));
+        CREATE INDEX IF NOT EXISTS trip_checks_by_driver ON cancelled_trip_checks(driver_id,since);
         CREATE TABLE IF NOT EXISTS driver_trip_points (driver_id INTEGER NOT NULL, order_id INTEGER NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, at TEXT NOT NULL, PRIMARY KEY(driver_id,order_id));
         CREATE TABLE IF NOT EXISTS driver_distance_daily (driver_id INTEGER NOT NULL, day TEXT NOT NULL, meters REAL NOT NULL DEFAULT 0, PRIMARY KEY(driver_id,day));
         """)
+        db.execute('DELETE FROM cancelled_trip_checks WHERE since < ?', (time.time()-TRIP_CHECK_RETENTION,))
         # Customer and driver sessions stay valid until explicit logout. This
         # also migrates sessions created before persistent sessions were enabled.
         db.execute("UPDATE sessions SET expires=0 WHERE user_id IN (SELECT id FROM users WHERE role IN ('customer','driver'))")
@@ -652,6 +659,58 @@ def admin_daily_stats(db):
         LEFT JOIN driver_distance_daily k ON k.driver_id=d.id AND k.day=?
         GROUP BY d.id ORDER BY delivered_today DESC,d.id""", (start,end,str(today)))
     return {'day':str(today),'customers':customers,'drivers':drivers}
+
+
+TRIP_CHECK_WINDOW = 24 * 3600
+TRIP_CHECK_RADIUS = 100
+TRIP_CHECK_RETENTION = 30 * 86400
+
+
+def watch_cancelled_trip(db, order, reason):
+    if not order['driver_id'] or order['latitude'] is None or order['longitude'] is None:
+        return
+    stamp=time.time()
+    db.execute('DELETE FROM cancelled_trip_checks WHERE since < ?', (stamp-TRIP_CHECK_RETENTION,))
+    db.execute("""INSERT INTO cancelled_trip_checks(order_id,driver_id,reason,since) VALUES (?,?,?,?)
+        ON CONFLICT(order_id,driver_id) DO UPDATE SET reason=excluded.reason,since=excluded.since
+        WHERE cancelled_trip_checks.seen IS NULL""",(order['id'],order['driver_id'],reason,stamp))
+
+
+def check_cancelled_trip_location(db, driver_id, lat, lon, sample):
+    if sample.get('foreground') is not True:
+        return
+    try:
+        fix=float(sample['fix_ms'])/1000
+        accuracy=float(sample['accuracy_m'])
+    except (KeyError,TypeError,ValueError,OverflowError):
+        return
+    stamp=time.time()
+    if not 0 <= stamp-fix <= 60 or not 0 < accuracy <= 50:
+        return
+    shift_start=datetime.fromtimestamp(fix-86400,timezone.utc).isoformat(timespec='seconds')
+    fix_iso=datetime.fromtimestamp(fix,timezone.utc).isoformat(timespec='seconds')
+    candidates=db.execute("""SELECT c.order_id,o.latitude,o.longitude FROM cancelled_trip_checks c
+        JOIN orders o ON o.id=c.order_id WHERE c.driver_id=? AND c.seen IS NULL AND c.since>=? AND c.since<?
+        AND EXISTS(SELECT 1 FROM driver_shifts WHERE driver_id=c.driver_id AND ended_at IS NULL
+                   AND started_at>? AND started_at<=?)""",(driver_id,stamp-TRIP_CHECK_WINDOW,fix,shift_start,fix_iso))
+    for row in candidates:
+        dest_lat,dest_lon=row['latitude'],row['longitude']
+        if dest_lat is None or dest_lon is None:
+            continue
+        delta_lat=math.radians(dest_lat-lat);delta_lon=math.radians(dest_lon-lon)
+        h=math.sin(delta_lat/2)**2+math.cos(math.radians(lat))*math.cos(math.radians(dest_lat))*math.sin(delta_lon/2)**2
+        distance=12742000*math.asin(math.sqrt(max(0,min(1,h))))
+        if distance+accuracy<=TRIP_CHECK_RADIUS:
+            db.execute("""UPDATE cancelled_trip_checks SET seen=?,distance_m=?,accuracy_m=?
+                WHERE order_id=? AND driver_id=? AND seen IS NULL""",
+                (fix,round(distance),math.ceil(accuracy),row['order_id'],driver_id))
+
+
+def owner_trip_alerts(db):
+    return rows(db, """SELECT c.order_id,c.driver_id,d.name AS driver_name,c.reason,c.since,c.seen,
+        c.distance_m,c.accuracy_m,c.reviewed FROM cancelled_trip_checks c JOIN drivers d ON d.id=c.driver_id
+        WHERE c.seen IS NOT NULL AND c.since>=? ORDER BY c.reviewed,c.seen DESC LIMIT 100""",
+        (time.time()-TRIP_CHECK_RETENTION,))
 
 
 def record_driver_distance(db, driver_id, lat, lon):
@@ -1508,6 +1567,7 @@ class Handler(BaseHTTPRequestHandler):
             else: view['staff_permissions']=None
             if user['role']=='admin' and user['staff_permissions'] is None: view['staff_members']=[dict(r) for r in db.execute("SELECT u.id,u.name,u.username,u.disabled,s.permissions FROM staff_members s JOIN users u ON u.id=s.user_id ORDER BY u.id DESC")]
             if user['role']=='admin' and user['staff_permissions'] is None:
+                view['trip_proximity_alerts']=owner_trip_alerts(db)
                 view['customers']=[dict(r) for r in db.execute("""SELECT u.id,u.name,u.phone,u.email,u.disabled,
                     COALESCE(u.shipping_discount_cents,0) AS shipping_discount_cents,
                     COALESCE(u.order_discount_cents,0) AS order_discount_cents,
@@ -2223,6 +2283,7 @@ class Handler(BaseHTTPRequestHandler):
                         percent,share,net=order_commission_split(db,o,d['vehicle_type'])
                         db.execute('UPDATE orders SET commission_percent=?,commission_cents=?,driver_earning_cents=?,commission_locked=1 WHERE id=?',(percent,share,net,oid))
                     db.execute('UPDATE orders SET driver_id=?,status=? WHERE id=?',(did,'ready' if o['status']=='ready' else 'assigned',oid))
+                    db.execute('DELETE FROM cancelled_trip_checks WHERE order_id=? AND driver_id=? AND seen IS NULL',(oid,did))
                     log(db,oid,'أعاد المسؤول إسناد الطلب إلى مندوب آخر')
                 elif path == "/api/driver":
                     if user['role']!='admin': return self.respond({'error':'غير مصرح'},403)
@@ -2510,10 +2571,12 @@ class Handler(BaseHTTPRequestHandler):
                         db.execute("UPDATE orders SET status='ready' WHERE id=?", (oid,))
                         log(db, oid, "الطلب جاهز للاستلام من مكان المسؤول")
                     elif action=='accept_offer' and o['status']=='offered' and o['offer_until']>=int(time.time()):
+                        db.execute('DELETE FROM cancelled_trip_checks WHERE order_id=? AND driver_id=? AND seen IS NULL',(oid,d['id']))
                         db.execute("UPDATE orders SET status='assigned',offer_until=NULL WHERE id=?",(oid,))
                         log(db,oid,'قبل المندوب الطلب ويتجه للمحل')
                     elif action=='decline_offer' and o['status']=='offered':
                         db.execute('INSERT OR IGNORE INTO order_declines VALUES (?,?)',(oid,o['driver_id']))
+                        watch_cancelled_trip(db,o,'driver_decline')
                         log(db,oid,'اعتذر المندوب عن الطلب')
                         assign(db,oid)
                     elif action=='returning' and o['kind']=='delivery' and o['status']=='on_way' and o['return_percent'] is not None:
@@ -2560,6 +2623,8 @@ class Handler(BaseHTTPRequestHandler):
                         db.execute('UPDATE orders SET cash_settled=1,commission_settled=1 WHERE id=?',(oid,))
                         log(db,oid,'أكد المسؤول استلام الكاش من المندوب')
                     elif action in ('cancel','reject_medicine','customer_cancel') and o["status"] not in ("delivered", "cancelled","returning","returned") and (action!='reject_medicine' or o['status']=='medicine_review') and (action!='customer_cancel' or (o['status'] in ('awaiting_quote','quote_pending','medicine_review','payment_review','new','awaiting_driver','offered','assigned') and not (o['payment']=='wallet' and (o['payment_status']=='confirmed' or bool(o['proof']))))):
+                        if action in ('cancel','customer_cancel'):
+                            watch_cancelled_trip(db,o,'customer_cancel' if action=='customer_cancel' else 'admin_cancel')
                         db.execute("UPDATE orders SET status='cancelled' WHERE id=?", (oid,))
                         # used_order_id reserves a one-time reward while its order is active.
                         # Cancellation releases the reservation; delivery keeps it consumed.
@@ -2574,6 +2639,11 @@ class Handler(BaseHTTPRequestHandler):
                             message+=" · سبب الإلغاء: "+reason.strip()
                         log(db, oid, message)
                     else: raise ValueError("الإجراء غير متاح في حالة الطلب الحالية")
+                elif path == '/api/trip-alert/review':
+                    if user['role']!='admin' or user['staff_permissions'] is not None:
+                        return self.respond({'error':'غير مصرح'},403)
+                    db.execute('UPDATE cancelled_trip_checks SET reviewed=1 WHERE order_id=? AND driver_id=? AND seen IS NOT NULL',
+                               (int(data['order_id']),int(data['driver_id'])))
                 elif path == '/api/location':
                     if user['role']!='driver': return self.respond({'error':'غير مصرح'},403)
                     lat,lon=float(data['lat']),float(data['lon'])
@@ -2581,6 +2651,7 @@ class Handler(BaseHTTPRequestHandler):
                     d=db.execute('SELECT id FROM drivers WHERE user_id=?',(user['id'],)).fetchone()
                     available=db.execute('SELECT available FROM drivers WHERE id=?',(d['id'],)).fetchone() if d else None
                     if not available or not available['available']: return self.respond({'error':'المندوب غير متاح'},403)
+                    check_cancelled_trip_location(db,d['id'],lat,lon,data)
                     record_driver_distance(db,d['id'],lat,lon)
                     db.execute('UPDATE drivers SET lat=?,lon=?,location_at=? WHERE id=?',(lat,lon,now(),d['id']))
                     refresh_offers(db)
