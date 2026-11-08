@@ -98,23 +98,26 @@ def send_code(email, code):
         raise ValueError('تعذر إرسال رمز التأكيد. حاول لاحقًا') from None
 
 
-def normalized_mobile(value):
-    value=str(value).strip().translate(str.maketrans('٠١٢٣٤٥٦٧٨٩','0123456789'))
-    value=re.sub(r'[\s()-]', '', value)
-    if value.startswith('*0020'): value=value[1:]
-    elif value.startswith('*20'): value='0'+value[3:]
-    if value.startswith('0020'): value='0'+value[4:]
-    elif value.startswith('+20'): value='0'+value[3:]
-    elif value.startswith('20') and len(value)==12: value='0'+value[2:]
-    if not re.fullmatch(r'01[0125][0-9]{8}',value):
-        raise ValueError('اكتب رقم موبايل مصري صحيح من 11 رقمًا')
-    return value
+def local_egyptian_mobile(value):
+    digits=str(value).translate(str.maketrans('٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹','01234567890123456789'))
+    compact=re.sub(r'[\s()-]', '', digits)
+    match=re.fullmatch(r'(?:(?:\+20|0020|20)0?|0)(1[0125][0-9]{8})', compact)
+    return '0'+match.group(1) if match else None
+
 
 def registration_mobile(value):
-    digits=str(value).translate(str.maketrans('٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹','01234567890123456789'))
-    if not re.fullmatch(r'01[0125][0-9]{8}', digits):
-        raise ValueError('اكتب رقم موبايل مصري صحيح من 11 رقمًا')
-    return digits
+    phone=local_egyptian_mobile(value)
+    if phone is None:
+        raise ValueError('اكتب رقم موبايل مصري صحيح من 11 رقمًا، ومفتاح مصر +20 اختياري')
+    return phone
+
+
+def normalized_mobile(value):
+    # Older recovery and SMS clients can send a dialer prefix before the country code.
+    compact=re.sub(r'[\s()-]', '', str(value)).translate(str.maketrans('٠١٢٣٤٥٦٧٨٩','0123456789'))
+    if compact.startswith(('*0020','*20')):
+        compact=compact[1:]
+    return registration_mobile(compact)
 
 
 def normalize_recovery_answer(value):

@@ -24,7 +24,7 @@ from decimal import Decimal, ROUND_HALF_UP, ROUND_CEILING, InvalidOperation
 from concurrent.futures import Future
 from threading import Lock
 from wallet_controls import init_wallet_controls, wallet_post, unlocked, verify_owner, redact_wallet
-from account_support import init_features, feature_post, feature_state, normalized_username, registration_mobile, complete_registration, set_recovery_answer
+from account_support import init_features, feature_post, feature_state, normalized_username, local_egyptian_mobile, registration_mobile, complete_registration, set_recovery_answer
 
 ROOT = Path(__file__).parent
 DB = Path(os.environ.get('WALLAHA_DB_PATH', str(ROOT / 'wallaha.sqlite3')))
@@ -1607,6 +1607,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond({'ok':True,'id':uid})
                 if path in ('/api/login','/api/admin/login'):
                     phone=str(data.get('phone','')).strip()[:64]
+                    if path=='/api/login' and data.get('expected_role')=='customer':
+                        phone=local_egyptian_mobile(phone) or phone
                     remote=self.client_address[0]
                     if not login_allowed(db,phone,remote): return self.respond({'error':'محاولات دخول كثيرة. حاول لاحقًا'},429)
                     u=authenticate(db,phone,data.get('password',''))
