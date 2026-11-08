@@ -1,0 +1,31 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const maps=fs.readFileSync('maps.js','utf8'),html=fs.readFileSync('index.html','utf8');
+const cells=new Map(),routes=[],windowEvents={},dialogEvents={};
+let tick,watch,clock=100000,cleared=false,removed=false;
+const latLng=(lat,lng)=>({lat,lng,distanceTo(other){return Math.hypot(lat-other.lat,(lng-other.lng)*.87)*111000}});
+const map={setView(){return this},on(){return this},remove(){removed=true}};
+const layer=()=>({addTo(){return this},remove(){},setLatLng(){}});
+const dialog={setAttribute(){},showModal(){this.open=true},close(){this.open=false;dialogEvents.close()},remove(){},addEventListener(k,f){dialogEvents[k]=f},querySelector(k){if(!cells.has(k))cells.set(k,{});return cells.get(k)}};
+const order={id:4,status:'assigned',pickup_lat:29.85,pickup_lon:31.28,latitude:29.87,longitude:31.29};
+const window={addEventListener(k,f){windowEvents[k]=f},removeEventListener(k){delete windowEvents[k]}};
+const L={latLng,map:()=>map,tileLayer:layer,circleMarker:layer,marker:layer,polyline:layer,divIcon:()=>({})};window.L=L;
+const ctx=vm.createContext({window,L,document:{createElement:()=>dialog,body:{append(){}}},tab:'driver',state:{orders:[order]},Date:{now:()=>clock},history:{state:null,pushState(s){this.state=s},back(){this.state=null}},navigator:{geolocation:{watchPosition(f){watch=f;return 7},clearWatch(id){assert.equal(id,7);cleared=true}}},setInterval(f){tick=f;return 1},clearInterval(){},setTimeout,clearTimeout,AbortController,fetch:async url=>{
+  const [origin,end]=url.split('driving/')[1].split('?')[0].split(';').map(p=>p.split(',').map(Number)),mid=[end[0],origin[1]];
+  routes.push({origin,end});assert.match(url,/steps=true/);
+  return {ok:true,json:async()=>({code:'Ok',routes:[{duration:300,legs:[{steps:[['depart',[origin,mid]],['turn',[mid,end]],['arrive',[end,end]]].map(([type,coordinates])=>({name:'شارع المحطة',maneuver:{type,modifier:'right'},geometry:{coordinates}}))}]}]})};
+}});
+vm.runInContext(maps,ctx);
+const fix=async(lat,lon)=>{watch({timestamp:clock,coords:{latitude:lat,longitude:lon,accuracy:5}});await new Promise(setImmediate)};
+(async()=>{
+  const button=html.slice(html.indexOf('function driverNavigationButton('),html.indexOf('\n}',html.indexOf('function driverNavigationButton('))+2);
+  vm.runInContext(button,ctx);ctx.driverIcon=()=>'';
+  assert.match(ctx.driverNavigationButton(order),/startDriverGuidance\(4\)/);
+  await ctx.startDriverGuidance(4);assert.ok(dialog.open);
+  await fix(29.84,31.27);assert.match(cells.get('.guidance-text').textContent,/خُد يمين/);
+  clock+=8000;await fix(29.83,31.265);assert.equal(routes.length,2);
+  order.status='picked_up';tick();await new Promise(setImmediate);
+  assert.deepEqual(routes.at(-1).end,[31.29,29.87]);
+  clock+=8000;await fix(29.87,31.29);assert.match(cells.get('.guidance-text').textContent,/وصلت/);
+  windowEvents.popstate();assert.equal(dialog.open,false);assert.ok(cleared&&removed);
+  console.log('Passed: driver CTA, pickup maneuver, deviation reroute, delivery switch, arrival, back and GPS cleanup.');
+})().catch(e=>{console.error(e);process.exitCode=1});
