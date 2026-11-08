@@ -25,3 +25,32 @@ ctx.normalizeRegistrationPhoneInput(el);
 assert.equal(el.value,'+2012');
 assert.equal(el.selectionStart,3);
 console.log('Passed masked placeholder, typing, Arabic digits, national and international numbers and invalid lengths.');
+
+async function checkPasswordValidation(){
+  const values={'reg-name':'عميل اختبار','reg-phone':'+20 01100000001','reg-pass':'abcdefgh',
+    'reg-confirm':'abcdefgh','reg-recovery':'إجابة تجريبية'};
+  let errorField='',notice='',requests=0;
+  function field(id){
+    return {value:values[id],classList:{add(){}},setAttribute(){},addEventListener(){},focus(){errorField=id;},
+      closest(){return null;},insertAdjacentElement(position,node){notice=node.textContent;}};
+  }
+  const ctx=vm.createContext({$:field,document:{getElementById:()=>true,querySelectorAll:()=>[],
+    createElement:()=>({setAttribute(){}})},featureAPI:async(path,data)=>{
+      requests++;
+      assert.equal(data.phone,'01100000001');
+    },alert(){},render(){}});
+  vm.runInContext(js.slice(js.indexOf('function clearRegisterError('),js.indexOf('function forgotPassword(')),ctx);
+  await ctx.register();
+  assert.equal(errorField,'reg-pass');
+  assert.match(notice,/10/);
+  assert.equal(requests,0);
+  values['reg-pass']='abcdefghij';
+  await ctx.register();
+  assert.equal(errorField,'reg-confirm');
+  assert.equal(requests,0);
+  values['reg-confirm']=values['reg-pass'];
+  await ctx.register();
+  assert.equal(requests,1);
+  console.log('Passed short password, mismatched confirmation and valid registration.');
+}
+checkPasswordValidation().catch(e=>{console.error(e);process.exitCode=1;});
