@@ -59,8 +59,15 @@ class PlatformDiscountTests(unittest.TestCase):
      db.execute('UPDATE users SET shipping_discount_cents=0,order_discount_cents=0 WHERE id=?',(uid,))
      for kind in ('customer_shipping','customer_order','discount'):
       db.execute('INSERT INTO featured_rewards(user_id,kind,amount_cents,created_at) VALUES(?,?,100,?)',(uid,kind,server.now()))
+    with server.connect() as db:
+     db.execute("INSERT INTO sessions(token_hash,user_id,expires) SELECT ?,id,? FROM users WHERE role='admin' LIMIT 1",(hashlib.sha256(b'owner-token').hexdigest(),int(time.time())+300))
+    for scope,label in [('shipping','خصم رأس السنة'),('order','خصم المولد النبوي')]:
+     post('admin/customer',{'user_id':uid,'action':'discount','scope':scope,'frequency':'once','amount':1,'reason':label},'owner-token')
     cancelled=new_order()
     with server.connect() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM featured_rewards WHERE used_order_id=?',(cancelled,)).fetchone()[0],3)
+    with server.connect() as db:
+     reasons=db.execute('SELECT discount_reason FROM orders WHERE id=?',(cancelled,)).fetchone()[0]
+     self.assertEqual(reasons,'خصم رأس السنة · خصم المولد النبوي')
     post('order/action',{'id':cancelled,'action':'customer_cancel','reason':'مشكلة مع الطيار'})
     with server.connect() as db:self.assertIn('مشكلة مع الطيار',db.execute('SELECT action FROM events WHERE order_id=? ORDER BY id DESC LIMIT 1',(cancelled,)).fetchone()[0])
     with server.connect() as db:self.assertEqual(db.execute('SELECT COUNT(*) FROM featured_rewards WHERE user_id=? AND used_order_id IS NULL',(uid,)).fetchone()[0],3)
