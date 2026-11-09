@@ -22,6 +22,7 @@ from urllib.parse import urlparse, parse_qs, urlencode
 from urllib.request import urlopen, Request, build_opener, HTTPRedirectHandler
 from decimal import Decimal, ROUND_HALF_UP, ROUND_CEILING, InvalidOperation
 from concurrent.futures import Future
+import chat_notifications
 from threading import Lock
 from wallet_controls import init_wallet_controls, wallet_post, unlocked, verify_owner, redact_wallet
 from account_support import valid_image, init_features, feature_post, feature_state, normalized_username, local_egyptian_mobile, registration_mobile, complete_registration, set_recovery_answer
@@ -267,6 +268,7 @@ def init():
         CREATE TABLE IF NOT EXISTS driver_trip_points (driver_id INTEGER NOT NULL, order_id INTEGER NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, at TEXT NOT NULL, PRIMARY KEY(driver_id,order_id));
         CREATE TABLE IF NOT EXISTS driver_distance_daily (driver_id INTEGER NOT NULL, day TEXT NOT NULL, meters REAL NOT NULL DEFAULT 0, PRIMARY KEY(driver_id,day));
         """)
+        chat_notifications.init_tables(db)
         db.execute('DELETE FROM cancelled_trip_checks WHERE since < ?', (time.time()-TRIP_CHECK_RETENTION,))
         # Customer and driver sessions stay valid until explicit logout. This
         # also migrates sessions created before persistent sessions were enabled.
@@ -1809,6 +1811,12 @@ class Handler(BaseHTTPRequestHandler):
                     more=len(messages)>100
                     messages=messages[:100]
                     return self.respond({'messages':messages,'next_id':messages[-1]['id'] if messages else after,'has_more':more})
+                if path in ('/api/chat/push-key','/api/chat/subscribe'):
+                    if user['role'] not in ('customer','driver'):return self.respond({'error':'غير مصرح'},403)
+                    if path.endswith('push-key'):
+                        return self.respond({'key':chat_notifications.public_key(db)})
+                    chat_notifications.subscribe(db,user,self.headers['Authorization'],data.get('subscription'))
+                    return self.respond({'ok':True})
                 if path == '/api/order/chat':
                     oid=int(data['order_id'])
                     o=db.execute('SELECT * FROM orders WHERE id=?',(oid,)).fetchone()
@@ -1822,7 +1830,10 @@ class Handler(BaseHTTPRequestHandler):
                     if data.get('driver_id') is not None and data['driver_id']!=o['driver_id']:
                         return self.respond({'error':'تغيّر الطيار المسؤول عن الطلب. افتح المحادثة الحالية.'},409)
                     mode=data.get('mode','list')
-                    if mode not in ('list','send'): raise ValueError('إجراء دردشة غير معروف')
+                    if mode not in ('list','send','read'): raise ValueError('إجراء دردشة غير معروف')
+                    if mode=='read':
+                        chat_notifications.mark_read(db,user['id'],oid,o['driver_id'],data['through'])
+                        return self.respond(chat_notifications.unread(db,user['id'],oid,o['driver_id']))
                     if mode == 'list' and 'known_last_id' in data:
                         query = 'SELECT MAX(id) FROM order_messages WHERE order_id=?'
                         params = (oid,)
@@ -1831,7 +1842,7 @@ class Handler(BaseHTTPRequestHandler):
                             params += (o['driver_id'],)
                         last_id = db.execute(query, params).fetchone()[0] or 0
                         if data['known_last_id'] == last_id:
-                            return self.respond({'unchanged': True})
+                            return self.respond({'unchanged':True,**chat_notifications.unread(db,user['id'],oid,o['driver_id'])})
                     if mode=='send':
                         db.execute('BEGIN IMMEDIATE')
                         # Check assignment again under the write lock before recording a private message.
@@ -1849,9 +1860,10 @@ class Handler(BaseHTTPRequestHandler):
                             cutoff=datetime.fromtimestamp(time.time()-60,timezone.utc).isoformat(timespec='seconds')
                             if db.execute('SELECT COUNT(*) FROM order_messages WHERE sender_id=? AND at>=?',(user['id'],cutoff)).fetchone()[0]>=30:
                                 return self.respond({'error':'رسائل كثيرة؛ انتظر قليلًا ثم أرسل'},429)
-                            db.execute('INSERT INTO order_messages(order_id,driver_id,sender_id,request_id,body,at) VALUES (?,?,?,?,?,?)',(oid,o['driver_id'],user['id'],request_id,body,now()))
+                            msg=db.execute('INSERT INTO order_messages(order_id,driver_id,sender_id,request_id,body,at) VALUES (?,?,?,?,?,?)',(oid,o['driver_id'],user['id'],request_id,body,now()))
+                            chat_notifications.enqueue(db,msg.lastrowid,d['user_id'] if is_customer else o['user_id'])
                     messages=rows(db,"SELECT id,sender_id,body,at FROM (SELECT id,sender_id,body,at FROM order_messages WHERE order_id=? AND (driver_id=? OR ?=1) ORDER BY id DESC LIMIT 200) ORDER BY id",(oid,o['driver_id'],int(is_customer)))
-                    return self.respond({'messages':messages,'driver_id':o['driver_id'],'can_send':o['status'] in ('assigned','ready','picked_up','on_way','returning')})
+                    return self.respond({'messages':messages,**chat_notifications.unread(db,user['id'],oid,o['driver_id']),'driver_id':o['driver_id'],'can_send':o['status'] in ('assigned','ready','picked_up','on_way','returning')})
                 if path == '/api/delivery-quote':
                     if user['role']!='customer': return self.respond({'error':'غير مصرح'},403)
                     return self.respond(quote_delivery(db,user['id'],data))
@@ -2664,6 +2676,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     init()
+    chat_notifications.start_worker(connect)
     host=os.environ.get('WALLAHA_BIND','127.0.0.1')
     port=int(os.environ.get('WALLAHA_PORT',os.environ.get('PORT','8080')))
     print(f"Wallaha development server: http://{host}:{port}")

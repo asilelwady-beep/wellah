@@ -12,7 +12,7 @@ const ctx=vm.createContext({state:{user:{id:2},orders:[order]},tab:'driver',docu
     close(){this.open=false;this.onClose();},remove(){dialog=null;}}),body:{append(el){dialog=el;}}
 },$:id=>id==='trip-conversation'?dialog:null,history,window:{addEventListener(){},removeEventListener(){}},
   saveChatDrafts(){},pollOrderChat(){polls++;},chatSending:new Set(),chatDrafts:new Map(),chatCache:new Map(),
-  esc:String,driverIcon:()=>'',driverAvatar:photo=>photo,contactLink:s=>s});
+  chatPushButton:()=>'',esc:String,driverIcon:()=>'',driverAvatar:photo=>photo,contactLink:s=>s});
 vm.runInContext(code('function chatKey(','function saveChatDrafts('),ctx);
 vm.runInContext(code('function customerDriverCard(','function trackingPanel('),ctx);
 for(const role of ['driver','customer']){
