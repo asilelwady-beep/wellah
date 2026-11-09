@@ -343,6 +343,7 @@ def init():
         init_admin_catalog_revision(db)
         db.execute("CREATE TABLE IF NOT EXISTS banner_settings (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, offers TEXT NOT NULL)")
         db.execute("INSERT OR IGNORE INTO banner_settings VALUES (1,0,'[]')")
+        init_banner_images(db)
 
         if 'featured' not in {r['name'] for r in db.execute('PRAGMA table_info(drivers)')}:
             db.execute('ALTER TABLE drivers ADD COLUMN featured INTEGER NOT NULL DEFAULT 0')
@@ -1136,9 +1137,53 @@ def banner_settings(db):
     return {'revision': row['revision'], 'offers': json.loads(row['offers'])}
 
 
+def store_banner_image(db, raw):
+    key = hashlib.sha256(raw).hexdigest()
+    db.execute('INSERT INTO banner_images(digest, jpeg, updated) VALUES(?,?,?) '
+               'ON CONFLICT(digest) DO UPDATE SET updated=excluded.updated', (key, raw, int(time.time())))
+    return '/banner-image/' + key + '.jpg'
+
+
+def init_banner_images(db):
+    # Attach the commissioned artwork to the three existing demo offers once.
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='banner_images'").fetchone():
+        return
+    db.execute('CREATE TABLE banner_images(digest TEXT PRIMARY KEY, jpeg BLOB NOT NULL, updated INTEGER NOT NULL)')
+    demo_files = {'٢ كيلو سكر وباكو شاي بـ٩٩ جنيه':'sugar-tea.jpg',
+                  'عرض الصيدلية بـ٥٩ جنيه':'care.jpg', '٣ عبوات مناديل بـ٢٥ جنيه':'tissues.jpg'}
+    saved = banner_settings(db)
+    changed = False
+    for item in saved['offers']:
+        filename = demo_files.get(item['title'])
+        if filename and not item.get('image') and 'عرض تجريبي' in item['detail']:
+            item['image'] = store_banner_image(db, (ROOT/'banner-art'/filename).read_bytes())
+            changed = True
+    if changed:
+        db.execute('UPDATE banner_settings SET revision=revision+1,offers=? WHERE id=1',
+                   (json.dumps(saved['offers'], ensure_ascii=False),))
+
+
 def published_banner_offers(db):
-    return [{'title': item['title'], 'detail': item['detail']}
+    return [{key: item[key] for key in ('title','detail','image') if key in item}
             for item in banner_settings(db)['offers'] if item['visible']]
+
+
+def upload_banner_image(handler, db, data):
+    image = data.get('image')
+    if not valid_image(image, 1_500_000) or not image.startswith('data:image/jpeg;base64,'):
+        raise ValueError('اختر صورة صالحة للعرض')
+    raw = base64.b64decode(image.split(',',1)[1], validate=True)
+    if not raw.startswith(bytes.fromhex('ffd8ff')) or not raw.endswith(bytes.fromhex('ffd9')):
+        raise ValueError('تعذّر قراءة صورة العرض')
+    db.execute('BEGIN IMMEDIATE')
+    # Remove old drafts only. Published and hidden offers both keep their images.
+    db.execute("""DELETE FROM banner_images WHERE updated<? AND NOT EXISTS(
+        SELECT 1 FROM banner_settings, json_each(offers) AS item
+        WHERE json_extract(item.value,'$.image')='/banner-image/'||digest||'.jpg')""",
+        (int(time.time())-30*86400,))
+    url = store_banner_image(db, raw)
+    db.commit()
+    return handler.respond({'image':url})
 
 
 def publish_banner_offers(handler, db, data):
@@ -1146,6 +1191,7 @@ def publish_banner_offers(handler, db, data):
     items = data.get('offers')
     if type(revision) is not int or not isinstance(items, list) or len(items) > 20:
         raise ValueError('يمكن نشر ٢٠ عرضًا كحد أقصى')
+    db.execute('BEGIN IMMEDIATE')
     offers = []
     for item in items:
         if not isinstance(item, dict) or not isinstance(item.get('title'), str) or not isinstance(item.get('detail'), str) or type(item.get('visible')) is not bool:
@@ -1153,8 +1199,14 @@ def publish_banner_offers(handler, db, data):
         title, detail = item['title'].strip(), item['detail'].strip()
         if not title or len(title) > 80 or len(detail) > 180:
             raise ValueError('اكتب عنوانًا حتى ٨٠ حرفًا ووصفًا حتى ١٨٠ حرفًا')
-        offers.append({'title': title, 'detail': detail, 'visible': item['visible']})
-    db.execute('BEGIN IMMEDIATE')
+        offer = {'title': title, 'detail': detail, 'visible': item['visible']}
+        if item.get('image'):
+            image = item['image']
+            match = re.fullmatch(r'/banner-image/([0-9a-f]{64})[.]jpg',image) if isinstance(image,str) else None
+            if not match or not db.execute('SELECT 1 FROM banner_images WHERE digest=?',(match[1],)).fetchone():
+                raise ValueError('صورة العرض غير متاحة. ارفع الصورة مرة أخرى')
+            offer['image'] = image
+        offers.append(offer)
     saved = banner_settings(db)
     if offers != saved['offers']:
         if revision != saved['revision']:
@@ -1343,6 +1395,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond({'ok':True})
             except sqlite3.Error:
                 return self.respond({'ok':False},503)
+        banner_image = re.fullmatch(r'/banner-image/([0-9a-f]{64})[.]jpg',path)
+        if banner_image:
+            with connect() as db:
+                row = db.execute('SELECT jpeg FROM banner_images WHERE digest=?',(banner_image[1],)).fetchone()
+            if not row: return self.respond({'error':'الصورة غير متاحة'},404)
+            self.send_response(200)
+            self.send_header('Content-Type','image/jpeg')
+            self.send_header('Cache-Control','public, max-age=31536000, immutable')
+            self.send_header('Content-Length',str(len(row['jpeg'])))
+            self.end_headers()
+            self.wfile.write(row['jpeg'])
+            return
         if path == '/api/map-roads':
             params = parse_qs(urlparse(self.path).query)
             try:
@@ -1729,9 +1793,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond({'token':token,'role':u['role']})
                 user=actor
                 if not user: return self.respond({'error':'سجل الدخول أولًا'},401)
-                if path == '/api/admin/banner-offers':
+                if path in ('/api/admin/banner-offers','/api/admin/banner-image'):
                     if user['role'] != 'admin' or user['staff_permissions'] is not None:
                         return self.respond({'error':'إدارة العروض للمالك فقط'},403)
+                    if path.endswith('/banner-image'):
+                        return upload_banner_image(self, db, data)
                     return publish_banner_offers(self, db, data)
                 if path == '/api/order/call':
                     return self.respond({'error':'الاتصال داخل التطبيق غير متاح. استخدم رقم الهاتف أو الشات.'},410)
