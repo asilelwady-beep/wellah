@@ -65,5 +65,20 @@ const fix=async(lat,lon)=>{watch({timestamp:clock,coords:{latitude:lat,longitude
   await ctx.act(order.id,'picked_up');
   assert.equal(opened.length,1);
   assert.match(alerts.at(-1),/حفظ الاستلام/);
+  vm.runInContext(source('function driverOrderDetails(', 'function driverProductChecklist('),ctx);
+  vm.runInContext(html.split('\n').find(line=>line.startsWith('function renderDriverOld(')),ctx);
+  Object.assign(ctx,{selectedTripId:null,status:{},esc:s=>String(s??'').replaceAll('&','&amp;'),
+    driverDetailContact:()=>'',customerOrderPriceMarkup:()=>'',money:String,
+    driverActions:()=>'',orderChat:()=>'',ratingPanel:()=>''});
+  order.kind='delivery';order.return_percent=50;order.status='on_way';
+  let screen=ctx.renderDriverOld();
+  assert.equal(screen.split("act(4,'returning')").length-1,1);
+  order.status='returning';
+  screen=ctx.renderDriverOld();
+  assert.equal(screen.split('https://www.google.com/maps/dir').length-1,1);
+  assert.equal(screen.split('startDriverGuidance(4)').length-1,1);
+  assert.equal(screen.split("act(4,'returned')").length-1,1);
+  assert.ok(!screen.includes("act(4,'returning')"));
+  assert.match(screen,/destination=29.85%2C31.28/);
   console.log('Passed: driver CTA, pickup maneuver, deviation reroute, delivery switch, arrival, back and GPS cleanup.');
 })().catch(e=>{console.error(e);process.exitCode=1});
