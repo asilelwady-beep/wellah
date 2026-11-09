@@ -2585,7 +2585,7 @@ class Handler(BaseHTTPRequestHandler):
                         watch_cancelled_trip(db,o,'driver_decline')
                         log(db,oid,'اعتذر المندوب عن الطلب')
                         assign(db,oid)
-                    elif action=='returning' and o['kind']=='delivery' and o['status']=='on_way' and o['return_percent'] is not None:
+                    elif action=='returning' and o['kind']=='delivery' and o['status'] in ('picked_up','on_way') and o['return_percent'] is not None:
                         fee=(Decimal(str(o['original_delivery_fee']))*Decimal(str(o['return_percent']))/100).quantize(Decimal('.01'),rounding=ROUND_HALF_UP)
                         db.execute("UPDATE orders SET status='returning',return_fee=?,total=ROUND(total+?,2) WHERE id=?",(float(fee),float(fee),oid))
                         log(db,oid,f'جاري الإرجاع للمرسل · رسوم الرجوع {fee} جنيه')
@@ -2596,7 +2596,10 @@ class Handler(BaseHTTPRequestHandler):
                         db.execute("UPDATE orders SET status='returned',cash_collected=1,commission_percent=?,commission_cents=?,driver_earning_cents=?,commission_locked=1 WHERE id=?",(percent,share,earning,oid))
                         db.execute("UPDATE featured_rewards SET used_order_id=NULL WHERE used_order_id=? AND kind IN ('discount','customer_shipping','customer_order')",(oid,))
                         log(db,oid,'تم إرجاع الشحنة للمرسل والتحصيل')
-                    elif action in ("picked_up", "on_way", "delivered") and o["driver_id"] and o["status"] in ({'picked_up': ('assigned','ready'),'on_way':('picked_up',),'delivered':('on_way',)}[action]):
+                    elif action in ('picked_up','on_way') and o['status']=='on_way' and o['pickup_photo']:
+                        # A repeated pickup or an older client's departure tap has already been applied.
+                        return self.respond({'ok':True})
+                    elif action in ("picked_up", "on_way", "delivered") and o["driver_id"] and o["status"] in ({'picked_up': ('assigned','ready'),'on_way':('picked_up',),'delivered':('picked_up','on_way')}[action]):
                         pickup_photo=str(data.get('pickup_photo',''))
                         delivery_photo=str(data.get('delivery_photo',''))
                         if action=='picked_up' and not valid_image(pickup_photo,1_000_000): raise ValueError('ارفع صورة واضحة لمكان استلام الطلب')
@@ -2616,13 +2619,13 @@ class Handler(BaseHTTPRequestHandler):
                                 if not all(math.isfinite(x) for x in (plat,plon)) or not (-90<=plat<=90 and -180<=plon<=180): raise ValueError('موقع الشراء غير صحيح')
                                 db.execute('UPDATE orders SET pickup_lat=?,pickup_lon=? WHERE id=?',(plat,plon,oid))
                             db.execute('UPDATE orders SET pickup=? WHERE id=?',(shop,oid))
-                        if action=='picked_up': db.execute("UPDATE orders SET pickup_photo=?,status=? WHERE id=?",(pickup_photo,action,oid))
+                        if action=='picked_up': db.execute("UPDATE orders SET pickup_photo=?,status='on_way' WHERE id=?",(pickup_photo,oid))
                         elif action=='delivered': db.execute("UPDATE orders SET delivery_photo=?,status=? WHERE id=?",(delivery_photo,action,oid))
                         else: db.execute("UPDATE orders SET status=? WHERE id=?",(action,oid))
                         if action=='delivered' and o['tier_reward_base'] is not None:
                             db.execute('UPDATE users SET customer_tier_last_reward_orders=MAX(COALESCE(customer_tier_last_reward_orders,0),?) WHERE id=?',(o['tier_reward_base'],o['user_id']))
                         if action=='delivered' and o['payment']=='cash': db.execute('UPDATE orders SET cash_collected=1 WHERE id=?',(oid,))
-                        log(db, oid, {"picked_up": "استلم المندوب الطلب وأرفق صورة الاستلام", "on_way": "المندوب في الطريق", "delivered": "تم التسليم وأرفق الطيار صورة المكان"}[action])
+                        log(db, oid, {"picked_up": "استلم المندوب الطلب وأرفق صورة الاستلام وهو في الطريق للتسليم", "on_way": "المندوب في الطريق", "delivered": "تم التسليم وأرفق الطيار صورة المكان"}[action])
                     elif action=='settle_cash' and (o['payment']=='cash' or o['status']=='returned') and o['status'] in ('delivered','returned') and o['cash_collected'] and not o['cash_settled']:
                         if not unlocked(self,db): raise ValueError('افتح المحفظة بكلمة السر أولًا')
                         verify_owner(self,db,user,data.get('wallet_password'))

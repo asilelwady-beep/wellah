@@ -40,5 +40,30 @@ const fix=async(lat,lon)=>{watch({timestamp:clock,coords:{latitude:lat,longitude
   assert.equal(new URL(cells.get('[data-google]').href).searchParams.get('destination'),'29.87,31.29');
   clock+=8000;await fix(29.87,31.29);assert.match(cells.get('.guidance-text').textContent,/وصلت/);
   windowEvents.popstate();assert.equal(dialog.open,false);assert.ok(cleared&&removed);
+  const source=(from,to)=>html.slice(html.indexOf(from),html.indexOf(to,html.indexOf(from)));
+  vm.runInContext(source('function returnAction(', 'async function submitQuote('),ctx);
+  vm.runInContext(source('async function act(', 'function jumpAdmin('),ctx);
+  const opened=[],uploads=[],alerts=[];
+  Object.assign(ctx,{$:()=>({files:['photo']}),compressMerchantPhoto:async()=> 'proof',alert:m=>alerts.push(m),
+    driverCheckedItems:new Map(),driverShopDrafts:new Map(),api:async(path,payload)=>{
+      uploads.push(payload);order.status='on_way';
+    }});
+  ctx.window.location={assign(url){opened.push(new URL(url).searchParams.get('destination'))}};
+  order.driver_id=7;order.status='ready';
+  assert.match(ctx.driverMapActions(order),/تم الاستلام/);
+  await ctx.act(order.id,'picked_up');
+  assert.equal(uploads[0].pickup_photo,'proof');
+  assert.deepEqual(opened,['29.87,31.29']);
+  for(const status of ['picked_up','on_way']){
+    order.status=status;
+    const actions=ctx.driverMapActions(order);
+    assert.match(actions,/تم التسليم/);
+    assert.match(actions,/delivery-photo-4/);
+    assert.doesNotMatch(actions,/act\(4,'on_way'\)/);
+  }
+  ctx.api=async()=>{throw Error('لم يتم حفظ الاستلام')};order.status='ready';
+  await ctx.act(order.id,'picked_up');
+  assert.equal(opened.length,1);
+  assert.match(alerts.at(-1),/حفظ الاستلام/);
   console.log('Passed: driver CTA, pickup maneuver, deviation reroute, delivery switch, arrival, back and GPS cleanup.');
 })().catch(e=>{console.error(e);process.exitCode=1});
