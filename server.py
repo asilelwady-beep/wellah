@@ -341,6 +341,8 @@ def init():
         db.execute("CREATE INDEX IF NOT EXISTS orders_dispatch_status ON orders(status)")
         db.execute("CREATE INDEX IF NOT EXISTS ratings_target_lookup ON ratings(target_id)")
         init_admin_catalog_revision(db)
+        db.execute("CREATE TABLE IF NOT EXISTS banner_settings (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, offers TEXT NOT NULL)")
+        db.execute("INSERT OR IGNORE INTO banner_settings VALUES (1,0,'[]')")
 
         if 'featured' not in {r['name'] for r in db.execute('PRAGMA table_info(drivers)')}:
             db.execute('ALTER TABLE drivers ADD COLUMN featured INTEGER NOT NULL DEFAULT 0')
@@ -1129,6 +1131,42 @@ def admin_catalog_state(db, known_revision='', summary=False):
     return result
 
 
+def banner_settings(db):
+    row = db.execute('SELECT revision,offers FROM banner_settings WHERE id=1').fetchone()
+    return {'revision': row['revision'], 'offers': json.loads(row['offers'])}
+
+
+def published_banner_offers(db):
+    return [{'title': item['title'], 'detail': item['detail']}
+            for item in banner_settings(db)['offers'] if item['visible']]
+
+
+def publish_banner_offers(handler, db, data):
+    revision = data.get('revision')
+    items = data.get('offers')
+    if type(revision) is not int or not isinstance(items, list) or len(items) > 20:
+        raise ValueError('يمكن نشر ٢٠ عرضًا كحد أقصى')
+    offers = []
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get('title'), str) or not isinstance(item.get('detail'), str) or type(item.get('visible')) is not bool:
+            raise ValueError('راجع بيانات العرض')
+        title, detail = item['title'].strip(), item['detail'].strip()
+        if not title or len(title) > 80 or len(detail) > 180:
+            raise ValueError('اكتب عنوانًا حتى ٨٠ حرفًا ووصفًا حتى ١٨٠ حرفًا')
+        offers.append({'title': title, 'detail': detail, 'visible': item['visible']})
+    db.execute('BEGIN IMMEDIATE')
+    saved = banner_settings(db)
+    if offers != saved['offers']:
+        if revision != saved['revision']:
+            db.rollback()
+            return handler.respond({'error': 'اتغيّرت العروض من جلسة تانية. حمّل آخر نسخة قبل التعديل.'}, 409)
+        saved = {'revision': revision + 1, 'offers': offers}
+        db.execute('UPDATE banner_settings SET revision=?,offers=? WHERE id=1',
+                   (saved['revision'], json.dumps(offers, ensure_ascii=False)))
+    db.commit()
+    return handler.respond(saved)
+
+
 def preview_catalog(db):
     return rows(db,"SELECT p.id,p.name,p.category,p.price,p.price_pending,p.price_basis_weight_kg,p.stock,p.active,p.merchant_id,p.catalog_preview,p.requires_prescription,CASE WHEN p.image<>'' THEN p.image ELSE '/product-illustration/' || p.id || '.svg' END AS image FROM products p JOIN categories c ON c.name=p.category WHERE p.deleted=0 AND p.catalog_preview=1 AND c.active=1 ORDER BY CASE WHEN p.price_pending=0 AND p.price>0 THEN 0 ELSE 1 END,CASE WHEN p.image<>'' AND (p.name LIKE '%لانشون%فراخ%بالوزن' OR p.name LIKE '%لانشون%دجاج%بالوزن') THEN 0 WHEN p.image<>'' AND (p.name LIKE '%لانشون%بالوزن' OR p.name LIKE '%سلامي%بالوزن') THEN 1 WHEN p.name IN ('ثوم بلدي طازج','ثوم صيني طازج') THEN 2 ELSE 3 END,(p.image LIKE '/product-photo-%') DESC,c.sort_order,p.category,p.id")
 
@@ -1441,6 +1479,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/catalog':
             with connect() as db:
                 return self.respond({
+                    'banner_offers': published_banner_offers(db),
                     'draft_catalog': preview_catalog(db),
                     'areas': AREAS,
                     'area_fees': {x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')},
@@ -1589,6 +1628,7 @@ class Handler(BaseHTTPRequestHandler):
             wallets={str(d['id']):driver_wallet(db,d['id']) for d in db.execute('SELECT id FROM drivers')} if user['role']=='admin' and unlocked(self,db) else {}
             view={**feature_state(db,user),"draft_catalog":preview_catalog(db) if user['role']=='customer' else [],"driver_profile":dict(profile) if profile else None,"wallet_unlocked":unlocked(self,db) if user['role']=='admin' else False,"driver_wallet":redact_wallet(driver_wallet(db,profile['id'])) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": [] if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":[] if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": [] if user['role']=='admin' else rows(db, "SELECT p.* FROM products p JOIN merchants m ON m.id=p.merchant_id JOIN categories c ON c.name=p.category WHERE p.deleted=0 AND p.active=1 AND p.stock>0 AND m.active=1 AND c.active=1 ORDER BY p.id DESC") if user['role']=='customer' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username,u.disabled,u.email FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}, "privacy_policy_url": (db.execute("SELECT value FROM settings WHERE key='privacy_policy_url'").fetchone() or [''])[0]}
             if user['role']=='customer':
+                view['banner_offers'] = published_banner_offers(db)
                 view['discount_terms'] = customer_discount_terms(db,user['id'])
                 reward = db.execute("SELECT reason FROM featured_rewards WHERE user_id=? AND kind='discount' AND used_order_id IS NULL ORDER BY id LIMIT 1",(user['id'],)).fetchone()
                 view['featured_reason'] = reward['reason'] if reward else ''
@@ -1602,6 +1642,7 @@ class Handler(BaseHTTPRequestHandler):
             else: view['staff_permissions']=None
             if user['role']=='admin' and user['staff_permissions'] is None: view['staff_members']=[dict(r) for r in db.execute("SELECT u.id,u.name,u.username,u.disabled,s.permissions FROM staff_members s JOIN users u ON u.id=s.user_id ORDER BY u.id DESC")]
             if user['role']=='admin' and user['staff_permissions'] is None:
+                view['banner_editor'] = banner_settings(db)
                 view['trip_proximity_alerts']=owner_trip_alerts(db)
                 view['customers']=[dict(r) for r in db.execute("""SELECT u.id,u.name,u.phone,u.email,u.disabled,
                     COALESCE(u.shipping_discount_cents,0) AS shipping_discount_cents,
@@ -1688,6 +1729,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond({'token':token,'role':u['role']})
                 user=actor
                 if not user: return self.respond({'error':'سجل الدخول أولًا'},401)
+                if path == '/api/admin/banner-offers':
+                    if user['role'] != 'admin' or user['staff_permissions'] is not None:
+                        return self.respond({'error':'إدارة العروض للمالك فقط'},403)
+                    return publish_banner_offers(self, db, data)
                 if path == '/api/order/call':
                     return self.respond({'error':'الاتصال داخل التطبيق غير متاح. استخدم رقم الهاتف أو الشات.'},410)
                 if path == '/api/admin/team':
