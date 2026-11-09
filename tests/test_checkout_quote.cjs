@@ -14,5 +14,8 @@ const quote=(fee=30)=>({fee,original_fee:30,quote_token:'signed',expires:Date.no
  responses.push(async()=>{throw Error('تعذر تحديث السعر')});await assert.rejects(context.calculateDeliveryQuote());assert.equal(nodes['quote-fee'].textContent,'تعذر تحديث السعر');assert.equal(nodes['quote-refresh'].disabled,false);
  responses.push(async()=>quote(20));await context.calculateDeliveryQuote();assert.match(nodes['quote-fee'].innerHTML,/20 ج/);
  let oldDone;responses.push(()=>new Promise(r=>oldDone=r));const old=context.calculateDeliveryQuote();await new Promise(r=>setImmediate(r));context.points.latitude=29.9;responses.push(async()=>quote(25));await context.calculateDeliveryQuote();oldDone(quote(1));await old;assert.match(nodes['quote-fee'].innerHTML,/25 ج/);
+ const named={...quote(15),discount_terms:{shipping_recurring:1500,shipping_recurring_reason:'خصم رأس السنة'}};
+ assert.match(context.routeQuotePriceMarkup(named),/خصم رأس السنة/);
+ assert.doesNotMatch(context.routeQuotePriceMarkup({...named,fee:30}),/خصم رأس السنة/);
  console.log('Passed: latest discount overrides memory, crossed original, zero final, in-flight deduplication, error and recovery, stale route ignored.');
 })().catch(e=>{console.error(e);process.exitCode=1});
