@@ -24,7 +24,7 @@ from decimal import Decimal, ROUND_HALF_UP, ROUND_CEILING, InvalidOperation
 from concurrent.futures import Future
 from threading import Lock
 from wallet_controls import init_wallet_controls, wallet_post, unlocked, verify_owner, redact_wallet
-from account_support import init_features, feature_post, feature_state, normalized_username, local_egyptian_mobile, registration_mobile, complete_registration, set_recovery_answer
+from account_support import valid_image, init_features, feature_post, feature_state, normalized_username, local_egyptian_mobile, registration_mobile, complete_registration, set_recovery_answer
 
 ROOT = Path(__file__).parent
 DB = Path(os.environ.get('WALLAHA_DB_PATH', str(ROOT / 'wallaha.sqlite3')))
@@ -630,16 +630,6 @@ def record_failed_login(db, phone, remote):
     record = db.execute('SELECT attempts,blocked_until FROM login_attempts WHERE phone=? AND remote=?', (phone,remote)).fetchone()
     attempts = (record['attempts'] if record and record['blocked_until'] > int(time.time()) else 0) + 1
     db.execute('INSERT INTO login_attempts(phone,remote,attempts,blocked_until) VALUES (?,?,?,?) ON CONFLICT(phone,remote) DO UPDATE SET attempts=excluded.attempts,blocked_until=excluded.blocked_until', (phone,remote,attempts,int(time.time())+(900 if attempts >= 5 else 60)))
-
-
-def valid_image(value, max_chars):
-    if not isinstance(value,str) or len(value)>max_chars: return False
-    try:
-        header,payload=value.split(',',1)
-        if header not in ('data:image/png;base64','data:image/jpeg;base64','data:image/webp;base64'): return False
-        raw=base64.b64decode(payload,validate=True)
-        return raw.startswith(b'\x89PNG\r\n\x1a\n') or raw.startswith(b'\xff\xd8\xff') or raw.startswith(b'RIFF') and raw[8:12]==b'WEBP'
-    except (ValueError,base64.binascii.Error): return False
 
 
 def now():
@@ -1531,7 +1521,7 @@ class Handler(BaseHTTPRequestHandler):
             columns=[f'o."{col[1]}"' for col in db.execute('PRAGMA table_info(orders)') if col[1] not in ('pickup_photo','delivery_photo')]
             columns.extend(["length(o.pickup_photo)>0 AS has_pickup_photo","length(o.delivery_photo)>0 AS has_delivery_photo"])
             driver_photo="NULL" if user['role']=='admin' else "d.photo"
-            orders = rows(db, "SELECT "+",".join(columns)+",d.name AS driver_name,d.phone AS driver_phone,"+driver_photo+" AS driver_photo,d.lat AS driver_lat,d.lon AS driver_lon,d.location_at AS driver_location_at,m.name AS merchant_name,m.address AS merchant_address FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id LEFT JOIN merchants m ON m.id=o.merchant_id"+clause+" ORDER BY o.id DESC", args)
+            orders = rows(db, "SELECT "+",".join(columns)+",d.name AS driver_name,d.phone AS driver_phone,d.vehicle_type AS driver_vehicle,"+driver_photo+" AS driver_photo,d.lat AS driver_lat,d.lon AS driver_lon,d.location_at AS driver_location_at,m.name AS merchant_name,m.address AS merchant_address FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id LEFT JOIN merchants m ON m.id=o.merchant_id"+clause+" ORDER BY o.id DESC", args)
             item_groups, event_groups = {}, {}
             order_scope = "SELECT o.id FROM orders o LEFT JOIN drivers d ON d.id=o.driver_id" + clause
             if orders:
@@ -1548,7 +1538,7 @@ class Handler(BaseHTTPRequestHandler):
                 if user['role']!='admin':
                     if user['role']=='customer' and o['status'] not in ('assigned','ready','picked_up','on_way','returning','delivered'):
                         o['driver_lat']=o['driver_lon']=o['driver_location_at']=None
-                        o['driver_name']=o['driver_phone']=o['driver_photo']=None
+                        o['driver_name']=o['driver_phone']=o['driver_photo']=o['driver_vehicle']=None
                     o['has_proof']=bool(o['proof'])
                     o['has_prescription']=bool(o['prescription'])
                     o.pop('proof', None)
@@ -1829,6 +1819,8 @@ class Handler(BaseHTTPRequestHandler):
                         return self.respond({'error':'انتهى الطلب؛ سجل المحادثة محفوظ لدى إدارة ولعه'},403)
                     if not o or not d or not (is_customer or is_driver) or o['status'] not in ('assigned','ready','picked_up','on_way','returning','delivered','cancelled'):
                         return self.respond({'error':'الدردشة متاحة لصاحب الطلب والمندوب الذي قبله فقط'},403)
+                    if data.get('driver_id') is not None and data['driver_id']!=o['driver_id']:
+                        return self.respond({'error':'تغيّر الطيار المسؤول عن الطلب. افتح المحادثة الحالية.'},409)
                     mode=data.get('mode','list')
                     if mode not in ('list','send'): raise ValueError('إجراء دردشة غير معروف')
                     if mode == 'list' and 'known_last_id' in data:

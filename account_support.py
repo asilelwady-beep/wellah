@@ -16,6 +16,16 @@ from zoneinfo import ZoneInfo
 from urllib.request import Request, urlopen
 
 
+def valid_image(value, max_chars):
+    if not isinstance(value,str) or len(value)>max_chars: return False
+    try:
+        header,payload=value.split(',',1)
+        if header not in ('data:image/png;base64','data:image/jpeg;base64','data:image/webp;base64'): return False
+        raw=base64.b64decode(payload,validate=True)
+        return raw.startswith(b'\x89PNG\r\n\x1a\n') or raw.startswith(b'\xff\xd8\xff') or raw.startswith(b'RIFF') and raw[8:12]==b'WEBP'
+    except (ValueError,base64.binascii.Error): return False
+
+
 def init_features(db):
     for name, definition in [('email', 'TEXT'), ('verified_phone', 'TEXT'), ('disabled', 'INTEGER NOT NULL DEFAULT 0'), ('recovery_salt','TEXT'), ('recovery_hash','TEXT'), ('recovery_question','TEXT')]:
         if name not in {r['name'] for r in db.execute('PRAGMA table_info(users)')}:
@@ -491,6 +501,9 @@ def feature_post(handler, db, path, data, user, create_user, areas, now):
             username = normalized_username(data.get('username', ''))
             if not name or len(name) > 100 or not re.fullmatch(r'[+0-9٠-٩ ()-]{7,25}', phone) or data.get('area') not in areas:
                 raise ValueError('راجع اسم الطيار وهاتفه ومنطقته')
+            if 'photo' in data:
+                if not valid_image(data['photo'],1_500_000):raise ValueError('اختر صورة ملف شخصي صالحة للطيار')
+                db.execute('UPDATE drivers SET photo=? WHERE id=?',(data['photo'],driver['id']))
             if 'email' in data:
                 email=str(data.get('email','')).strip().lower()
                 if email and (len(email)>254 or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',email)): raise ValueError('أدخل إيميل الطيار الصحيح')
