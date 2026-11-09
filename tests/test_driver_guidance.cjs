@@ -69,7 +69,7 @@ const fix=async(lat,lon)=>{watch({timestamp:clock,coords:{latitude:lat,longitude
   vm.runInContext(html.split('\n').find(line=>line.startsWith('function renderDriverOld(')),ctx);
   Object.assign(ctx,{selectedTripId:null,status:{},esc:s=>String(s??'').replaceAll('&','&amp;'),
     driverDetailContact:()=>'',customerOrderPriceMarkup:()=>'',money:String,
-    driverActions:()=>'',orderChat:()=>'',ratingPanel:()=>''});
+    driverActions:()=>'',orderChatButton:()=>'',ratingPanel:()=>''});
   order.kind='delivery';order.return_percent=50;order.status='on_way';
   let screen=ctx.renderDriverOld();
   assert.equal(screen.split("act(4,'returning')").length-1,1);
