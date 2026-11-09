@@ -163,6 +163,7 @@ async function reviewTripAlert(orderId,driverId){
 }
 let bannerDraft=null;
 let publishingOffers=false;
+const bannerImageUploads=new Set();
 function adminBannerOffers(){
   const saved=state.banner_editor;
   if(!saved)return '<section class="card">تعذّر تحميل العروض. حدّث الصفحة.</section>';
@@ -173,13 +174,34 @@ function adminBannerOffers(){
   const cards=items.map((o,i)=>`<article>
     <label>عنوان العرض<input required maxlength="80" data-offer-title="${i}" value="${esc(o.title)}" oninput="editBannerOffer(${i},'title',this.value)"></label>
     <label>التفاصيل (اختياري)<textarea rows="2" maxlength="180" oninput="editBannerOffer(${i},'detail',this.value)">${esc(o.detail)}</textarea></label>
+    <label>صورة العرض<input type="file" accept="image/*" aria-label="صورة العرض" onchange="uploadOfferArtwork(${i},this.files[0])" ${bannerImageUploads.has(o)?'disabled':''}></label>
+    ${bannerImageUploads.has(o)?'<p role="status">جارٍ تجهيز الصورة…</p>':''}
+    ${o.image?`<div class="banner-image-preview"><img src="${esc(o.image)}" alt="${esc(o.title)}"><button type="button" class="secondary" onclick="editBannerOffer(${i},'image','');render()">إزالة الصورة</button></div>`:''}
     <label class="offer-visible"><input type="checkbox" ${o.visible?'checked':''} onchange="editBannerOffer(${i},'visible',this.checked)">عرض في البانر</label>
     <div class="banner-editor-actions"><button type="button" class="secondary" onclick="moveBannerOffer(${i},-1)" ${i===0?'disabled':''}>تقديم</button><button type="button" class="secondary" onclick="moveBannerOffer(${i},1)" ${i===items.length-1?'disabled':''}>تأخير</button><button type="button" class="secondary" onclick="removeBannerOffer(${i})">حذف</button></div></article>`).join('');
   return `<section class="card" id="banner-editor"><form onsubmit="publishOffers(event)">
     <div class="banner-editor-list">${cards||'<p>لا توجد عروض. أضف أول عرض للبانر.</p>'}</div>
-    <div class="banner-editor-actions"><button type="button" class="secondary" onclick="addBannerOffer()" ${items.length>=20?'disabled':''}>إضافة عرض</button><button type="submit" ${publishingOffers?'disabled':''}>نشر العروض</button></div>
+    <div class="banner-editor-actions"><button type="button" class="secondary" onclick="addBannerOffer()" ${items.length>=20?'disabled':''}>إضافة عرض</button><button type="submit" ${publishingOffers||bannerImageUploads.size?'disabled':''}>نشر العروض</button></div>
     ${saved.revision!==bannerDraft.revision?'<p>اتغيّرت العروض من جلسة تانية. <button type="button" class="secondary" onclick="reloadBannerDraft()">تحميل النسخة المنشورة</button></p>':''}
     </form></section>`;
+}
+async function uploadOfferArtwork(i,file){
+  if(!file)return;
+  const draft=bannerDraft,offer=draft.offers[i];
+  if(!offer||bannerImageUploads.has(offer))return;
+  bannerImageUploads.add(offer);
+  draft.dirty=true;
+  render();
+  try{
+    const image=await compressMerchantPhoto(file,1440);
+    const saved=await featureAPI('admin/banner-image',{image});
+    if(bannerDraft===draft&&draft.offers.includes(offer))offer.image=saved.image;
+  }catch(e){
+    window.appNotify(e.message,{tone:'error'});
+  }finally{
+    bannerImageUploads.delete(offer);
+    if(adminPage==='admin-banner-offers'&&state?.user?.role==='admin')render();
+  }
 }
 function editBannerOffer(i,key,value){
   bannerDraft.offers[i][key]=value;
@@ -210,7 +232,7 @@ function reloadBannerDraft(){
 }
 async function publishOffers(event){
   event.preventDefault();
-  if(publishingOffers)return;
+  if(publishingOffers||bannerImageUploads.size)return;
   const draft=bannerDraft;
   publishingOffers=true;
   try{
