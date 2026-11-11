@@ -1,6 +1,6 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const html=fs.readFileSync('index.html','utf8');
-const from=html.indexOf('const OFFER_SLIDE_MS');
+const from=html.indexOf('function bannerPurchaseProduct(');
 const to=html.indexOf('function customerHome()',from);
 assert.notEqual(from,-1);
 let now=0,timer=null;
