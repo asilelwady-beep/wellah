@@ -28,6 +28,7 @@ from wallet_controls import init_wallet_controls, wallet_post, unlocked, verify_
 from account_support import valid_image, init_features, feature_post, feature_state, normalized_username, local_egyptian_mobile, registration_mobile, complete_registration, set_recovery_answer
 
 ROOT = Path(__file__).parent
+APP_UI_REVISION = hashlib.sha256(b'\0'.join((ROOT / name).read_bytes() for name in ('index.html', 'maps.js', 'features.js', 'sw.js'))).hexdigest()[:16]
 DB = Path(os.environ.get('WALLAHA_DB_PATH', str(ROOT / 'wallaha.sqlite3')))
 AREAS = ["مدينة البدرشين", "أبو رجوان البحري", "أبو رجوان القبلي", "أبو صير", "ميت رهينة", "سقارة", "دهشور", "زاوية دهشور", "الشوبك الغربي", "الطرفاية", "المرازيق", "الشنباب", "العزيزية"]
 CAIRO = ZoneInfo('Africa/Cairo')
@@ -1323,9 +1324,9 @@ def staff_state(view, permissions):
 
 
 def app_document(path):
-    html = (ROOT / 'index.html').read_text()
-    if path == '/admin':
-        # One response supplies the startup code; maps must not block the dashboard.
+    html = (ROOT / 'index.html').read_text().replace('__WALLAHA_UI_REVISION__', APP_UI_REVISION)
+    if path in ('/', '/customer', '/admin'):
+        # Ship startup dependencies in one compressed response, including on weak connections.
         for name in ('maps.js', 'features.js'):
             source = (ROOT / name).read_text().replace('</script', '<\\/script')
             html = re.sub(r'<script src="/' + re.escape(name) + r'\?[^"<>]*"></script>',
@@ -1529,6 +1530,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond({'url':final})
             except Exception:
                 return self.respond({'error':'تعذر قراءة الرابط المختصر؛ افتح اللوكيشن وانسخ الرابط الكامل أو حدد النقطة على الخريطة'},502)
+        if path == '/api/ui-version':
+            return self.respond({'revision': APP_UI_REVISION})
         if path == '/api/auth-config':
             from account_support import mail_ready, sms_ready
             with connect() as db:
