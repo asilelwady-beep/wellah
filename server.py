@@ -1165,8 +1165,33 @@ def init_banner_images(db):
 
 
 def published_banner_offers(db):
-    return [{key: item[key] for key in ('title','detail','image') if key in item}
-            for item in banner_settings(db)['offers'] if item['visible']]
+    result = []
+    for item in banner_settings(db)['offers']:
+        if not item['visible']:
+            continue
+        offer = {key: item[key] for key in ('title','detail','image') if key in item}
+        if item.get('merchant_id'):
+            merchant = db.execute('SELECT * FROM merchants WHERE id=?', (item['merchant_id'],)).fetchone()
+            product = db.execute('SELECT * FROM products WHERE id=?', (item.get('product_id',0),)).fetchone()
+            store_available = bool(merchant and merchant['active'] and not merchant['deleted']
+                and merchant['category'] not in ('أدوية','صيدلية','صيدليات','الصيدلية'))
+            category = db.execute('SELECT active,deleted FROM categories WHERE name=?',
+                                  (product['category'],)).fetchone() if product else None
+            available = bool(store_available and product and product['merchant_id']==merchant['id']
+                and product['active'] and not product['deleted'] and product['stock']>0
+                and not product['price_pending'] and product['price']>0 and not product['requires_prescription']
+                and category and category['active'] and not category['deleted']
+                and product['category'] not in ('أدوية','صيدلية','صيدليات','الصيدلية'))
+            offer['purchase'] = {
+                'merchant_id': item['merchant_id'], 'product_id': item.get('product_id',0),
+                'merchant_name': merchant['name'] if merchant else 'متجر غير متاح',
+                'merchant_category': merchant['category'] if merchant else '',
+                'store_available': store_available, 'available': available,
+                'product_name': product['name'] if product else '',
+                'product_image': product['image'] if product else '',
+            }
+        result.append(offer)
+    return result
 
 
 def upload_banner_image(handler, db, data):
@@ -1201,6 +1226,23 @@ def publish_banner_offers(handler, db, data):
         if not title or len(title) > 80 or len(detail) > 180:
             raise ValueError('اكتب عنوانًا حتى ٨٠ حرفًا ووصفًا حتى ١٨٠ حرفًا')
         offer = {'title': title, 'detail': detail, 'visible': item['visible']}
+        merchant_id, product_id = item.get('merchant_id',0), item.get('product_id',0)
+        if type(merchant_id) is not int or type(product_id) is not int or merchant_id<0 or product_id<0:
+            raise ValueError('اختر المتجر والمنتج من القائمة')
+        if product_id and not merchant_id:
+            raise ValueError('اختر المتجر التابع له العرض')
+        if merchant_id:
+            merchant = db.execute('SELECT id FROM merchants WHERE id=? AND deleted=0',(merchant_id,)).fetchone()
+            if not merchant:
+                raise ValueError('المتجر غير موجود')
+            offer['merchant_id'] = merchant_id
+            if product_id:
+                product = db.execute('SELECT id FROM products WHERE id=? AND merchant_id=? AND deleted=0',
+                                     (product_id,merchant_id)).fetchone()
+                if not product:
+                    raise ValueError('اختر منتجًا تابعًا لنفس المتجر')
+                offer['product_id'] = product_id
+
         if item.get('image'):
             image = item['image']
             match = re.fullmatch(r'/banner-image/([0-9a-f]{64})[.]jpg',image) if isinstance(image,str) else None

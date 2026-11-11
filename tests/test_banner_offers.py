@@ -81,3 +81,22 @@ class BannerOfferTests(unittest.TestCase):
         with server.connect() as db:
             server.init_banner_images(db)
             self.assertEqual(server.banner_settings(db)['offers'],current)
+
+    def test_purchase_link_uses_live_store_and_stock(self):
+        import server
+        with server.connect() as db:
+            mid=db.execute("INSERT INTO merchants(name,category,area,address,lat,lon) VALUES('Test Store','سوبر ماركت','A','Street',30,31)").lastrowid
+            pid=db.execute("INSERT INTO products(name,category,price,stock,merchant_id) VALUES('Test bundle','سوبر ماركت',20,5,?)",(mid,)).lastrowid
+        offer={**self.offers[0],'merchant_id':mid,'product_id':pid}
+        code,saved=self.publish(self.app.owner,0,[offer])
+        self.assertEqual(code,200,saved)
+        shown=self.state(self.app.customer,'/api/catalog')['banner_offers'][0]['purchase']
+        self.assertEqual(shown['merchant_name'],'Test Store')
+        self.assertEqual(shown['product_id'],pid)
+        self.assertTrue(shown['available'])
+        with server.connect() as db:
+            db.execute('UPDATE products SET stock=0 WHERE id=?',(pid,))
+        self.assertFalse(self.state(self.app.customer,'/api/catalog')['banner_offers'][0]['purchase']['available'])
+        self.assertEqual(self.publish(self.app.owner,1,[{**offer,'product_id':999999999}])[0],400)
+        self.assertEqual(self.publish(self.app.owner,1,[{**offer,'merchant_id':0}])[0],400)
+        self.assertEqual(self.publish(self.app.owner,1,[{**offer,'product_id':True}])[0],400)
