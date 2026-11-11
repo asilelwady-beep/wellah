@@ -6,7 +6,7 @@ async function openHome(path,mode){
   const cached=new Response('old banner');
   const context=vm.createContext({URL,Request,Response,AbortController,setTimeout,clearTimeout,
     self:{location:new URL(url),addEventListener:(name,fn)=>handlers[name]=fn},
-    caches:{open:async()=>({put:async(r,s)=>writes.push(await s.text())}),match:async()=>cached},
+    caches:{open:async()=>({match:async()=>cached,put:async(r,s)=>writes.push(await s.text())}),match:async()=>cached},
     fetch:async()=>{
       if(mode==='offline')throw new Error('offline');
       return new Response(mode==='error'?'temporarily unavailable':'new banner',{status:mode==='error'?503:200});
