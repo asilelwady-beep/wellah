@@ -1,0 +1,31 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const html=fs.readFileSync('index.html','utf8');
+let timer;
+const ctx=vm.createContext({HTMLElement:class{},customElements:{define(n,c){ctx.Banner=c}},
+  Date:{now:()=>100},document:{hidden:false,addEventListener(){},removeEventListener(){}},
+  setTimeout(fn){timer=fn;return 1},clearTimeout(){timer=null}});
+vm.runInContext(html.slice(html.indexOf('const OFFER_SLIDE_MS'),html.indexOf('function customerHome()')),ctx);
+ctx.state={banner_offers:[{title:'A'},{title:'B'},{title:'C'}]};
+const node=new ctx.Banner(),events={},slides=ctx.state.banner_offers.map(()=>({hidden:false,style:{setProperty(){}},setAttribute(){}}));
+const track={addEventListener(n,f){events[n]=f},removeEventListener(n){delete events[n]}};
+node.querySelectorAll=()=>slides;
+node.querySelector=s=>s==='.offer-slides'?track:null;
+node.addEventListener=(n,f)=>events[n]=f;
+node.removeEventListener=n=>delete events[n];
+node.connectedCallback();
+const at=()=>slides.findIndex(s=>!s.hidden);
+const fire=(n,more={})=>events[n]?.({pointerId:1,button:0,isPrimary:true,clientX:100,clientY:50,preventDefault(){},...more});
+fire('pointerdown');fire('pointerup',{clientX:210});
+assert.equal(at(),1,'Dragging right advances Arabic banners');
+fire('pointerdown');fire('pointerup',{clientX:20});
+assert.equal(at(),0,'Dragging left returns to previous banner');
+fire('pointerdown');fire('pointerup',{clientX:110,clientY:160});
+assert.equal(at(),0,'Vertical page scrolling must not change the banner');
+fire('pointerdown');fire('pointercancel');fire('pointerup',{clientX:220});
+assert.equal(at(),0,'Cancelled drags must not advance');
+fire('keydown',{key:'ArrowRight'});assert.equal(at(),1);
+fire('keydown',{key:'ArrowLeft'});assert.equal(at(),0);
+node.togglePause();fire('pointerdown');fire('pointerup',{clientX:210});
+assert.equal(at(),1);assert.equal(timer,null,'Swipe preserves the explicit pause');
+node.disconnectedCallback();assert.equal(Object.keys(events).length,0,'Unmount cleans up listeners');
+console.log('Passed RTL swiping, keyboard navigation, vertical scrolling, cancelled drags and pause.');

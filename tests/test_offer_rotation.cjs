@@ -4,7 +4,7 @@ const from=html.indexOf('const OFFER_SLIDE_MS');
 const to=html.indexOf('function customerHome()',from);
 assert.notEqual(from,-1);
 let now=0,timer=null;
-const ctx=vm.createContext({HTMLElement:class{},customElements:{define(name,cls){ctx.Carousel=cls}},
+const ctx=vm.createContext({HTMLElement:class{addEventListener(){} removeEventListener(){}},customElements:{define(name,cls){ctx.Carousel=cls}},
   Date:{now:()=>now},document:{hidden:false,addEventListener(){},removeEventListener(){}},
   setTimeout(fn,ms){timer={fn,ms};return 1},clearTimeout(){timer=null},esc:s=>String(s).replaceAll('<','&lt;')});
 vm.runInContext(html.slice(from,to),ctx);
@@ -13,7 +13,7 @@ function mount(list){
   const markup=ctx.customerOffersMarkup();
   if(!list.length){assert.equal(markup,'');return}
   assert.ok(markup.includes('walla-offers'));
-  const node=new ctx.Carousel(),slides=list.map(()=>({hidden:false,setAttribute(){}}));
+  const node=new ctx.Carousel(),slides=list.map(()=>({hidden:false,style:{setProperty(){}},setAttribute(){}}));
   node.querySelectorAll=()=>slides;
   node.querySelector=()=>null;
   node.connectedCallback();
