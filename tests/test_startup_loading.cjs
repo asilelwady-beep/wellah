@@ -18,10 +18,11 @@ function scenario(cache, authenticated=false){
     window:{},URLSearchParams,document:{getElementById:()=>panel,visibilityState:'visible'},navigator:{onLine:true},expectedAppRole:'customer',token:authenticated?'test':'',
     location:{pathname:'/customer'},tab:'customer',previewMode:false,state:null,cachedCatalogActive:false,cachedReadOnly:false,offline:false,connectionMessage:'',
     $:()=>app,esc:String,readCustomerCatalogCache:()=>cache,saveCustomerCatalogCache(){},customerPreviewState:c=>c,
-    fetchJsonWithTimeout:()=>response,clearStartupRetry(){},scheduleStartupRetry(){},acceptSharedRideDestination(){},
+    fetchJsonWithTimeout:()=>response,fetchCustomerSnapshot:()=>response,clearStartupRetry(){},scheduleStartupRetry(){},acceptSharedRideDestination(){},
     render(){panel.parentNode=null;views.push(ctx.connectionStatusHTML(ctx.connectionMessage));}
   });
   function run(start,end){vm.runInContext(html.slice(html.indexOf(start),html.indexOf(end,html.indexOf(start))),ctx);}
+  run('function mergeCustomerCatalog(', 'async function fetchCustomerSnapshot');
   run('const startupLoadingPanel=', 'let startupRetryTimer');
   run('async function browsePreview(', 'function leavePreview');
   run('async function performRefresh(', 'let driverAudio=');
@@ -46,6 +47,17 @@ function scenario(cache, authenticated=false){
     assert.equal(s.views.at(-1),'');
     assert.equal(s.ctx.state.products[0].id,2);
   }
+  const ready=scenario({products:[{id:1}]},true);
+  Object.assign(ready.ctx,{appTokenKey:'test',localStorage:{setItem(){throw new Error('QuotaExceededError')},removeItem(){}},
+    loadCustomerAddress(){},checkShiftSecondReminder(){},cleanupCustomerArchive(){},syncDriverAutomation(){},
+    lastSeenRole:'customer',lastSeenOrderId:null,customerView:'home',keepMerchantEditorOnRefresh:()=>false});
+  const success=ready.ctx.performRefresh();
+  ready.complete({response:{ok:true},data:{user:{id:7,role:'customer'},orders:[],products:[{id:3}],categories:[],merchants:[],draft_catalog:[]}});
+  await success;
+  assert.equal(ready.ctx.connectionMessage,'','Local cache failure must not report a network failure');
+  assert.equal(ready.ctx.cachedReadOnly,false);
+  assert.equal(ready.ctx.cachedCatalogActive,false);
+  assert.equal(ready.ctx.state.products[0].id,3);
   const signed=scenario(null,true);
   const pending=signed.ctx.performRefresh();
   assert.equal(signed.spinner.hidden,false);
@@ -62,5 +74,9 @@ function scenario(cache, authenticated=false){
   assert.match(guest.label.textContent,/الإنترنت غير متاح/);
   assert.equal(guest.spinner.hidden,false);
   assert.equal(guest.button.hidden,false);
+  const failedCached=scenario({products:[{id:1}]});
+  const update=failedCached.ctx.performRefresh();failedCached.fail(new Error('offline'));await update;
+  assert.doesNotMatch(failedCached.views.at(-1),/catalog-updating|app-action-spinner/);
+  assert.match(failedCached.views.at(-1),/إعادة المحاولة/);
   console.log('Passed initial loading markup, slow catalog, cached browsing, error recovery, and account loading.');
 })().catch(e=>{console.error(e);process.exitCode=1;});
