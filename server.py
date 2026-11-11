@@ -1133,6 +1133,20 @@ def admin_catalog_state(db, known_revision='', summary=False):
     return result
 
 
+def customer_catalog_state(db, known_revision=''):
+    revision=db.execute('SELECT revision FROM admin_catalog_revision WHERE id=1').fetchone()['revision']
+    result={'customer_catalog_revision':revision,'customer_catalog_unchanged':revision==known_revision}
+    if revision==known_revision:return result
+    products=rows(db,"SELECT p.* FROM products p JOIN merchants m ON m.id=p.merchant_id JOIN categories c ON c.name=p.category WHERE p.deleted=0 AND p.active=1 AND p.stock>0 AND m.active=1 AND c.active=1 ORDER BY p.id DESC")
+    draft=preview_catalog(db)
+    ids={p['id'] for p in products}
+    result.update(products=products,draft_catalog=[p for p in draft if p['id'] not in ids],
+                  draft_catalog_ids=[p['id'] for p in draft],
+                  categories=rows(db,'SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name'),
+                  merchants=rows(db,'SELECT * FROM merchants WHERE active=1 ORDER BY id DESC'))
+    return result
+
+
 def banner_settings(db):
     row = db.execute('SELECT revision,offers FROM banner_settings WHERE id=1').fetchone()
     return {'revision': row['revision'], 'offers': json.loads(row['offers'])}
@@ -1587,6 +1601,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond({'google_maps_key': saved['value'] if saved else os.environ.get('WALLAHA_GOOGLE_MAPS_API_KEY','')})
         if path == '/api/catalog':
             with connect() as db:
+                params=parse_qs(urlparse(self.path).query)
+                if params.get('customer_catalog',[''])[0]=='compact':
+                    db.execute('BEGIN')
+                    return self.respond({**customer_catalog_state(db,params.get('customer_catalog_revision',[''])[0]),
+                        'banner_offers':published_banner_offers(db),'areas':AREAS,
+                        'area_fees':{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')},
+                        'services':rows(db,'SELECT * FROM services WHERE active=1 ORDER BY rowid')})
                 return self.respond({
                     'banner_offers': published_banner_offers(db),
                     'draft_catalog': preview_catalog(db),
@@ -1689,7 +1710,9 @@ class Handler(BaseHTTPRequestHandler):
             # Release maintenance writes before building the potentially large snapshot.
             db.commit()
             # Keep the revision and catalog rows in the same SQLite snapshot.
-            if user['role']=='admin' and not db.in_transaction: db.execute('BEGIN')
+            if not db.in_transaction: db.execute('BEGIN')
+            params=parse_qs(urlparse(self.path).query)
+            compact_customer=user['role']=='customer' and params.get('customer_catalog',[''])[0]=='compact'
             driver_state_view=parse_qs(urlparse(self.path).query).get('driver_view',['active'])[0]
             if driver_state_view not in ('active','history','settings'): driver_state_view='active'
             if user['role']=='admin':
@@ -1735,7 +1758,10 @@ class Handler(BaseHTTPRequestHandler):
                         o.pop('driver_earning_cents',None);o.pop('driver_earning_paid',None)
             profile=db.execute('SELECT id,name,phone,photo,area,vehicle_type,available,break_until,lat,lon,location_at,identity_blocked_shift FROM drivers WHERE user_id=?',(user['id'],)).fetchone() if user['role']=='driver' else None
             wallets={str(d['id']):driver_wallet(db,d['id']) for d in db.execute('SELECT id FROM drivers')} if user['role']=='admin' and unlocked(self,db) else {}
-            view={**feature_state(db,user),"draft_catalog":preview_catalog(db) if user['role']=='customer' else [],"driver_profile":dict(profile) if profile else None,"wallet_unlocked":unlocked(self,db) if user['role']=='admin' else False,"driver_wallet":redact_wallet(driver_wallet(db,profile['id'])) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": [] if user['role']=='admin' else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":[] if user['role']=='admin' else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": [] if user['role']=='admin' else rows(db, "SELECT p.* FROM products p JOIN merchants m ON m.id=p.merchant_id JOIN categories c ON c.name=p.category WHERE p.deleted=0 AND p.active=1 AND p.stock>0 AND m.active=1 AND c.active=1 ORDER BY p.id DESC") if user['role']=='customer' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username,u.disabled,u.email FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}, "privacy_policy_url": (db.execute("SELECT value FROM settings WHERE key='privacy_policy_url'").fetchone() or [''])[0]}
+            view={**feature_state(db,user),"draft_catalog":preview_catalog(db) if user['role']=='customer' and not compact_customer else [],"driver_profile":dict(profile) if profile else None,"wallet_unlocked":unlocked(self,db) if user['role']=='admin' else False,"driver_wallet":redact_wallet(driver_wallet(db,profile['id'])) if profile else None,"driver_wallets":wallets,"user":dict(user),"areas": AREAS,"area_fees":{x['area']:x['fee'] for x in db.execute('SELECT * FROM area_fees')} if user['role']!='driver' else {}, "categories": [] if user['role']=='admin' or compact_customer else rows(db,"SELECT * FROM categories WHERE active=1 ORDER BY sort_order,name") if user['role']=='customer' else [], "merchants":[] if user['role']=='admin' or compact_customer else rows(db,"SELECT * FROM merchants WHERE active=1 ORDER BY id DESC") if user['role']=='customer' else [], "products": [] if user['role']=='admin' or compact_customer else rows(db, "SELECT p.* FROM products p JOIN merchants m ON m.id=p.merchant_id JOIN categories c ON c.name=p.category WHERE p.deleted=0 AND p.active=1 AND p.stock>0 AND m.active=1 AND c.active=1 ORDER BY p.id DESC") if user['role']=='customer' else [], "services":rows(db,"SELECT * FROM services ORDER BY rowid") if user['role']!='driver' else [], "drivers": rows(db, "SELECT d.*,u.username,u.disabled,u.email FROM drivers d JOIN users u ON u.id=d.user_id ORDER BY d.id") if user['role']=='admin' else [], "orders": orders, "daily_stats": admin_daily_stats(db) if user["role"]=="admin" else None, "settings": {x["key"]: x["value"] for x in db.execute("SELECT * FROM settings WHERE key<>'quote_secret'")} if user['role']!='driver' else {}, "privacy_policy_url": (db.execute("SELECT value FROM settings WHERE key='privacy_policy_url'").fetchone() or [''])[0]}
+            if compact_customer:
+                for key in ('products','draft_catalog','categories','merchants'):view.pop(key,None)
+                view.update(customer_catalog_state(db,params.get('customer_catalog_revision',[''])[0]))
             if user['role']=='customer':
                 view['banner_offers'] = published_banner_offers(db)
                 view['discount_terms'] = customer_discount_terms(db,user['id'])

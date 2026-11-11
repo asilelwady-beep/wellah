@@ -1181,31 +1181,32 @@ body.driver-screen main{max-width:960px;padding-bottom:40px}.driver-ui-icon{widt
 .driver-guidance .guidance-pin{color:white;background:#17679d;border:2px solid white;border-radius:50%;text-align:center;font-size:18px}
 .driver-guidance footer{flex-wrap:wrap;padding-bottom:max(12px,env(safe-area-inset-bottom))}
 .customer-app walla-offers{display:block;color:white;margin:0 0 14px;padding:4px 0 0}
-.offer-slides{display:grid;touch-action:pan-y;user-select:none;cursor:grab;padding:22px 0 10px}
+.offer-slides{display:grid;touch-action:pan-y;user-select:none;cursor:grab;padding:14px 0 6px}
 .offer-slides:active{cursor:grabbing}
 .offer-slides:focus-visible{outline:2px solid #fff;outline-offset:-3px}
 .offer-slide{grid-area:1 / 1;overflow-wrap:anywhere;min-width:0;pointer-events:none}
 .offer-slide[hidden]{display:block;visibility:visible}
 .offer-card{position:relative;width:42%;margin:0 auto;transform-origin:50% 50%;transform:translateX(calc(var(--offer-offset,0) * 112%)) scale(1.06);transition:transform .55s ease,filter .55s ease;filter:brightness(1);pointer-events:auto}
-.offer-float{animation:offerFloat 4s ease-in-out infinite}
+.offer-float{animation:offerFloat 2.4s ease-in-out infinite;transform-origin:50% 30%;will-change:transform}
 .offer-slide[hidden] .offer-card{filter:brightness(.42);transform:translateX(calc(var(--offer-offset,0) * 112%)) scale(.86);pointer-events:none}
-.offer-slide[hidden] .offer-float{animation:none}
+.offer-slide:nth-child(2n) .offer-float{animation-delay:-.8s}
+.offer-slide:nth-child(3n) .offer-float{animation-delay:-1.6s}
 .offer-slide[hidden] .offer-backdrop{visibility:hidden}
-.offer-artwork{width:100%;height:clamp(130px,29vw,230px);object-fit:contain;display:block;border-radius:12px;-webkit-user-drag:none;filter:drop-shadow(0 12px 12px #0003)}
+.offer-artwork{width:100%;height:auto;aspect-ratio:12 / 5;max-height:145px;object-fit:contain;display:block;border-radius:12px;-webkit-user-drag:none;filter:drop-shadow(0 12px 12px #0003)}
 .offer-artwork[hidden]{display:none}
-.offer-details{position:relative;text-align:center;padding:4px 20px 14px;min-height:160px}
+.offer-details{position:relative;text-align:center;padding:0 14px 6px;min-height:0}
 .offer-info[hidden]{display:none}
-.offer-info h2{color:#fff;margin:5px 0;font-size:clamp(18px,4vw,25px);line-height:1.4}
-.offer-info p{color:#fff1df;font-size:13px;line-height:1.6;margin:5px 0}
+.offer-info h2{color:#fff;margin:3px 0;font-size:clamp(16px,4vw,21px);line-height:1.35}
+.offer-info p{color:#fff1df;font-size:12px;line-height:1.4;margin:3px 0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .offer-seller{display:inline-block;font-size:12px;color:#ffe7bd}
-.offer-price{display:block;font-size:25px;font-weight:800;color:#ffdf96;margin:8px 0}
+.offer-price{display:block;font-size:21px;font-weight:800;color:#ffdf96;margin:4px 0}
 .offer-price small{font-size:12px;font-weight:400;color:#ffe8cc}
-.offer-purchase-actions{display:flex;justify-content:center;flex-wrap:wrap;gap:8px;margin-top:12px}
+.offer-purchase-actions{display:flex;justify-content:center;flex-wrap:wrap;gap:8px;margin-top:6px}
 .customer-app .offer-purchase-actions button{min-height:42px;padding:8px 16px;border-radius:999px;background:#ffe2af;color:#472315;border:1px solid #ffe2af;font-size:13px;font-weight:700}
 .customer-app .offer-purchase-actions .offer-store-button{background:transparent;color:white;border-color:#ffffff70}
 .customer-app .offer-purchase-actions button:disabled{opacity:.65}
-.offer-caption-art{min-height:130px;display:grid;place-content:center;text-align:center;color:#fff;background:#ffffff12;border-radius:16px;padding:12px}
-@keyframes offerFloat{0%,100%{transform:translateY(0) rotate(-1deg)}50%{transform:translateY(-7px) rotate(1deg)}}
+.offer-caption-art{min-height:70px;display:grid;place-content:center;text-align:center;color:#fff;background:#ffffff12;border-radius:16px;padding:12px}
+@keyframes offerFloat{0%,100%{transform:translate3d(-2px,2px,0) rotate(-3deg)}50%{transform:translate3d(2px,-6px,0) rotate(3deg)}}
 @media(min-width:700px){.offer-card{width:30%}}
 @media(prefers-reduced-motion:reduce){.offer-card{transition:none}.offer-float{animation:none}}
 .banner-image-preview img{display:block;width:min(100%,520px);height:auto;border-radius:10px;margin:0 0 8px}
@@ -1219,7 +1220,7 @@ body.driver-screen main{max-width:960px;padding-bottom:40px}.driver-ui-icon{widt
 .customer-app .home-offer-hero::before,.customer-app .home-offer-hero::after{display:none}
 .customer-app .home-offer-hero walla-offers{position:static;z-index:auto;margin:0;padding:0}
 .home-offer-hero .offer-backdrop{position:absolute;inset:0;z-index:-1;width:100%;height:100%;object-fit:cover;filter:blur(18px) brightness(.48);transform:scale(1.14);pointer-events:none}
-.customer-app .home-offer-hero .offer-artwork{width:100%;max-height:none;border-radius:12px}
+.customer-app .home-offer-hero .offer-artwork{width:100%;max-height:145px;border-radius:12px}
 .customer-app .customer-home .home-offer-hero .customer-topline{margin:0!important;padding:8px 14px!important}
 .customer-app .home-offer-hero .home-search-actions{padding:4px 12px 12px}
 .home-offer-hero .offer-controls{margin:0;padding:4px 12px;justify-content:center}
@@ -1241,9 +1242,44 @@ let cachedReadOnly=false,cachedCatalogActive=false,lastCustomerCatalogCacheWrite
 const CUSTOMER_CATALOG_CACHE_KEY='wallaha_customer_catalog_v1';
 function fetchWithTimeout(url,options={},timeoutMs=12000){const controller=typeof AbortController!=='undefined'?new AbortController():null;let timer;const request=fetch(url,controller?{...options,signal:controller.signal}:options);const timeout=new Promise((resolve,reject)=>{timer=setTimeout(()=>{controller?.abort();const error=new Error('Request timed out');error.name='TimeoutError';reject(error)},timeoutMs)});return Promise.race([request,timeout]).finally(()=>clearTimeout(timer))}
 function fetchJsonWithTimeout(url,options={},timeoutMs=15000){const controller=typeof AbortController!=='undefined'?new AbortController():null;let timer;const request=fetch(url,controller?{...options,signal:controller.signal}:options).then(async response=>({response,data:await response.json()}));const timeout=new Promise((resolve,reject)=>{timer=setTimeout(()=>{controller?.abort();const error=new Error('The server response took too long');error.name='TimeoutError';reject(error)},timeoutMs)});return Promise.race([request,timeout]).finally(()=>clearTimeout(timer))}
+function mergeCustomerCatalog(loaded,previous){
+  if(loaded.customer_catalog_unchanged){
+    if(!previous?.customer_catalog_revision)throw new Error('Missing catalog snapshot');
+    for(const key of ['products','draft_catalog','categories','merchants'])loaded[key]=previous[key];
+  }else if(loaded.draft_catalog_ids){
+    const byId=new Map([...(loaded.products||[]),...(loaded.draft_catalog||[])].map(p=>[p.id,p]));
+    loaded.draft_catalog=loaded.draft_catalog_ids.map(id=>byId.get(id)).filter(Boolean).map(p=>p.image?p:{...p,image:'/product-illustration/'+p.id+'.svg'});
+    delete loaded.draft_catalog_ids;
+  }
+  return loaded;
+}
+function customerCatalogQuery(){
+  const params=new URLSearchParams({customer_catalog:'compact'});
+  if(state?.customer_catalog_revision)params.set('customer_catalog_revision',state.customer_catalog_revision);
+  return params;
+}
+async function fetchCustomerSnapshot(url,options={},idleMs=15000){
+  const controller=new AbortController();let timer,limit,reader;
+  const timeoutError=()=>{const e=new Error('Customer download stalled');e.name='TimeoutError';return e};
+  let rejectTimeout;
+  const timeout=new Promise((resolve,reject)=>{rejectTimeout=reject});
+  const expire=()=>{controller.abort();rejectTimeout(timeoutError());reader?.cancel().catch(()=>{})};
+  const progress=()=>{clearTimeout(timer);timer=setTimeout(expire,idleMs)};
+  progress();limit=setTimeout(expire,120000);
+  try{
+    const request=(async()=>{
+      const response=await fetch(url,{...options,cache:'no-store',signal:controller.signal});progress();
+      if(!response.body?.getReader)return {response,data:await response.json()};
+      reader=response.body.getReader();const decoder=new TextDecoder();let text='';
+      while(true){const {done,value}=await reader.read();if(done)break;progress();text+=decoder.decode(value,{stream:true})}
+      text+=decoder.decode();return {response,data:JSON.parse(text)};
+    })();
+    return await Promise.race([request,timeout]);
+  }finally{clearTimeout(timer);clearTimeout(limit)}
+}
 window.appFetchWithTimeout=fetchWithTimeout;
 function compactPublicProduct(p){return Object.fromEntries(['id','name','category','price','price_pending','price_basis_weight_kg','stock','active','merchant_id','catalog_preview','requires_prescription','image'].filter(k=>p[k]!==undefined).map(k=>[k,p[k]]))}
-function saveCustomerCatalogCache(source){if(Date.now()-lastCustomerCatalogCacheWrite<300000)return;try{const catalog={banner_offers:source.banner_offers||[],draft_catalog:(source.draft_catalog||[]).slice(0,300).map(compactPublicProduct),products:(source.products||[]).map(compactPublicProduct),categories:(source.categories||[]).map(c=>({id:c.id,name:c.name,active:c.active,sort_order:c.sort_order})),merchants:(source.merchants||[]).map(m=>({id:m.id,name:m.name,category:m.category,area:m.area,address:m.address,image:m.image,active:m.active,lat:m.lat,lon:m.lon})),services:(source.services||[]).map(x=>({key:x.key,name:x.name,active:x.active})),areas:source.areas||[],area_fees:source.area_fees||{}};localStorage.setItem(CUSTOMER_CATALOG_CACHE_KEY,JSON.stringify(catalog));lastCustomerCatalogCacheWrite=Date.now()}catch(e){}}
+function saveCustomerCatalogCache(source){if(Date.now()-lastCustomerCatalogCacheWrite<300000)return;try{const catalog={banner_offers:source.banner_offers||[],draft_catalog:(source.draft_catalog||[]).slice(0,300).map(compactPublicProduct),products:(source.products||[]).slice(0,300).map(compactPublicProduct),categories:(source.categories||[]).map(c=>({id:c.id,name:c.name,active:c.active,sort_order:c.sort_order})),merchants:(source.merchants||[]).map(m=>({id:m.id,name:m.name,category:m.category,area:m.area,address:m.address,image:m.image,active:m.active,lat:m.lat,lon:m.lon})),services:(source.services||[]).map(x=>({key:x.key,name:x.name,active:x.active})),areas:source.areas||[],area_fees:source.area_fees||{}};localStorage.setItem(CUSTOMER_CATALOG_CACHE_KEY,JSON.stringify(catalog));lastCustomerCatalogCacheWrite=Date.now()}catch(e){}}
 function readCustomerCatalogCache(){try{const value=localStorage.getItem(CUSTOMER_CATALOG_CACHE_KEY);return value?JSON.parse(value):null}catch(e){return null}}
 function customerPreviewState(catalog){return {...catalog,products:Array.from(new Map([...(catalog.draft_catalog||[]),...(catalog.products||[])].map(p=>[p.id,p])).values()),user:{name:'عميل',phone:'',role:'customer'},orders:[],settings:{wallet:''}}}
 const startupLoadingPanel=document.getElementById('startup-loading');
@@ -1257,10 +1293,10 @@ function showStartupLoading(message='جارٍ تحميل المنتجات…', f
 }
 function connectionStatusHTML(message){
   if(!message)return '';
-  if(cachedCatalogActive){
+  if(cachedCatalogActive&&message===cachedCatalogMessage){
     return '<div class="connection-status catalog-updating" role="status"><span class="app-action-spinner" aria-hidden="true"></span>'+esc(message)+'</div>';
   }
-  return '<div class="connection-status" role="status">'+esc(message)+'</div>';
+  return '<div class="connection-status" role="status">'+esc(message)+' <button type="button" onclick="refresh(true)">إعادة المحاولة</button></div>';
 }
 let startupRetryTimer=null,startupRetryAttempt=0;
 function scheduleStartupRetry(){if(startupRetryTimer)return;const delay=Math.min(15000,1000*2**startupRetryAttempt);startupRetryAttempt=Math.min(startupRetryAttempt+1,4);startupRetryTimer=setTimeout(()=>{startupRetryTimer=null;if(document.visibilityState==='visible')refresh(true);else scheduleStartupRetry()},delay)}
@@ -1431,20 +1467,20 @@ async function performRefresh(force=false){
   }
   try{
     const stateView=expectedAppRole==='driver'?(location.pathname==='/driver/settings'?'settings':driverView==='history'?'history':'active'):'';
-    const stateParams=new URLSearchParams();if(stateView)stateParams.set('driver_view',stateView);if(expectedAppRole==='admin'){if(!state?.admin_products_loaded&&!adminNeedsProducts())stateParams.set('admin_catalog','summary');else if(state?.admin_products_loaded&&state.admin_catalog_revision)stateParams.set('admin_catalog_revision',state.admin_catalog_revision)}
+    const stateParams=expectedAppRole==='customer'?customerCatalogQuery():new URLSearchParams();if(stateView)stateParams.set('driver_view',stateView);if(expectedAppRole==='admin'){if(!state?.admin_products_loaded&&!adminNeedsProducts())stateParams.set('admin_catalog','summary');else if(state?.admin_products_loaded&&state.admin_catalog_revision)stateParams.set('admin_catalog_revision',state.admin_catalog_revision)}
     const early=window.wallahaAdminBoot;window.wallahaAdminBoot=null;
     const prefetched=expectedAppRole==='admin'&&!state&&early?.token===token?await early.request:null;
     const url='/api/state'+(stateParams.toString()?'?'+stateParams:'');
-    const {response:r,data:loadedState}=prefetched||(expectedAppRole==='admin'?await fetchAdminState(url,token):await fetchJsonWithTimeout(url,{headers:{Authorization:'Bearer '+token}},30000));
+    const {response:r,data:loadedState}=prefetched||(expectedAppRole==='admin'?await fetchAdminState(url,token):await (expectedAppRole==='customer'?fetchCustomerSnapshot:fetchJsonWithTimeout)(url,{headers:{Authorization:'Bearer '+token}},expectedAppRole==='customer'?15000:30000));
     if(!r.ok&&r.status!==401)throw new Error('تعذر تحميل البيانات');
     if(!r.ok){token='';localStorage.removeItem(appTokenKey);localStorage.removeItem('wallaha_token');state=null;cachedReadOnly=false;render();return}
     if(!force&&tab==='admin'&&window._wallahConfirmClose)return;
     clearStartupRetry();
     const previousState=cachedReadOnly?null:state;
-    state=mergeAdminCatalog(loadedState,previousState);
+    state=expectedAppRole==='customer'?mergeCustomerCatalog(loadedState,state):mergeAdminCatalog(loadedState,previousState);
     const wasDisconnected=!!connectionMessage;connectionMessage='';
     if(expectedAppRole&&state.user.role!==expectedAppRole){appRoleError='الحساب المحفوظ ليس حساب '+({driver:'طيار',customer:'عميل',admin:'مسؤول'}[expectedAppRole])+'. سجّل الدخول بالحساب المناسب لهذا التطبيق.';token='';localStorage.removeItem(appTokenKey);localStorage.removeItem('wallaha_token');state=null;previewMode=false;offline=false;cachedReadOnly=false;render();return}
-    appRoleError='';localStorage.setItem(appTokenKey,token);loadCustomerAddress();offline=false;cachedReadOnly=false;cachedCatalogActive=false;tab=state.user.role;
+    appRoleError='';try{localStorage.setItem(appTokenKey,token)}catch(e){}loadCustomerAddress();offline=false;cachedReadOnly=false;cachedCatalogActive=false;tab=state.user.role;
     if(tab==='customer')saveCustomerCatalogCache(state);
     checkShiftSecondReminder(previousState,state);cleanupCustomerArchive();syncDriverAutomation();acceptSharedRideDestination();
     const latest=Math.max(0,...state.orders.map(o=>o.id));
@@ -2183,7 +2219,7 @@ async function setDriverEarning(id,paid){if(paid&&!await window.appConfirm('هل
 function renderDriverHistory(){let history=state.orders.filter(o=>['delivered','cancelled','returned'].includes(o.status)),chosen=history.find(o=>o.id===selectedTripId)||history[0];if(driverHistoryLoading&&!history.length)return `<section class="driver-history-page"><div class="driver-view-title"><span class="driver-title-icon"><svg class="driver-ui-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><div><h2>سجل الطلبات والمحادثات</h2><p>جارٍ تحميل طلباتك ومحادثاتك</p></div></div><div class="driver-loading-card"><span class="driver-loader"></span> جاري تحميل السجل…</div></section>`;return `<section class="driver-history-page"><div class="driver-view-title"><span class="driver-title-icon"><svg class="driver-ui-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><div><h2>سجل الطلبات والمحادثات</h2><p>افتح أي طلب لمراجعة تفاصيله ومحادثته</p></div><span class="driver-history-count">${history.length} طلب</span></div>${tripDetails(chosen,'driver')}${history.filter(o=>o.id!==chosen?.id).map(o=>orderCard(o,'driver')).join('')||(!chosen?'<div class="empty">لا توجد طلبات مكتملة بعد.</div>':'')}</section>`}
 function renderDriverOld(){let active=state.orders.filter(o=>!['cancelled','delivered','returned'].includes(o.status)),current=active.find(o=>['assigned','ready','picked_up','on_way','returning'].includes(o.status)),chosen=active.find(o=>o.id===selectedTripId)||current||active.find(o=>o.status==='offered'),mapOrder=current||chosen,heading=current?.status==='returning'?'اتجه إلى المرسل':current?(['picked_up','on_way'].includes(current.status)?'اتجه إلى العميل':'اتجه إلى مكان الاستلام'):active.length?'طلبات جديدة متاحة لك':'في انتظار الطلبات';return `<section class="driver-map-stage" aria-label="خريطة الطيار"><div class="driver-map-heading"><strong><svg class="driver-ui-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 10c0 5-7 11-7 11S5 15 5 10a7 7 0 1 1 14 0Z"/><circle cx="12" cy="10" r="2.5"/></svg> ${heading}</strong><span>${current?'المسار حسب مرحلة الطلب':active.length?'اختر طلبًا من القائمة أسفل الخريطة':'سيظهر موقعك هنا عند تفعيله'}</span></div><div id="driver-map" class="map driver-live-map" aria-label="خريطة الطلبات ومسار الطيار"></div><p class="muted">أثناء الشيفت ومشاركة الموقع، يظهر للمالك تنبيه لو اقتربت من عنوان تسليم بعد إلغاء الطلب أو اعتذارك عنه.</p>${driverNavigationButton(mapOrder)}${driverMapActions(mapOrder)}</section><section class="driver-order-sheet"><div class="driver-order-sheet-head"><div><span class="eyebrow">ولعه · الطيار</span><h2>${current?'الطلب الجاري':active.length?'طلبات جديدة':'لا توجد طلبات الآن'}</h2></div><span class="tag">${active.length} ${active.length===1?'طلب':'طلبات'}</span></div>${chosen?driverOrderDetails(chosen,chosen.id!==mapOrder.id):!active.length?'<div class="empty">أنت جاهز لاستقبال الطلبات. سيظهر الطلب الجديد هنا مع موقع الاستلام والتسليم.</div>':''}${active.filter(o=>o.id!==chosen?.id).map(o=>orderCard(o,'driver')).join('')}</section>`}
 function loginViewLegacy(){if(location.pathname==='/admin')return `<div class="card" style="max-width:460px;margin:auto"><h2>دخول المسؤول</h2><p class="muted">لوحة التحكم خاصة بصاحب تطبيق ولعه فقط.</p><label>اسم المستخدم</label><input id="login-phone" autocomplete="username"><label>كلمة المرور</label><input id="login-pass" type="password" autocomplete="current-password"><button onclick="login()">دخول لوحة التحكم</button></div>`;if(location.pathname.startsWith('/driver'))return `<div class="card" style="max-width:460px;margin:auto"><h2>دخول تطبيق الطيار</h2><p>حسابك الخاص في ولعه، مشاويرك ومحفظتك.</p><label>إيميل الطيار أو اسم المستخدم أو رقم الهاتف</label><input id="login-phone" autocomplete="username"><label>كلمة المرور</label><input id="login-pass" type="password" autocomplete="current-password"><button onclick="login()">دخول حسابي</button><button class="secondary" onclick="alert('لو نسيت كلمة المرور، تواصل مع مسؤول ولعه للتحقق من هويتك وإعطائك كلمة مرور مؤقتة. بعد الدخول غيّرها من الإعدادات.')">نسيت كلمة المرور؟</button><p class="muted">المسؤول ينشئ حسابك باسمك من لوحة التحكم.</p></div>`;return `<div class="card" style="background:#ecf8ef;text-align:center"><h2>شوف تطبيق ولعه من جوه</h2><p class="muted">تصفح الأقسام والمحلات والمنتجات من غير حساب. تسجيل الدخول مطلوب وقت إرسال الطلب فقط.</p><button onclick="browsePreview()">تصفح التطبيق بدون تسجيل</button></div><div class="grid"><div class="card"><h2>دخول ولعه</h2><label>اسم المستخدم أو رقم الهاتف</label><input id="login-phone" autocomplete="username"><label>كلمة المرور</label><input id="login-pass" type="password"><button onclick="login()">دخول</button><p class="muted">تطبيق العميل · الطلبات والتوصيل</p></div><div class="card"><h2>حساب عميل جديد</h2><label>الاسم</label><input id="reg-name"><label>رقم الهاتف (11 رقمًا)</label><input id="reg-phone" type="tel" inputmode="tel" dir="ltr" autocomplete="tel" placeholder="012XXXXXXXX" aria-describedby="reg-phone-help" oninput="normalizeRegistrationPhoneInput(this)"><small id="reg-phone-help" class="muted">تقدر تكتب رقمك بمفتاح مصر <bdi dir="ltr">+20</bdi> أو من غيره.</small><label>كلمة مرور (10 أحرف على الأقل)</label><input id="reg-pass" type="password"><button onclick="register()">إنشاء حساب</button></div></div>`}
-async function browsePreview(silent=false){if(expectedAppRole&&expectedAppRole!=='customer'){state=null;previewMode=false;render();return}const cached=readCustomerCatalogCache();if(cached&&!state){state=customerPreviewState(cached);previewMode=true;cachedCatalogActive=true;offline=navigator.onLine===false;connectionMessage=cachedCatalogMessage;tab='customer';render()}else if(!state)showStartupLoading();try{const {response:r,data:catalog}=await fetchJsonWithTimeout('/api/catalog',{},30000);if(!r.ok)throw Error('تعذر تحميل الأقسام');clearStartupRetry();saveCustomerCatalogCache(catalog);previewMode=true;state=customerPreviewState(catalog);cachedCatalogActive=false;offline=false;connectionMessage='';tab='customer';acceptSharedRideDestination();render()}catch(e){scheduleStartupRetry();offline=navigator.onLine===false;connectionMessage=offline?'الإنترنت غير متاح حاليًا؛ البيانات المحفوظة ظاهرة، وسيحاول التطبيق التحديث تلقائيًا.':'تعذر تحميل أحدث البيانات مؤقتًا؛ سيحاول التطبيق مرة أخرى تلقائيًا.';if(!state){previewMode=false;if(offline)connectionMessage='الإنترنت غير متاح حاليًا؛ سيحاول التطبيق تحميل المنتجات عند عودته.';showStartupLoading(connectionMessage,true);return}render()}}
+async function browsePreview(silent=false){if(expectedAppRole&&expectedAppRole!=='customer'){state=null;previewMode=false;render();return}const cached=readCustomerCatalogCache();if(cached&&!state){state=customerPreviewState(cached);previewMode=true;cachedCatalogActive=true;offline=navigator.onLine===false;connectionMessage=cachedCatalogMessage;tab='customer';render()}else if(!state)showStartupLoading();try{const {response:r,data:catalog}=await fetchCustomerSnapshot('/api/catalog?'+customerCatalogQuery());if(!r.ok)throw Error('تعذر تحميل الأقسام');clearStartupRetry();const current=mergeCustomerCatalog(catalog,state);saveCustomerCatalogCache(current);previewMode=true;state=customerPreviewState(current);cachedCatalogActive=false;offline=false;connectionMessage='';tab='customer';acceptSharedRideDestination();render()}catch(e){scheduleStartupRetry();offline=navigator.onLine===false;connectionMessage=offline?'الإنترنت غير متاح حاليًا؛ البيانات المحفوظة ظاهرة، وسيحاول التطبيق التحديث تلقائيًا.':'تعذر تحميل أحدث البيانات مؤقتًا؛ سيحاول التطبيق مرة أخرى تلقائيًا.';if(!state){previewMode=false;if(offline)connectionMessage='الإنترنت غير متاح حاليًا؛ سيحاول التطبيق تحميل المنتجات عند عودته.';showStartupLoading(connectionMessage,true);return}render()}}
 function leavePreview(){previewMode=false;state=null;render()}
 let loginBusy=false;
 document.addEventListener('keydown',event=>{
