@@ -1181,11 +1181,24 @@ body.driver-screen main{max-width:960px;padding-bottom:40px}.driver-ui-icon{widt
 .driver-guidance .guidance-pin{color:white;background:#17679d;border:2px solid white;border-radius:50%;text-align:center;font-size:18px}
 .driver-guidance footer{flex-wrap:wrap;padding-bottom:max(12px,env(safe-area-inset-bottom))}
 .customer-app walla-offers{display:block;color:white;margin:0 0 14px;padding:4px 0 0}
-.offer-slides{display:grid}
-.offer-slide{grid-area:1 / 1;overflow-wrap:anywhere}
-.offer-slide[hidden]{display:block;visibility:hidden}
-.offer-artwork{width:100%;max-height:360px;aspect-ratio:2.4;object-fit:contain;display:block;border-radius:12px}
+.offer-rope{height:28px;position:relative;pointer-events:none}
+.offer-rope::before{content:"";position:absolute;left:-3%;right:-3%;top:-16px;height:30px;border-bottom:3px solid #d7ba83;border-radius:0 0 50% 50%;box-shadow:0 2px 1px #0003}
+.offer-slides{display:grid;touch-action:pan-y;user-select:none;cursor:grab;padding-bottom:14px}
+.offer-slides:active{cursor:grabbing}
+.offer-slides:focus-visible{outline:2px solid #fff;outline-offset:-3px}
+.offer-slide{grid-area:1 / 1;overflow-wrap:anywhere;min-width:0;pointer-events:none}
+.offer-slide[hidden]{display:block;visibility:visible}
+.offer-card{position:relative;width:84%;margin:0 auto;background:#41261e;border:3px solid #fff0d7;border-radius:6px;box-shadow:0 9px 18px #0005;transform-origin:50% 0;transform:translateX(calc(var(--offer-offset,0) * 102%));transition:transform .5s ease,filter .5s ease;filter:brightness(1);pointer-events:auto}
+.offer-card::before,.offer-card::after{content:"";position:absolute;top:-22px;width:10px;height:29px;border-radius:3px;background:linear-gradient(90deg,#a7743e,#f2d092 45%,#ba844c);box-shadow:1px 2px 3px #0004;z-index:2}
+.offer-card::before{left:17%;transform:rotate(-8deg)}
+.offer-card::after{right:17%;transform:rotate(8deg)}
+.offer-slide[hidden] .offer-card{filter:brightness(.38);transform:translateX(calc(var(--offer-offset,0) * 102%)) scale(.95) rotate(calc(var(--offer-offset,0) * -2deg));pointer-events:none}
+.offer-slide[hidden] .offer-backdrop{visibility:hidden}
+.offer-artwork{width:100%;max-height:360px;aspect-ratio:2.4;object-fit:contain;display:block;border-radius:3px;-webkit-user-drag:none}
 .offer-artwork[hidden]{display:none}
+.offer-card>strong{padding:18px 14px 4px}
+.offer-card>p{padding:0 14px 18px}
+@media(prefers-reduced-motion:reduce){.offer-card{transition:none}}
 .banner-image-preview img{display:block;width:min(100%,520px);height:auto;border-radius:10px;margin:0 0 8px}
 .offer-slide strong{display:block;font-size:clamp(19px,4vw,26px);line-height:1.4}
 .offer-slide p{margin:5px 0 0;color:#fff4e8;font-size:14px;line-height:1.6}
@@ -1644,17 +1657,42 @@ function customerOffersMarkup(){
   if(!offers.length)return '';
   const slides=offers.map((item,index)=>{
     const caption=`<strong>${esc(item.title)}</strong>${item.detail?`<p>${esc(item.detail)}</p>`:''}`;
+    const backdrop=item.image?`<img class="offer-backdrop" src="${esc(item.image)}" alt="" aria-hidden="true" decoding="async">`:'';
     const content=item.image
-      ? `<img class="offer-backdrop" src="${esc(item.image)}" alt="" aria-hidden="true" decoding="async"><img class="offer-artwork" src="${esc(item.image)}" alt="${esc([item.title,item.detail].filter(Boolean).join(' · '))}" decoding="async" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><div hidden>${caption}</div>`
+      ? `<img class="offer-artwork" src="${esc(item.image)}" draggable="false" alt="${esc([item.title,item.detail].filter(Boolean).join(' · '))}" decoding="async" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><div hidden>${caption}</div>`
       : caption;
-    return `<div class="offer-slide" ${index?'hidden':''}>${content}</div>`;
+    return `<div class="offer-slide" ${index?'hidden':''}>${backdrop}<div class="offer-card">${content}</div></div>`;
   }).join('');
-  const controls=offers.length>1?`<div class="offer-controls"><button type="button" data-offer-next aria-label="العرض التالي" onclick="this.closest('walla-offers').nextSlide()">‹</button><span data-offer-count></span><button type="button" data-offer-pause onclick="this.closest('walla-offers').togglePause()">إيقاف</button></div>`:'';
-  return `<walla-offers role="region" aria-label="العروض"><div class="offer-slides">${slides}</div>${controls}</walla-offers>`;
+  const controls=offers.length>1?`<div class="offer-controls"><button type="button" aria-label="العرض السابق" onclick="this.closest('walla-offers').nextSlide(-1)">›</button><button type="button" data-offer-next aria-label="العرض التالي" onclick="this.closest('walla-offers').nextSlide()">‹</button><span data-offer-count></span><button type="button" data-offer-pause onclick="this.closest('walla-offers').togglePause()">إيقاف</button></div>`:'';
+  return `<walla-offers role="region" aria-label="العروض"><div class="offer-rope" aria-hidden="true"></div><div class="offer-slides" tabindex="0" aria-label="اسحب يمين أو شمال لتغيير البانر">${slides}</div>${controls}</walla-offers>`;
 }
 class CustomerOfferBanner extends HTMLElement{
   connectedCallback(){
     this.slides=this.querySelectorAll('.offer-slide');
+    this.track=this.querySelector('.offer-slides');
+    this.onPointerDown=e=>{
+      if(e.isPrimary===false||e.button!==0)return;
+      this.drag={id:e.pointerId,x:e.clientX,y:e.clientY};
+      clearTimeout(this.timer);
+      this.track?.setPointerCapture?.(e.pointerId);
+    };
+    this.onPointerUp=e=>{
+      if(!this.drag||this.drag.id!==e.pointerId)return;
+      const dx=e.clientX-this.drag.x,dy=e.clientY-this.drag.y;
+      this.drag=null;
+      if(Math.abs(dx)>40&&Math.abs(dx)>Math.abs(dy)*1.3)this.nextSlide(dx>0?1:-1);
+      else this.resumeAfterGesture();
+    };
+    this.onPointerCancel=()=>{this.drag=null;this.resumeAfterGesture()};
+    this.onKey=e=>{
+      if(e.key==='ArrowRight'||e.key==='ArrowLeft'){
+        e.preventDefault();this.nextSlide(e.key==='ArrowRight'?1:-1);
+      }
+    };
+    this.track?.addEventListener('pointerdown',this.onPointerDown);
+    this.track?.addEventListener('pointerup',this.onPointerUp);
+    this.track?.addEventListener('pointercancel',this.onPointerCancel);
+    this.addEventListener('keydown',this.onKey);
     const key=JSON.stringify(state.banner_offers);
     if(offerPlayback.key!==key){
       Object.assign(offerPlayback,{key,index:0,nextAt:Date.now()+OFFER_SLIDE_MS,paused:false});
@@ -1669,20 +1707,37 @@ class CustomerOfferBanner extends HTMLElement{
   disconnectedCallback(){
     clearTimeout(this.timer);
     document.removeEventListener('visibilitychange',this.onVisibility);
+    this.track?.removeEventListener('pointerdown',this.onPointerDown);
+    this.track?.removeEventListener('pointerup',this.onPointerUp);
+    this.track?.removeEventListener('pointercancel',this.onPointerCancel);
+    this.removeEventListener('keydown',this.onKey);
   }
   paintSlide(){
     clearTimeout(this.timer);
-    this.slides.forEach((slide,i)=>{slide.hidden=i!==offerPlayback.index});
+    this.slides.forEach((slide,i)=>{
+      let distance=i-offerPlayback.index;
+      if(distance>this.slides.length/2)distance-=this.slides.length;
+      if(distance<-this.slides.length/2)distance+=this.slides.length;
+      slide.hidden=i!==offerPlayback.index;
+      slide.setAttribute('aria-hidden',String(slide.hidden));
+      slide.style.setProperty('--offer-offset',String(-distance));
+      // Distant cards are outside the clipped masthead. All prices stay uncropped.
+    });
     const count=this.querySelector('[data-offer-count]');
     if(count)count.textContent=(offerPlayback.index+1).toLocaleString('ar-EG')+' / '+this.slides.length.toLocaleString('ar-EG');
     const pause=this.querySelector('[data-offer-pause]');
     if(pause)pause.textContent=offerPlayback.paused?'تشغيل':'إيقاف';
-    if(this.slides.length>1&&!offerPlayback.paused&&!document.hidden){
+    if(this.slides.length>1&&!offerPlayback.paused&&!document.hidden&&!this.drag){
       this.timer=setTimeout(()=>this.nextSlide(),Math.max(0,offerPlayback.nextAt-Date.now()));
     }
   }
-  nextSlide(){
-    offerPlayback.index=(offerPlayback.index+1)%this.slides.length;
+  resumeAfterGesture(){
+    offerPlayback.nextAt=Date.now()+OFFER_SLIDE_MS;
+    this.paintSlide();
+  }
+  nextSlide(step=1){
+    if(!this.slides.length)return;
+    offerPlayback.index=(offerPlayback.index+step+this.slides.length)%this.slides.length;
     offerPlayback.nextAt=Date.now()+OFFER_SLIDE_MS;
     this.paintSlide();
   }
