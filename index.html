@@ -1258,7 +1258,7 @@ function customerCatalogQuery(){
   if(state?.customer_catalog_revision)params.set('customer_catalog_revision',state.customer_catalog_revision);
   return params;
 }
-async function fetchCustomerSnapshot(url,options={},idleMs=15000){
+async function fetchCustomerSnapshot(url,options={},idleMs=15000,readAsText=false){
   const controller=new AbortController();let timer,limit,reader;
   const timeoutError=()=>{const e=new Error('Customer download stalled');e.name='TimeoutError';return e};
   let rejectTimeout;
@@ -1269,17 +1269,17 @@ async function fetchCustomerSnapshot(url,options={},idleMs=15000){
   try{
     const request=(async()=>{
       const response=await fetch(url,{...options,cache:'no-store',signal:controller.signal});progress();
-      if(!response.body?.getReader)return {response,data:await response.json()};
+      if(!response.body?.getReader)return {response,data:readAsText?await response.text():await response.json()};
       reader=response.body.getReader();const decoder=new TextDecoder();let text='';
       while(true){const {done,value}=await reader.read();if(done)break;progress();text+=decoder.decode(value,{stream:true})}
-      text+=decoder.decode();return {response,data:JSON.parse(text)};
+      text+=decoder.decode();return {response,data:readAsText?text:JSON.parse(text)};
     })();
     return await Promise.race([request,timeout]);
   }finally{clearTimeout(timer);clearTimeout(limit)}
 }
 window.appFetchWithTimeout=fetchWithTimeout;
 function compactPublicProduct(p){return Object.fromEntries(['id','name','category','price','price_pending','price_basis_weight_kg','stock','active','merchant_id','catalog_preview','requires_prescription','image'].filter(k=>p[k]!==undefined).map(k=>[k,p[k]]))}
-function saveCustomerCatalogCache(source){if(Date.now()-lastCustomerCatalogCacheWrite<300000)return;try{const catalog={banner_offers:source.banner_offers||[],draft_catalog:(source.draft_catalog||[]).slice(0,300).map(compactPublicProduct),products:(source.products||[]).slice(0,300).map(compactPublicProduct),categories:(source.categories||[]).map(c=>({id:c.id,name:c.name,active:c.active,sort_order:c.sort_order})),merchants:(source.merchants||[]).map(m=>({id:m.id,name:m.name,category:m.category,area:m.area,address:m.address,image:m.image,active:m.active,lat:m.lat,lon:m.lon})),services:(source.services||[]).map(x=>({key:x.key,name:x.name,active:x.active})),areas:source.areas||[],area_fees:source.area_fees||{}};localStorage.setItem(CUSTOMER_CATALOG_CACHE_KEY,JSON.stringify(catalog));lastCustomerCatalogCacheWrite=Date.now()}catch(e){}}
+function saveCustomerCatalogCache(source,force=false){if(!force&&Date.now()-lastCustomerCatalogCacheWrite<300000)return;try{const catalog={banner_offers:source.banner_offers||[],draft_catalog:(source.draft_catalog||[]).slice(0,300).map(compactPublicProduct),products:(source.products||[]).slice(0,300).map(compactPublicProduct),categories:(source.categories||[]).map(c=>({id:c.id,name:c.name,active:c.active,sort_order:c.sort_order})),merchants:(source.merchants||[]).map(m=>({id:m.id,name:m.name,category:m.category,area:m.area,address:m.address,image:m.image,active:m.active,lat:m.lat,lon:m.lon})),services:(source.services||[]).map(x=>({key:x.key,name:x.name,active:x.active})),areas:source.areas||[],area_fees:source.area_fees||{}};localStorage.setItem(CUSTOMER_CATALOG_CACHE_KEY,JSON.stringify(catalog));lastCustomerCatalogCacheWrite=Date.now()}catch(e){}}
 function readCustomerCatalogCache(){try{const value=localStorage.getItem(CUSTOMER_CATALOG_CACHE_KEY);return value?JSON.parse(value):null}catch(e){return null}}
 function customerPreviewState(catalog){return {...catalog,products:Array.from(new Map([...(catalog.draft_catalog||[]),...(catalog.products||[])].map(p=>[p.id,p])).values()),user:{name:'عميل',phone:'',role:'customer'},orders:[],settings:{wallet:''}}}
 const startupLoadingPanel=document.getElementById('startup-loading');
@@ -1481,7 +1481,7 @@ async function performRefresh(force=false){
     const wasDisconnected=!!connectionMessage;connectionMessage='';
     if(expectedAppRole&&state.user.role!==expectedAppRole){appRoleError='الحساب المحفوظ ليس حساب '+({driver:'طيار',customer:'عميل',admin:'مسؤول'}[expectedAppRole])+'. سجّل الدخول بالحساب المناسب لهذا التطبيق.';token='';localStorage.removeItem(appTokenKey);localStorage.removeItem('wallaha_token');state=null;previewMode=false;offline=false;cachedReadOnly=false;render();return}
     appRoleError='';try{localStorage.setItem(appTokenKey,token)}catch(e){}loadCustomerAddress();offline=false;cachedReadOnly=false;cachedCatalogActive=false;tab=state.user.role;
-    if(tab==='customer')saveCustomerCatalogCache(state);
+    if(tab==='customer'){restoreCustomerUiResume();saveCustomerCatalogCache(state)}
     checkShiftSecondReminder(previousState,state);cleanupCustomerArchive();syncDriverAutomation();acceptSharedRideDestination();
     const latest=Math.max(0,...state.orders.map(o=>o.id));
     if(tab==='driver')checkDriverOffers();else if(lastSeenRole===tab&&lastSeenOrderId!==null&&latest>lastSeenOrderId&&tab==='admin')notifyNewOrder(latest,tab);
@@ -1492,7 +1492,7 @@ async function performRefresh(force=false){
     if(tab==='admin'&&adminPage==='admin-map-section'&&refreshAdminLiveMap()){paintSupport();return}
     if(tab==='customer'&&previousState&&customerView==='orders'&&customerTrackingStateKey(previousState)===customerTrackingStateKey(state)&&updateCustomerTrackingMap())return;
     if(tab==='driver'&&previousState&&location.pathname==='/driver'&&driverRenderKey(previousState)===driverRenderKey(state)){if(driverGpsKey(previousState)!==driverGpsKey(state))updateDriverMap();return}
-    render()
+    if(tab==='customer')renderLiveCustomer();else render()
   }catch(e){scheduleStartupRetry();offline=navigator.onLine===false;connectionMessage=offline?'الإنترنت غير متاح حاليًا؛ سيحاول التطبيق التحديث تلقائيًا عند عودته.':'تعذر تحديث البيانات مؤقتًا؛ سيحاول التطبيق مرة أخرى تلقائيًا.';if(!state&&token){showStartupLoading(connectionMessage,true);return}render()}
 }
 let driverAudio=null,driverSoundEnabled=false,driverSoundError='',driverOfferAccount=null;
@@ -1832,7 +1832,7 @@ function prescriptionEntry(){return ''}
 async function startPrescription(){alert('خدمة الصيدلية ورفع الروشتات غير متاحة')}
 function customerStore(){let m=state.merchants.find(x=>x.id===merchantId&&x.active);if(!m)return customerHome();let look=categoryLooks[m.category]||['🛍️','#e9f2f2'];return `<button class="customer-back" onclick="returnCustomerHome(decodeURIComponent('${encodeURIComponent(m.category)}'))">→ رجوع للمحلات</button><div class="store-heading"><span class="merchant-art" style="--tile-bg:${look[1]}">${m.image?`<img loading="lazy" decoding="async" src="${esc(m.image)}" alt="${esc(m.name)}" style="width:100%;height:100%;object-fit:contain;border-radius:inherit">`:look[0]}</span><div><h2>${esc(m.name)}</h2><p>${esc(m.category)} · ${esc(m.area)} · ${esc(m.address)}</p></div></div><div class="customer-search"><span>⌕</span><input aria-label="ابحث في منتجات المحل" placeholder="دور على منتج في المحل" value="${esc(productSearch)}" oninput="productSearch=this.value;storeProductLimit=48;renderStoreProducts()"></div><div class="section-heading"><h2>منتجات المحل</h2></div><div class="product-grid" id="store-products">${productCards()}</div>${m.category==='أدوية'?prescriptionEntry():''}${cartDock()}`}
 
-function basketProductRow(p,q){if(!p)return '';let weighted=soldByWeight(p),max=Number(p.stock)*(weighted?weightBasis(p):1),budget=Number(cartBudgets[p.id]||0);return `<article class="basket-product"><img src="${esc(p.image||'/product-illustration/'+p.id+'.svg')}" alt="" loading="lazy"><div class="basket-product-info"><strong>${esc(budget?budgetDisplayName(p):p.name)}</strong>${budget?`<div class="budget-cart-row"><label for="basket-budget-${p.id}">المبلغ المطلوب</label><div><input id="basket-budget-${p.id}" type="number" min="1" step="1" value="${budget}" onchange="setBudgetCartAmount(${p.id},Number(this.value))"><b>جنيه</b></div></div>`:`<small>السعر ${money(productPrice(p))}${weighted?' / كيلو':' / قطعة'}</small><div class="basket-quantity"><button type="button" aria-label="تقليل كمية ${esc(p.name)}" onclick="setBasketQuantity(${p.id},${q}-${weighted?weightIncrement(p):1})">−</button><input aria-label="كمية ${esc(p.name)}" type="number" min="${weighted?weightIncrement(p):1}" step="${weighted?weightIncrement(p):1}" max="${max}" value="${q}" onchange="setBasketQuantity(${p.id},Number(this.value))"><span>${weighted?'كجم':'قطعة'}</span><button type="button" aria-label="زيادة كمية ${esc(p.name)}" onclick="setBasketQuantity(${p.id},${q}+${weighted?weightIncrement(p):1})">+</button></div>`}<button type="button" class="secondary" onclick="setBasketQuantity(${p.id},0)">حذف من السلة</button></div><strong>${money(budget||productPrice(p)*q)}</strong></article>`}
+function basketProductRow(p,q){if(!p)return '';let weighted=soldByWeight(p),max=Number(p.stock)*(weighted?weightBasis(p):1),budget=Number(cartBudgets[p.id]||0);return `<article class="basket-product" data-product-id="${p.id}"><img src="${esc(p.image||'/product-illustration/'+p.id+'.svg')}" alt="" loading="lazy"><div class="basket-product-info"><strong>${esc(budget?budgetDisplayName(p):p.name)}</strong>${budget?`<div class="budget-cart-row"><label for="basket-budget-${p.id}">المبلغ المطلوب</label><div><input id="basket-budget-${p.id}" type="number" min="1" step="1" value="${budget}" onchange="setBudgetCartAmount(${p.id},Number(this.value))"><b>جنيه</b></div></div>`:`<small>السعر ${money(productPrice(p))}${weighted?' / كيلو':' / قطعة'}</small><div class="basket-quantity"><button type="button" aria-label="تقليل كمية ${esc(p.name)}" onclick="setBasketQuantity(${p.id},${q}-${weighted?weightIncrement(p):1})">−</button><input aria-label="كمية ${esc(p.name)}" type="number" min="${weighted?weightIncrement(p):1}" step="${weighted?weightIncrement(p):1}" max="${max}" value="${q}" onchange="setBasketQuantity(${p.id},Number(this.value))"><span>${weighted?'كجم':'قطعة'}</span><button type="button" aria-label="زيادة كمية ${esc(p.name)}" onclick="setBasketQuantity(${p.id},${q}+${weighted?weightIncrement(p):1})">+</button></div>`}<button type="button" class="secondary" onclick="setBasketQuantity(${p.id},0)">حذف من السلة</button></div><strong>${money(budget||productPrice(p)*q)}</strong></article>`}
 function setBudgetCartAmount(id,amount){let p=state.products.find(x=>x.id===id),unitPrice=p?productPrice(p):0,max=p?Number(p.stock)*weightBasis(p):0,qty=unitPrice>0?amount/unitPrice:0;if(!p||!Number.isFinite(amount)||amount<=0||qty>max){alert('اكتب مبلغًا صحيحًا ضمن الكمية المتاحة');render();return}saveCheckoutDraft();cartBudgets[id]=amount;cart[id]=qty;render()}
 function setBasketQuantity(id,quantity){let p=state.products.find(x=>x.id===id);if(!p)return;let weighted=soldByWeight(p),max=Number(p.stock)*(weighted?weightBasis(p):1);if(!Number.isFinite(quantity)||quantity<0||quantity>max||!validProductQuantity(p,quantity)){alert('اختر كمية صحيحة ضمن المتاح');render();return}saveCheckoutDraft();if(quantity===0){delete cart[id];delete cartBudgets[id]}else{cart[id]=quantity;delete cartBudgets[id]}render()}
 
@@ -2219,7 +2219,7 @@ async function setDriverEarning(id,paid){if(paid&&!await window.appConfirm('هل
 function renderDriverHistory(){let history=state.orders.filter(o=>['delivered','cancelled','returned'].includes(o.status)),chosen=history.find(o=>o.id===selectedTripId)||history[0];if(driverHistoryLoading&&!history.length)return `<section class="driver-history-page"><div class="driver-view-title"><span class="driver-title-icon"><svg class="driver-ui-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><div><h2>سجل الطلبات والمحادثات</h2><p>جارٍ تحميل طلباتك ومحادثاتك</p></div></div><div class="driver-loading-card"><span class="driver-loader"></span> جاري تحميل السجل…</div></section>`;return `<section class="driver-history-page"><div class="driver-view-title"><span class="driver-title-icon"><svg class="driver-ui-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><div><h2>سجل الطلبات والمحادثات</h2><p>افتح أي طلب لمراجعة تفاصيله ومحادثته</p></div><span class="driver-history-count">${history.length} طلب</span></div>${tripDetails(chosen,'driver')}${history.filter(o=>o.id!==chosen?.id).map(o=>orderCard(o,'driver')).join('')||(!chosen?'<div class="empty">لا توجد طلبات مكتملة بعد.</div>':'')}</section>`}
 function renderDriverOld(){let active=state.orders.filter(o=>!['cancelled','delivered','returned'].includes(o.status)),current=active.find(o=>['assigned','ready','picked_up','on_way','returning'].includes(o.status)),chosen=active.find(o=>o.id===selectedTripId)||current||active.find(o=>o.status==='offered'),mapOrder=current||chosen,heading=current?.status==='returning'?'اتجه إلى المرسل':current?(['picked_up','on_way'].includes(current.status)?'اتجه إلى العميل':'اتجه إلى مكان الاستلام'):active.length?'طلبات جديدة متاحة لك':'في انتظار الطلبات';return `<section class="driver-map-stage" aria-label="خريطة الطيار"><div class="driver-map-heading"><strong><svg class="driver-ui-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 10c0 5-7 11-7 11S5 15 5 10a7 7 0 1 1 14 0Z"/><circle cx="12" cy="10" r="2.5"/></svg> ${heading}</strong><span>${current?'المسار حسب مرحلة الطلب':active.length?'اختر طلبًا من القائمة أسفل الخريطة':'سيظهر موقعك هنا عند تفعيله'}</span></div><div id="driver-map" class="map driver-live-map" aria-label="خريطة الطلبات ومسار الطيار"></div><p class="muted">أثناء الشيفت ومشاركة الموقع، يظهر للمالك تنبيه لو اقتربت من عنوان تسليم بعد إلغاء الطلب أو اعتذارك عنه.</p>${driverNavigationButton(mapOrder)}${driverMapActions(mapOrder)}</section><section class="driver-order-sheet"><div class="driver-order-sheet-head"><div><span class="eyebrow">ولعه · الطيار</span><h2>${current?'الطلب الجاري':active.length?'طلبات جديدة':'لا توجد طلبات الآن'}</h2></div><span class="tag">${active.length} ${active.length===1?'طلب':'طلبات'}</span></div>${chosen?driverOrderDetails(chosen,chosen.id!==mapOrder.id):!active.length?'<div class="empty">أنت جاهز لاستقبال الطلبات. سيظهر الطلب الجديد هنا مع موقع الاستلام والتسليم.</div>':''}${active.filter(o=>o.id!==chosen?.id).map(o=>orderCard(o,'driver')).join('')}</section>`}
 function loginViewLegacy(){if(location.pathname==='/admin')return `<div class="card" style="max-width:460px;margin:auto"><h2>دخول المسؤول</h2><p class="muted">لوحة التحكم خاصة بصاحب تطبيق ولعه فقط.</p><label>اسم المستخدم</label><input id="login-phone" autocomplete="username"><label>كلمة المرور</label><input id="login-pass" type="password" autocomplete="current-password"><button onclick="login()">دخول لوحة التحكم</button></div>`;if(location.pathname.startsWith('/driver'))return `<div class="card" style="max-width:460px;margin:auto"><h2>دخول تطبيق الطيار</h2><p>حسابك الخاص في ولعه، مشاويرك ومحفظتك.</p><label>إيميل الطيار أو اسم المستخدم أو رقم الهاتف</label><input id="login-phone" autocomplete="username"><label>كلمة المرور</label><input id="login-pass" type="password" autocomplete="current-password"><button onclick="login()">دخول حسابي</button><button class="secondary" onclick="alert('لو نسيت كلمة المرور، تواصل مع مسؤول ولعه للتحقق من هويتك وإعطائك كلمة مرور مؤقتة. بعد الدخول غيّرها من الإعدادات.')">نسيت كلمة المرور؟</button><p class="muted">المسؤول ينشئ حسابك باسمك من لوحة التحكم.</p></div>`;return `<div class="card" style="background:#ecf8ef;text-align:center"><h2>شوف تطبيق ولعه من جوه</h2><p class="muted">تصفح الأقسام والمحلات والمنتجات من غير حساب. تسجيل الدخول مطلوب وقت إرسال الطلب فقط.</p><button onclick="browsePreview()">تصفح التطبيق بدون تسجيل</button></div><div class="grid"><div class="card"><h2>دخول ولعه</h2><label>اسم المستخدم أو رقم الهاتف</label><input id="login-phone" autocomplete="username"><label>كلمة المرور</label><input id="login-pass" type="password"><button onclick="login()">دخول</button><p class="muted">تطبيق العميل · الطلبات والتوصيل</p></div><div class="card"><h2>حساب عميل جديد</h2><label>الاسم</label><input id="reg-name"><label>رقم الهاتف (11 رقمًا)</label><input id="reg-phone" type="tel" inputmode="tel" dir="ltr" autocomplete="tel" placeholder="012XXXXXXXX" aria-describedby="reg-phone-help" oninput="normalizeRegistrationPhoneInput(this)"><small id="reg-phone-help" class="muted">تقدر تكتب رقمك بمفتاح مصر <bdi dir="ltr">+20</bdi> أو من غيره.</small><label>كلمة مرور (10 أحرف على الأقل)</label><input id="reg-pass" type="password"><button onclick="register()">إنشاء حساب</button></div></div>`}
-async function browsePreview(silent=false){if(expectedAppRole&&expectedAppRole!=='customer'){state=null;previewMode=false;render();return}const cached=readCustomerCatalogCache();if(cached&&!state){state=customerPreviewState(cached);previewMode=true;cachedCatalogActive=true;offline=navigator.onLine===false;connectionMessage=cachedCatalogMessage;tab='customer';render()}else if(!state)showStartupLoading();try{const {response:r,data:catalog}=await fetchCustomerSnapshot('/api/catalog?'+customerCatalogQuery());if(!r.ok)throw Error('تعذر تحميل الأقسام');clearStartupRetry();const current=mergeCustomerCatalog(catalog,state);saveCustomerCatalogCache(current);previewMode=true;state=customerPreviewState(current);cachedCatalogActive=false;offline=false;connectionMessage='';tab='customer';acceptSharedRideDestination();render()}catch(e){scheduleStartupRetry();offline=navigator.onLine===false;connectionMessage=offline?'الإنترنت غير متاح حاليًا؛ البيانات المحفوظة ظاهرة، وسيحاول التطبيق التحديث تلقائيًا.':'تعذر تحميل أحدث البيانات مؤقتًا؛ سيحاول التطبيق مرة أخرى تلقائيًا.';if(!state){previewMode=false;if(offline)connectionMessage='الإنترنت غير متاح حاليًا؛ سيحاول التطبيق تحميل المنتجات عند عودته.';showStartupLoading(connectionMessage,true);return}render()}}
+async function browsePreview(silent=false){if(expectedAppRole&&expectedAppRole!=='customer'){state=null;previewMode=false;render();return}const cached=readCustomerCatalogCache();if(cached&&!state){state=customerPreviewState(cached);previewMode=true;cachedCatalogActive=true;offline=navigator.onLine===false;connectionMessage=cachedCatalogMessage;tab='customer';render()}else if(!state)showStartupLoading();try{const {response:r,data:catalog}=await fetchCustomerSnapshot('/api/catalog?'+customerCatalogQuery());if(!r.ok)throw Error('تعذر تحميل الأقسام');clearStartupRetry();const current=mergeCustomerCatalog(catalog,state);saveCustomerCatalogCache(current);previewMode=true;state=customerPreviewState(current);cachedCatalogActive=false;offline=false;connectionMessage='';tab='customer';restoreCustomerUiResume();acceptSharedRideDestination();renderLiveCustomer()}catch(e){scheduleStartupRetry();offline=navigator.onLine===false;connectionMessage=offline?'الإنترنت غير متاح حاليًا؛ البيانات المحفوظة ظاهرة، وسيحاول التطبيق التحديث تلقائيًا.':'تعذر تحميل أحدث البيانات مؤقتًا؛ سيحاول التطبيق مرة أخرى تلقائيًا.';if(!state){previewMode=false;if(offline)connectionMessage='الإنترنت غير متاح حاليًا؛ سيحاول التطبيق تحميل المنتجات عند عودته.';showStartupLoading(connectionMessage,true);return}render()}}
 function leavePreview(){previewMode=false;state=null;render()}
 let loginBusy=false;
 document.addEventListener('keydown',event=>{
@@ -2256,24 +2256,100 @@ function privacyPolicyLink(){const raw=String(state?.privacy_policy_url||'').tri
 function accountPanel(){return `<details class="card"><summary>إعدادات حسابي</summary>${privacyPolicyLink()}<hr><label>كلمة المرور الحالية</label><input id="current-pass" type="password" autocomplete="current-password"><label>كلمة المرور الجديدة (10 أحرف على الأقل)</label><input id="new-pass" type="password" autocomplete="new-password"><button onclick="changePassword()">تغيير كلمة المرور</button><hr><h3>إجابة استرداد الحساب</h3><p class="muted">اكتب إجابة سرية واحفظها لاسترداد الحساب إذا نسيت كلمة المرور.</p><input id="account-recovery-answer" autocomplete="off" placeholder="اسم أو كلمة خاصة تختارها"><button class="secondary" onclick="saveRecoveryAnswer()">حفظ إجابة الاسترداد</button></details>`}
 function hideHealthCatalog(){if(!state||tab!=='customer')return;const blocked=c=>['أدوية','صيدلية','صيدليات','الصيدلية'].includes(c);const blockedIds=new Set([...(state.products||[]),...(state.draft_catalog||[])].filter(p=>blocked(p.category)||p.requires_prescription).map(p=>String(p.id)));for(const key of ['categories','merchants','products','draft_catalog'])if(state[key])state[key]=state[key].filter(x=>!blocked(key==='categories'?x.name:x.category)&&!x.requires_prescription);for(const id of Object.keys(cart))if(blockedIds.has(id)){delete cart[id];delete cartBudgets[id]}prescriptionOnly=false;delete checkoutFiles.prescription;if(blocked(categoryFilter))categoryFilter='الكل'}
 function render(){syncOrderConversation();hideHealthCatalog();ensureCustomerHistory();saveMerchantEditorDraft();if(!state){merchantEditorDraft=null;merchantMapView=null;merchantPoint=null;clearDriverPhotoDraft();clearPrivateSessionData();stopLocation(false);locationAccount=null;locationAttempted=false}document.body.classList.toggle('customer-screen',tab==='customer');document.body.classList.toggle('admin-screen',!!state&&tab==='admin');document.body.classList.toggle('driver-screen',!!state&&tab==='driver');$('driver-settings-top').style.display=state&&tab==='driver'&&location.pathname==='/driver'?'grid':'none';saveChatDrafts();cleanupCustomerArchive();saveCheckoutDraft();clearMaps();$('logout').style.display=state&&tab!=='driver'?'block':'none';$('logout').textContent=previewMode?'دخول':'تسجيل الخروج';$('reload').style.display=state&&!previewMode?'block':'none';const statusMessage=connectionMessage||((cachedCatalogActive||offline)?'تعذر الاتصال بالخادم الآن؛ البيانات المحفوظة ظاهرة، وسيحاول التطبيق التحديث تلقائيًا.':'');$('app').innerHTML=connectionStatusHTML(statusMessage)+(!state?(appRoleError?'<div class="connection-status" role="alert">'+esc(appRoleError)+'</div>':'')+loginView():(tab==='customer'?renderCustomer():tab==='admin'?renderAdmin():renderDriver())+(previewMode||tab==='customer'||tab==='driver'||(tab==='admin'&&adminPage!=='admin-settings')?'':accountPanel()));restoreCheckoutDraft();restoreMerchantEditorDraft();initMaps();if(state&&tab==='admin')renderProductMerchantChoices();if(state&&tab==='admin')enforceStaffReadOnly();pollOrderChat();paintSupport();syncChatAlerts()}
+// Live customer data
+let customerLiveTimer=null,customerLiveInFlight=null;
+function renderLiveCustomer(){
+  if(tab!=='customer'){render();return}
+  if(customerView==='checkout'&&document.querySelector('.checkout-steps,.delivery-wizard')){
+    document.querySelectorAll('.basket-product[data-product-id]').forEach(row=>{
+      const p=searchableProducts().find(p=>p.id===Number(row.dataset.productId)),total=row.querySelector(':scope > strong');
+      if(total)total.textContent=p?money(Number(cartBudgets[p.id])||productPrice(p)*Number(cart[p.id]||0)):'غير متاح حاليًا';
+    });
+    refreshCheckoutTotal();refreshCheckoutQuote();return;
+  }
+  const input=document.activeElement,editing=input?.matches('input:not([type="file"]),textarea,select');
+  const focus=editing?{id:input.id,label:input.getAttribute('aria-label'),value:input.value,start:input.selectionStart,end:input.selectionEnd}:null;
+  const y=window.scrollY;
+  render();
+  if(focus){
+    const next=focus.id?document.getElementById(focus.id):Array.from(document.querySelectorAll('input,textarea,select')).find(el=>focus.label&&el.getAttribute('aria-label')===focus.label);
+    if(next){next.value=focus.value;next.focus({preventScroll:true});try{if(focus.start!==null)next.setSelectionRange(focus.start,focus.end)}catch(e){}}
+  }
+  window.scrollTo({top:y,behavior:'instant'});
+}
+function applyCustomerLiveDelta(data){
+  const ids=new Set(data.changed_product_ids||[]);
+  for(const key of ['products','draft_catalog'])state[key]=[...(data[key]||[]),...(state[key]||[]).filter(p=>!ids.has(p.id))];
+  state.banner_offers=data.banner_offers||[];
+  state.customer_live_revision=data.customer_live_revision;
+  state.customer_catalog_revision=data.customer_catalog_revision;
+  saveCustomerCatalogCache(state,true);
+  renderLiveCustomer();
+}
+function pollCustomerLive(){
+  if(expectedAppRole!=='customer')return Promise.resolve();
+  if(customerLiveInFlight)return customerLiveInFlight;
+  clearTimeout(customerLiveTimer);
+  customerLiveInFlight=(async()=>{
+    if(document.visibilityState!=='visible'||!state||cachedReadOnly||cachedCatalogActive||submitting||refreshInFlight||window._wallahConfirmClose||document.querySelector('dialog[open],.app-confirm-backdrop'))return;
+    const snapshot=state,version=Number.isSafeInteger(state.customer_live_revision)?state.customer_live_revision:-1;
+    try{
+      const {response,data}=await fetchJsonWithTimeout('/api/customer-sync?since='+version,{cache:'no-store'},8000);
+      if(!response.ok||!Number.isSafeInteger(data.customer_live_revision))throw Error('live update unavailable');
+      void checkAppUpdate(data.ui_revision);
+      if(state!==snapshot||refreshInFlight||submitting||window._wallahConfirmClose||document.querySelector('dialog[open],.app-confirm-backdrop'))return;
+      if(!data.changed)return;
+      if(data.reload_state){await refresh(true);return}
+      applyCustomerLiveDelta(data);
+    }catch(e){/* The next lightweight request resumes from the last applied revision. */}
+  })().finally(()=>{customerLiveInFlight=null;customerLiveTimer=setTimeout(pollCustomerLive,2000)});
+  return customerLiveInFlight;
+}
+window.addEventListener('online',pollCustomerLive);
+window.addEventListener('pageshow',pollCustomerLive);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')pollCustomerLive()});
+// End live customer data
+
 const APP_UPDATE_CHECK_MS=60000;
 let appUpdateInFlight=null,appUpdateTimer=null,appUpdateFailures=0;
 function safeToApplyAppUpdate(){
-  return expectedAppRole==='customer'&&document.visibilityState==='visible'&&customerView==='home'
-    &&(!token||(state&&!cachedReadOnly))&&categoryFilter==='الكل'&&!homeQuery&&!submitting&&!trackingOrderId
-    &&Object.keys(cart).length===0&&Object.keys(checkoutFiles).length===0
-    &&!(state?.orders||[]).some(o=>!['delivered','cancelled','returned'].includes(o.status))
+  return expectedAppRole==='customer'&&document.visibilityState==='visible'&&['home','store','product'].includes(customerView)
+    &&(!token||(state&&!cachedReadOnly))&&!submitting&&Object.keys(checkoutFiles).length===0
     &&!document.activeElement?.matches('input,textarea,select,[contenteditable="true"]')
     &&!document.querySelector('dialog[open],.app-confirm-backdrop')&&!window._wallahConfirmClose;
 }
-function checkAppUpdate(){
+function saveCustomerUiResume(){
+  try{
+    sessionStorage.setItem('wallaha_ui_resume',JSON.stringify({at:Date.now(),account:state?.user?.id||0,
+      cart,cartBudgets,merchantId,shopAnywhere,catalogOrder,kind,serviceKey,customerView,
+      categoryFilter,homeQuery,productSearch,selectedCatalogProductId}));
+    return true;
+  }catch(e){return false}
+}
+function restoreCustomerUiResume(){
+  if(tab!=='customer'||cachedReadOnly)return;
+  try{
+    const raw=sessionStorage.getItem('wallaha_ui_resume');if(!raw)return;
+    const saved=JSON.parse(raw);
+    if(Date.now()-saved.at>600000||saved.account!==(state?.user?.id||0)){sessionStorage.removeItem('wallaha_ui_resume');return}
+    for(const [id,qty] of Object.entries(saved.cart||{}))if(/^\d+$/.test(id)&&Number.isFinite(qty)&&qty>0)cart[id]=qty;
+    for(const [id,amount] of Object.entries(saved.cartBudgets||{}))if(cart[id]&&Number.isFinite(amount)&&amount>0)cartBudgets[id]=amount;
+    merchantId=Number(saved.merchantId)||0;shopAnywhere=!!saved.shopAnywhere;catalogOrder=!!saved.catalogOrder;
+    if(['products','delivery','ride','custom'].includes(saved.kind))kind=saved.kind;
+    serviceKey=String(saved.serviceKey||'');
+    if(['home','store','product'].includes(saved.customerView))customerView=saved.customerView;
+    categoryFilter=String(saved.categoryFilter||'الكل');homeQuery=String(saved.homeQuery||'');productSearch=String(saved.productSearch||'');selectedCatalogProductId=Number(saved.selectedCatalogProductId)||0;
+    sessionStorage.removeItem('wallaha_ui_resume');
+  }catch(e){}
+}
+function checkAppUpdate(knownRevision){
   if(expectedAppRole!=='customer')return Promise.resolve();
   if(appUpdateInFlight)return appUpdateInFlight;
   clearTimeout(appUpdateTimer);
   appUpdateInFlight=(async()=>{
     if(document.visibilityState!=='visible')return;
     try{
-      const {response,data}=await fetchJsonWithTimeout('/api/ui-version',{cache:'no-store'},12000);
+      const {response,data}=typeof knownRevision==='string'?{response:{ok:true},data:{revision:knownRevision}}:await fetchJsonWithTimeout('/api/ui-version',{cache:'no-store'},12000);
       if(!response.ok||! /^[a-zA-Z0-9]{6,64}$/.test(data.revision))throw Error('version unavailable');
       appUpdateFailures=0;
       const current=document.querySelector('meta[name="wallaha-ui-revision"]')?.content;
@@ -2281,21 +2357,13 @@ function checkAppUpdate(){
       let last={};try{last=JSON.parse(sessionStorage.getItem('wallaha_ui_attempt')||'{}')}catch{}
       if(last.revision===data.revision&&Date.now()-last.at<60000)return;
       const target=new URL(location.href);target.searchParams.set('ui_revision',data.revision);
-      const controller=new AbortController();let timeout;
-      try{
-        // Download and verify the new document before leaving the working page.
-        const download=(async()=>{
-          const page=await fetch(target.href,{cache:'no-store',signal:controller.signal});
-          if(!page.ok)throw Error('page unavailable');
-          return page.text();
-        })();
-        const markup=await Promise.race([download,new Promise((_,reject)=>{timeout=setTimeout(()=>{controller.abort();reject(Error('update timeout'))},20000)})]);
-        if(!markup.includes('name="wallaha-ui-revision" content="'+data.revision+'"'))throw Error('old page');
-        if(!safeToApplyAppUpdate())return;
-        try{sessionStorage.setItem('wallaha_ui_attempt',JSON.stringify({revision:data.revision,at:Date.now()}))}catch{}
-        showStartupLoading('جارٍ فتح أحدث نسخة من التطبيق…');
-        location.replace(target.href);
-      }finally{clearTimeout(timeout)}
+      // Finish downloading the new document before leaving the working page.
+      const {response:page,data:markup}=await fetchCustomerSnapshot(target.href,{},15000,true);
+      if(!page.ok||!markup.includes('name="wallaha-ui-revision" content="'+data.revision+'"'))throw Error('old page');
+      if(!safeToApplyAppUpdate()||!saveCustomerUiResume())return;
+      try{sessionStorage.setItem('wallaha_ui_attempt',JSON.stringify({revision:data.revision,at:Date.now()}))}catch{}
+      showStartupLoading('جارٍ فتح أحدث نسخة من التطبيق…');
+      location.replace(target.href);
     }catch{appUpdateFailures=Math.min(appUpdateFailures+1,4)}
   })().finally(()=>{
     appUpdateInFlight=null;
@@ -2313,4 +2381,4 @@ document.addEventListener('visibilitychange',()=>{if(document.visibilityState!==
 window.addEventListener('online',()=>{if(token)refresh(true);else if(['/','/customer'].includes(location.pathname))refresh(true)});window.addEventListener('offline',()=>{offline=true;connectionMessage='الاتصال بالإنترنت انقطع حاليًا؛ بياناتك المحفوظة ما زالت ظاهرة.';if(state)render()});
 window.addEventListener('focus',()=>{if(Date.now()-lastCatalogRefresh>5000)refreshCustomerPrices()});
 setInterval(()=>{if(Date.now()-lastCatalogRefresh>30000)refreshCustomerPrices()},30000);
-window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;$('install').style.display='block'});document.getElementById("manifest").href="/manifest/"+(["driver","admin"].includes(location.pathname.slice(1))?location.pathname.slice(1):"customer")+".json";if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js?v=live-ui-2',{updateViaCache:'none'}).catch(()=>{});refresh();checkAppUpdate();setInterval(pollOrderChat,5000);setInterval(()=>{if(state&&tab==='driver'&&(location.pathname!=='/driver/settings'||state.driver_profile?.identity_blocked_shift)&&document.visibilityState==='visible'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))refresh()},5000);setInterval(()=>{if(state&&(tab==='admin'||(tab==='customer'&&(customerView==='orders'||trackingOrderId)))&&document.visibilityState==='visible'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))refresh()},15000);</script><script>loadFeatureConfig()</script><script id="password-visibility-script">(()=>{function addPasswordToggle(input){if(!(input instanceof HTMLInputElement)||input.type!=='password'||input.closest('.password-visibility-wrap'))return;const wrap=document.createElement('span');wrap.className='password-visibility-wrap';input.parentNode.insertBefore(wrap,input);wrap.appendChild(input);const button=document.createElement('button');button.type='button';button.className='password-visibility-toggle';button.textContent='👁';button.setAttribute('aria-label','إظهار كلمة المرور');button.title='إظهار كلمة المرور';button.addEventListener('click',()=>{const reveal=input.type==='password';input.type=reveal?'text':'password';button.setAttribute('aria-label',reveal?'إخفاء كلمة المرور':'إظهار كلمة المرور');button.title=reveal?'إخفاء كلمة المرور':'إظهار كلمة المرور';button.textContent=reveal?'🙈':'👁';input.focus({preventScroll:true})});wrap.appendChild(button)}function scan(root){if(root.nodeType===Node.ELEMENT_NODE&&root.matches('input[type="password"]'))addPasswordToggle(root);root.querySelectorAll?.('input[type="password"]').forEach(addPasswordToggle)}scan(document);new MutationObserver(records=>records.forEach(record=>record.addedNodes.forEach(node=>{if(node.nodeType===Node.ELEMENT_NODE)scan(node)}))).observe(document.documentElement,{childList:true,subtree:true})})();</script></body></html>
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;$('install').style.display='block'});document.getElementById("manifest").href="/manifest/"+(["driver","admin"].includes(location.pathname.slice(1))?location.pathname.slice(1):"customer")+".json";if('serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js?v=live-ui-2',{updateViaCache:'none'}).catch(()=>{});refresh();checkAppUpdate();pollCustomerLive();setInterval(pollOrderChat,5000);setInterval(()=>{if(state&&tab==='driver'&&(location.pathname!=='/driver/settings'||state.driver_profile?.identity_blocked_shift)&&document.visibilityState==='visible'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))refresh()},5000);setInterval(()=>{if(state&&(tab==='admin'||(tab==='customer'&&(customerView==='orders'||trackingOrderId)))&&document.visibilityState==='visible'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName))refresh()},15000);</script><script>loadFeatureConfig()</script><script id="password-visibility-script">(()=>{function addPasswordToggle(input){if(!(input instanceof HTMLInputElement)||input.type!=='password'||input.closest('.password-visibility-wrap'))return;const wrap=document.createElement('span');wrap.className='password-visibility-wrap';input.parentNode.insertBefore(wrap,input);wrap.appendChild(input);const button=document.createElement('button');button.type='button';button.className='password-visibility-toggle';button.textContent='👁';button.setAttribute('aria-label','إظهار كلمة المرور');button.title='إظهار كلمة المرور';button.addEventListener('click',()=>{const reveal=input.type==='password';input.type=reveal?'text':'password';button.setAttribute('aria-label',reveal?'إخفاء كلمة المرور':'إظهار كلمة المرور');button.title=reveal?'إخفاء كلمة المرور':'إظهار كلمة المرور';button.textContent=reveal?'🙈':'👁';input.focus({preventScroll:true})});wrap.appendChild(button)}function scan(root){if(root.nodeType===Node.ELEMENT_NODE&&root.matches('input[type="password"]'))addPasswordToggle(root);root.querySelectorAll?.('input[type="password"]').forEach(addPasswordToggle)}scan(document);new MutationObserver(records=>records.forEach(record=>record.addedNodes.forEach(node=>{if(node.nodeType===Node.ELEMENT_NODE)scan(node)}))).observe(document.documentElement,{childList:true,subtree:true})})();</script></body></html>

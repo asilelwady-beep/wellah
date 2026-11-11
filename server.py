@@ -345,6 +345,7 @@ def init():
         db.execute("CREATE TABLE IF NOT EXISTS banner_settings (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, offers TEXT NOT NULL)")
         db.execute("INSERT OR IGNORE INTO banner_settings VALUES (1,0,'[]')")
         init_banner_images(db)
+        init_customer_live_sync(db)
 
         if 'featured' not in {r['name'] for r in db.execute('PRAGMA table_info(drivers)')}:
             db.execute('ALTER TABLE drivers ADD COLUMN featured INTEGER NOT NULL DEFAULT 0')
@@ -1133,9 +1134,39 @@ def admin_catalog_state(db, known_revision='', summary=False):
     return result
 
 
+def init_customer_live_sync(db):
+    db.execute('CREATE TABLE IF NOT EXISTS customer_live_state (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL DEFAULT 0, reload_version INTEGER NOT NULL DEFAULT 0)')
+    db.execute('INSERT OR IGNORE INTO customer_live_state(id) VALUES(1)')
+    db.execute('CREATE TABLE IF NOT EXISTS customer_product_changes (product_id INTEGER PRIMARY KEY, version INTEGER NOT NULL)')
+    db.execute('CREATE INDEX IF NOT EXISTS customer_product_changes_version ON customer_product_changes(version)')
+    for action in ('INSERT','UPDATE','DELETE'):
+        ref='OLD' if action=='DELETE' else 'NEW'
+        db.execute(f"CREATE TRIGGER IF NOT EXISTS customer_live_products_{action.lower()} AFTER {action} ON products BEGIN UPDATE customer_live_state SET version=version+1 WHERE id=1; INSERT INTO customer_product_changes(product_id,version) VALUES({ref}.id,(SELECT version FROM customer_live_state WHERE id=1)) ON CONFLICT(product_id) DO UPDATE SET version=excluded.version; END")
+        for table in ('categories','merchants','settings','services','area_fees','banner_settings'):
+            extra='' if table=='banner_settings' else ',reload_version=version+1'
+            db.execute(f"CREATE TRIGGER IF NOT EXISTS customer_live_{table}_{action.lower()} AFTER {action} ON {table} BEGIN UPDATE customer_live_state SET version=version+1{extra} WHERE id=1; END")
+
+
+def customer_live_delta(db, since):
+    sync=db.execute('SELECT version,reload_version FROM customer_live_state WHERE id=1').fetchone()
+    result={'customer_live_revision':sync['version'],'ui_revision':APP_UI_REVISION,'changed':since!=sync['version']}
+    if not result['changed']:return result
+    changes=rows(db,'SELECT product_id FROM customer_product_changes WHERE version>? ORDER BY version LIMIT 201',(since,))
+    result['reload_state']=since<0 or since>sync['version'] or since<sync['reload_version'] or len(changes)>200
+    if result['reload_state']:return result
+    ids=[r['product_id'] for r in changes]
+    result.update(changed_product_ids=ids,products=[],draft_catalog=[],banner_offers=published_banner_offers(db),
+                  customer_catalog_revision=db.execute('SELECT revision FROM admin_catalog_revision WHERE id=1').fetchone()['revision'])
+    if ids:
+        placeholders=','.join('?' for _ in ids)
+        result['products']=rows(db,f"SELECT p.* FROM products p JOIN merchants m ON m.id=p.merchant_id JOIN categories c ON c.name=p.category WHERE p.deleted=0 AND p.active=1 AND p.stock>0 AND m.active=1 AND c.active=1 AND p.id IN ({placeholders}) ORDER BY p.id DESC",ids)
+        result['draft_catalog']=preview_catalog(db,ids)
+    return result
+
+
 def customer_catalog_state(db, known_revision=''):
     revision=db.execute('SELECT revision FROM admin_catalog_revision WHERE id=1').fetchone()['revision']
-    result={'customer_catalog_revision':revision,'customer_catalog_unchanged':revision==known_revision}
+    result={'customer_catalog_revision':revision,'customer_catalog_unchanged':revision==known_revision,'customer_live_revision':db.execute('SELECT version FROM customer_live_state WHERE id=1').fetchone()['version']}
     if revision==known_revision:return result
     products=rows(db,"SELECT p.* FROM products p JOIN merchants m ON m.id=p.merchant_id JOIN categories c ON c.name=p.category WHERE p.deleted=0 AND p.active=1 AND p.stock>0 AND m.active=1 AND c.active=1 ORDER BY p.id DESC")
     draft=preview_catalog(db)
@@ -1276,8 +1307,14 @@ def publish_banner_offers(handler, db, data):
     return handler.respond(saved)
 
 
-def preview_catalog(db):
-    return rows(db,"SELECT p.id,p.name,p.category,p.price,p.price_pending,p.price_basis_weight_kg,p.stock,p.active,p.merchant_id,p.catalog_preview,p.requires_prescription,CASE WHEN p.image<>'' THEN p.image ELSE '/product-illustration/' || p.id || '.svg' END AS image FROM products p JOIN categories c ON c.name=p.category WHERE p.deleted=0 AND p.catalog_preview=1 AND c.active=1 ORDER BY CASE WHEN p.price_pending=0 AND p.price>0 THEN 0 ELSE 1 END,CASE WHEN p.image<>'' AND (p.name LIKE '%لانشون%فراخ%بالوزن' OR p.name LIKE '%لانشون%دجاج%بالوزن') THEN 0 WHEN p.image<>'' AND (p.name LIKE '%لانشون%بالوزن' OR p.name LIKE '%سلامي%بالوزن') THEN 1 WHEN p.name IN ('ثوم بلدي طازج','ثوم صيني طازج') THEN 2 ELSE 3 END,(p.image LIKE '/product-photo-%') DESC,c.sort_order,p.category,p.id")
+def preview_catalog(db, product_ids=None):
+    query="SELECT p.id,p.name,p.category,p.price,p.price_pending,p.price_basis_weight_kg,p.stock,p.active,p.merchant_id,p.catalog_preview,p.requires_prescription,CASE WHEN p.image<>'' THEN p.image ELSE '/product-illustration/' || p.id || '.svg' END AS image FROM products p JOIN categories c ON c.name=p.category WHERE p.deleted=0 AND p.catalog_preview=1 AND c.active=1 ORDER BY CASE WHEN p.price_pending=0 AND p.price>0 THEN 0 ELSE 1 END,CASE WHEN p.image<>'' AND (p.name LIKE '%لانشون%فراخ%بالوزن' OR p.name LIKE '%لانشون%دجاج%بالوزن') THEN 0 WHEN p.image<>'' AND (p.name LIKE '%لانشون%بالوزن' OR p.name LIKE '%سلامي%بالوزن') THEN 1 WHEN p.name IN ('ثوم بلدي طازج','ثوم صيني طازج') THEN 2 ELSE 3 END,(p.image LIKE '/product-photo-%') DESC,c.sort_order,p.category,p.id"
+    params=()
+    if product_ids is not None:
+        if not product_ids:return []
+        query=query.replace(' ORDER BY ', ' AND p.id IN ('+','.join('?' for _ in product_ids)+') ORDER BY ',1)
+        params=product_ids
+    return rows(db,query,params)
 
 
 def rows(db, sql, args=()):
@@ -1599,6 +1636,14 @@ class Handler(BaseHTTPRequestHandler):
             with connect() as db:
                 saved=db.execute("SELECT value FROM settings WHERE key='google_maps_browser_key'").fetchone()
             return self.respond({'google_maps_key': saved['value'] if saved else os.environ.get('WALLAHA_GOOGLE_MAPS_API_KEY','')})
+        if path == '/api/customer-sync':
+            raw=parse_qs(urlparse(self.path).query).get('since',['-1'])[0]
+            try:since=int(raw)
+            except (ValueError,TypeError):since=-1
+            if not -1<=since<=9007199254740991:since=-1
+            with connect() as db:
+                db.execute('BEGIN')
+                return self.respond(customer_live_delta(db,since))
         if path == '/api/catalog':
             with connect() as db:
                 params=parse_qs(urlparse(self.path).query)

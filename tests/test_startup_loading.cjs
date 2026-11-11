@@ -19,7 +19,7 @@ function scenario(cache, authenticated=false){
     location:{pathname:'/customer'},tab:'customer',previewMode:false,state:null,cachedCatalogActive:false,cachedReadOnly:false,offline:false,connectionMessage:'',
     $:()=>app,esc:String,readCustomerCatalogCache:()=>cache,saveCustomerCatalogCache(){},customerPreviewState:c=>c,
     fetchJsonWithTimeout:()=>response,fetchCustomerSnapshot:()=>response,clearStartupRetry(){},scheduleStartupRetry(){},acceptSharedRideDestination(){},
-    render(){panel.parentNode=null;views.push(ctx.connectionStatusHTML(ctx.connectionMessage));}
+    restoreCustomerUiResume(){},renderLiveCustomer(){ctx.render()},render(){panel.parentNode=null;views.push(ctx.connectionStatusHTML(ctx.connectionMessage));}
   });
   function run(start,end){vm.runInContext(html.slice(html.indexOf(start),html.indexOf(end,html.indexOf(start))),ctx);}
   run('function mergeCustomerCatalog(', 'async function fetchCustomerSnapshot');
