@@ -193,7 +193,7 @@ function bannerProductFields(o,i){
   const selected=products.find(p=>p.id===Number(o.product_id));
   return `<label>المتجر التابع له العرض<select onchange="setOfferMerchant(${i},this.value)"><option value="0">عرض تعريفي بدون متجر</option>${merchants.map(m=>`<option value="${m.id}" ${Number(o.merchant_id)===m.id?'selected':''}>${esc(m.name)} · ${esc(m.category)}</option>`).join('')}</select></label>
     ${o.merchant_id?`<label>المنتج أو الباقة<select onchange="setOfferProduct(${i},this.value)"><option value="0">تصفح المتجر فقط</option>${products.map(p=>`<option value="${p.id}" ${Number(o.product_id)===p.id?'selected':''}>${esc(p.name)}${p.active&&p.stock>0&&!p.price_pending?'':' — غير متاح حاليًا'}</option>`).join('')}</select></label>`:''}
-    ${selected?`<p class="muted">السعر من بيانات المنتج: ${money(productPrice(selected))}${soldByWeight(selected)?' / كيلو':''}. زر السلة يضيف ${soldByWeight(selected)?'كيلو واحد':'وحدة واحدة'}، ويمكن تعديل الكمية في السلة.</p>`:'<p class="muted">اختر منتجًا لتفعيل الإضافة للسلة. يمكن تسجيل الباقة كمنتج بسعرها الكامل في المتجر ثم اختيارها هنا.</p>'}`;
+    ${selected?`<p class="muted">مرتبط بـ ${esc(state.merchants.find(m=>m.id===Number(o.merchant_id))?.name||'المتجر')} · المتاح: ${esc(selected.stock)} · السعر: ${money(productPrice(selected))}${soldByWeight(selected)?' / كيلو':''}. زر السلة يضيف ${soldByWeight(selected)?'كيلو واحد':'وحدة واحدة'}، ويمكن تعديل الكمية في السلة.</p>`:'<p class="muted">اختر منتجًا لتفعيل الإضافة للسلة. يمكن تسجيل الباقة كمنتج بسعرها الكامل في المتجر ثم اختيارها هنا.</p>'}`;
 }
 function setOfferMerchant(i,value){
   editBannerOffer(i,'merchant_id',Number(value));

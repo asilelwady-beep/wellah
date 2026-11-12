@@ -588,6 +588,7 @@ def init():
             print('Owner stock baseline applied: ' + str(changed) + ' products set to 100')
 
         link_approved_banner_stores(db)
+        create_approved_offer_packs(db)
 
         if not db.execute("SELECT 1 FROM products").fetchone():
             db.executemany("INSERT INTO products(name,category,price,stock) VALUES (?,?,?,?)", [("منتج تجريبي: أرز 1 كجم", "سوبر ماركت", 40, 20), ("منتج تجريبي: خضار مشكل", "خضار", 35, 15), ("منتج تجريبي: وجبة", "مطاعم", 85, 10)])
@@ -1233,6 +1234,27 @@ def link_approved_banner_stores(db):
             offer['merchant_id']=merchant['id'];changed=True
     if changed:
         db.execute('UPDATE banner_settings SET revision=revision+1,offers=? WHERE id=1',(json.dumps(saved['offers'],ensure_ascii=False),))
+    db.execute('INSERT INTO catalog_imports VALUES (?,?)',(key,now()))
+
+
+def create_approved_offer_packs(db):
+    # Owner explicitly approved ONE purchasable pack for each of these three offers.
+    key='owner-banner-packs-20261112-v1'
+    if db.execute('SELECT 1 FROM catalog_imports WHERE key=?',(key,)).fetchone():return
+    approved={
+        '٢ كيلو سكر وباكو شاي بـ٩٩ جنيه':('dac9f8a04af9fdd2bd30649c593ef219a92b2fdc43674ec4a166ce459b765cc5','سوبر ماركت',99,'باقة عرض: ٢ كيلو سكر + باكو شاي ٢٥٠ جم'),
+        'عرض الصيدلية بـ٥٩ جنيه':('6211df7315673e2c58f527dee73f6862f4505a61cec73ba6aee9cfce74bb9502','مستحضرات تجميل',59,'باقة عرض العناية: صابونة عناية + مناديل مبللة'),
+        '٣ عبوات مناديل بـ٢٥ جنيه':('bb7a6b2a96c6eff1bd4a521add9b1f8b5d488f01ab6c5a8cfb3761f622038a6c','سوبر ماركت',25,'باقة عرض: ٣ عبوات مناديل جيب'),
+    }
+    saved=banner_settings(db);changed=False
+    for offer in saved['offers']:
+        spec=approved.get(offer['title'])
+        if not spec or offer.get('product_id') or offer.get('image')!='/banner-image/'+spec[0]+'.jpg':continue
+        merchant=db.execute("SELECT id FROM merchants WHERE id=? AND name='مخزن ولعه' AND category=? AND active=1 AND deleted=0",(offer.get('merchant_id',0),spec[1])).fetchone()
+        if not merchant:continue
+        pid=db.execute('INSERT INTO products(name,category,price,stock,active,price_pending,catalog_preview,merchant_id,image) VALUES(?,?,?,1,1,0,1,?,?)',(spec[3],spec[1],spec[2],merchant['id'],offer['image'])).lastrowid
+        offer['product_id']=pid;changed=True
+    if changed:db.execute('UPDATE banner_settings SET revision=revision+1,offers=? WHERE id=1',(json.dumps(saved['offers'],ensure_ascii=False),))
     db.execute('INSERT INTO catalog_imports VALUES (?,?)',(key,now()))
 
 
