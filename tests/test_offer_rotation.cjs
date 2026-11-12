@@ -4,7 +4,7 @@ const from=html.indexOf('function bannerPurchaseProduct(');
 const to=html.indexOf('function customerHome()',from);
 assert.notEqual(from,-1);
 let now=0,timer=null;
-const ctx=vm.createContext({HTMLElement:class{addEventListener(){} removeEventListener(){}},customElements:{define(name,cls){ctx.Carousel=cls}},
+const ctx=vm.createContext({HTMLElement:class{setAttribute(){} addEventListener(){} removeEventListener(){}},customElements:{define(name,cls){ctx.Carousel=cls}},
   Date:{now:()=>now},document:{hidden:false,addEventListener(){},removeEventListener(){}},
   setTimeout(fn,ms){timer={fn,ms};return 1},clearTimeout(){timer=null},esc:s=>String(s).replaceAll('<','&lt;')});
 vm.runInContext(html.slice(from,to),ctx);

@@ -1,7 +1,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const html=fs.readFileSync('index.html','utf8');
 let timer;
-const ctx=vm.createContext({HTMLElement:class{},customElements:{define(n,c){ctx.Banner=c}},
+const ctx=vm.createContext({HTMLElement:class{setAttribute(){} },customElements:{define(n,c){ctx.Banner=c}},
   Date:{now:()=>100},document:{hidden:false,addEventListener(){},removeEventListener(){}},
   setTimeout(fn){timer=fn;return 1},clearTimeout(){timer=null}});
 vm.runInContext(html.slice(html.indexOf('const OFFER_SLIDE_MS'),html.indexOf('function customerHome()')),ctx);
