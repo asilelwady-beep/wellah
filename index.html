@@ -1181,18 +1181,18 @@ body.driver-screen main{max-width:960px;padding-bottom:40px}.driver-ui-icon{widt
 .driver-guidance .guidance-pin{color:white;background:#17679d;border:2px solid white;border-radius:50%;text-align:center;font-size:18px}
 .driver-guidance footer{flex-wrap:wrap;padding-bottom:max(12px,env(safe-area-inset-bottom))}
 .customer-app walla-offers{display:block;color:white;margin:0 0 14px;padding:4px 0 0}
-.offer-slides{display:grid;touch-action:pan-y;user-select:none;cursor:grab;padding:14px 0 6px}
+.offer-slides{display:grid;touch-action:pan-y;user-select:none;cursor:grab;padding:10px 0 5px;height:105px;align-items:center}
 .offer-slides:active{cursor:grabbing}
 .offer-slides:focus-visible{outline:2px solid #fff;outline-offset:-3px}
 .offer-slide{grid-area:1 / 1;overflow-wrap:anywhere;min-width:0;pointer-events:none}
 .offer-slide[hidden]{display:block;visibility:visible}
-.offer-card{position:relative;width:42%;margin:0 auto;transform-origin:50% 50%;transform:translateX(calc(var(--offer-offset,0) * 112%)) scale(1.06);transition:transform .55s ease,filter .55s ease;filter:brightness(1);pointer-events:auto}
-.offer-float{animation:offerFloat 2.4s ease-in-out infinite;transform-origin:50% 30%;will-change:transform}
+.offer-card{position:relative;width:48%;max-width:260px;margin:0 auto;transform-origin:50% 50%;transform:translateX(calc(var(--offer-offset,0) * 112%)) scale(1.06);transition:transform .55s ease,filter .55s ease;filter:brightness(1);pointer-events:auto}
+.offer-float{animation:offerFloat 1.8s ease-in-out infinite;transform-origin:50% 0%;will-change:transform}
 .offer-slide[hidden] .offer-card{filter:brightness(.42);transform:translateX(calc(var(--offer-offset,0) * 112%)) scale(.86);pointer-events:none}
 .offer-slide:nth-child(2n) .offer-float{animation-delay:-.8s}
 .offer-slide:nth-child(3n) .offer-float{animation-delay:-1.6s}
 .offer-slide[hidden] .offer-backdrop{visibility:hidden}
-.offer-artwork{width:100%;height:auto;aspect-ratio:12 / 5;max-height:145px;object-fit:contain;display:block;border-radius:12px;-webkit-user-drag:none;filter:drop-shadow(0 12px 12px #0003)}
+.offer-artwork{width:100%;height:88px;max-height:88px;object-fit:contain;display:block;border-radius:12px;-webkit-user-drag:none;filter:drop-shadow(0 12px 12px #0003)}
 .offer-artwork[hidden]{display:none}
 .offer-details{position:relative;text-align:center;padding:0 14px 6px;min-height:0}
 .offer-info[hidden]{display:none}
@@ -1206,7 +1206,7 @@ body.driver-screen main{max-width:960px;padding-bottom:40px}.driver-ui-icon{widt
 .customer-app .offer-purchase-actions .offer-store-button{background:transparent;color:white;border-color:#ffffff70}
 .customer-app .offer-purchase-actions button:disabled{opacity:.65}
 .offer-caption-art{min-height:70px;display:grid;place-content:center;text-align:center;color:#fff;background:#ffffff12;border-radius:16px;padding:12px}
-@keyframes offerFloat{0%,100%{transform:translate3d(-2px,2px,0) rotate(-3deg)}50%{transform:translate3d(2px,-6px,0) rotate(3deg)}}
+@keyframes offerFloat{0%,100%{transform:translate3d(-3px,2px,0) rotate(-4deg)}50%{transform:translate3d(3px,-7px,0) rotate(4deg)}}
 @media(min-width:700px){.offer-card{width:30%}}
 @media(prefers-reduced-motion:reduce){.offer-card{transition:none}.offer-float{animation:none}}
 .banner-image-preview img{display:block;width:min(100%,520px);height:auto;border-radius:10px;margin:0 0 8px}
@@ -1220,9 +1220,19 @@ body.driver-screen main{max-width:960px;padding-bottom:40px}.driver-ui-icon{widt
 .customer-app .home-offer-hero::before,.customer-app .home-offer-hero::after{display:none}
 .customer-app .home-offer-hero walla-offers{position:static;z-index:auto;margin:0;padding:0}
 .home-offer-hero .offer-backdrop{position:absolute;inset:0;z-index:-1;width:100%;height:100%;object-fit:cover;filter:blur(18px) brightness(.48);transform:scale(1.14);pointer-events:none}
-.customer-app .home-offer-hero .offer-artwork{width:100%;max-height:145px;border-radius:12px}
-.customer-app .customer-home .home-offer-hero .customer-topline{margin:0!important;padding:8px 14px!important}
-.customer-app .home-offer-hero .home-search-actions{padding:4px 12px 12px}
+.customer-app .home-offer-hero .offer-artwork{width:100%;height:88px;max-height:88px;border-radius:12px}
+.customer-app .customer-home .home-offer-hero .customer-topline{margin:0!important;padding:4px 12px!important;min-height:42px!important}
+.customer-app .home-offer-hero .customer-place>span{display:none}
+.customer-app .home-offer-hero .offer-details{padding:0 12px 3px}
+.customer-app .home-offer-hero .offer-info h2{font-size:16px;line-height:1.3;margin:4px 0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.customer-app .home-offer-hero .offer-info>p{display:none}
+.customer-app .home-offer-hero .offer-seller{font-size:12px;line-height:20px;font-weight:700;background:#19120b66;border:1px solid #ffffff35;border-radius:20px;padding:1px 10px;color:#fff}
+.customer-app .home-offer-hero .offer-seller small{font-weight:400;color:#ffe2af}
+.customer-app .home-offer-hero .offer-purchase-actions{margin-top:4px;gap:6px}
+.customer-app .home-offer-hero .offer-purchase-actions button{min-height:34px;padding:6px 12px;margin:0;font-size:12px;line-height:1.3}
+.customer-app .home-offer-hero .offer-price{font-size:18px;line-height:22px;margin:2px 0}
+.customer-app .home-offer-hero .offer-controls button{min-height:28px;padding:2px 9px;margin:0;line-height:1.3}
+.customer-app .home-offer-hero .home-search-actions{padding:4px 12px 8px}
 .home-offer-hero .offer-controls{margin:0;padding:4px 12px;justify-content:center}
 .customer-app .home-offer-hero .offer-controls button{background:rgba(20,16,15,.65);border-color:rgba(255,255,255,.48)}
 .home-offer-hero .offer-slide strong,.home-offer-hero .offer-slide p{padding-inline:14px}
@@ -1728,9 +1738,9 @@ function customerOffersMarkup(){
   }).join('');
   const details=offers.map((item,index)=>{
     const purchase=item.purchase,p=bannerPurchaseProduct(index);
-    const merchant=purchase?`<span class="offer-seller">${esc(purchase.merchant_category)} · ${esc(purchase.merchant_name)}</span>`:'<span class="offer-seller">عرض تجريبي</span>';
+    const merchant=purchase?`<span class="offer-seller">من ${esc(purchase.merchant_name)} <small>· ${esc(purchase.merchant_category)}</small></span>`:'<span class="offer-seller">المتجر غير محدد</span>';
     const price=p?`<span class="offer-price">${money(productPrice(p))}${soldByWeight(p)?' <small>/ كيلو</small>':''}</span>`:'';
-    const buy=p?`<button type="button" onclick="addOfferProduct(${index})">＋ إضافة إلى السلة</button>`:`<button type="button" disabled>${purchase?.product_id?'غير متاح حاليًا':purchase?'تصفح منتجات المتجر':'عرض تجريبي — غير متاح للطلب'}</button>`;
+    const buy=p?`<button type="button" onclick="addOfferProduct(${index})">＋ إضافة إلى السلة</button>`:purchase?.store_available&&!purchase.product_id?'':`<button type="button" disabled>${purchase?.product_id?'غير متاح حاليًا':'عرض تجريبي — غير متاح للطلب'}</button>`;
     const store=purchase?.store_available?`<button type="button" class="offer-store-button" onclick="openOfferMerchant(${index})">تصفح ${esc(purchase.merchant_name)}</button>`:'';
     return `<section class="offer-info" data-offer-info ${index?'hidden':''}>${merchant}<h2>${esc(item.title)}</h2>${item.detail?`<p>${esc(item.detail)}</p>`:''}${price}<div class="offer-purchase-actions">${buy}${store}</div></section>`;
   }).join('');

@@ -587,6 +587,8 @@ def init():
             db.execute('INSERT INTO catalog_imports VALUES (?,?)', (stock_key,applied_at))
             print('Owner stock baseline applied: ' + str(changed) + ' products set to 100')
 
+        link_approved_banner_stores(db)
+
         if not db.execute("SELECT 1 FROM products").fetchone():
             db.executemany("INSERT INTO products(name,category,price,stock) VALUES (?,?,?,?)", [("منتج تجريبي: أرز 1 كجم", "سوبر ماركت", 40, 20), ("منتج تجريبي: خضار مشكل", "خضار", 35, 15), ("منتج تجريبي: وجبة", "مطاعم", 85, 10)])
         if not db.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
@@ -1207,6 +1209,31 @@ def init_banner_images(db):
     if changed:
         db.execute('UPDATE banner_settings SET revision=revision+1,offers=? WHERE id=1',
                    (json.dumps(saved['offers'], ensure_ascii=False),))
+
+
+def link_approved_banner_stores(db):
+    # Owner selected مخزن ولعه for these existing offers on 2026-11-11.
+    # Match the exact title + artwork, preserve subsequent dashboard edits.
+    key='owner-banner-stores-20261112-v1'
+    if db.execute('SELECT 1 FROM catalog_imports WHERE key=?',(key,)).fetchone():return
+    approved={
+        ('٢ كيلو سكر وباكو شاي بـ٩٩ جنيه','dac9f8a04af9fdd2bd30649c593ef219a92b2fdc43674ec4a166ce459b765cc5'):'سوبر ماركت',
+        ('عرض الصيدلية بـ٥٩ جنيه','6211df7315673e2c58f527dee73f6862f4505a61cec73ba6aee9cfce74bb9502'):'مستحضرات تجميل',
+        ('٣ عبوات مناديل بـ٢٥ جنيه','bb7a6b2a96c6eff1bd4a521add9b1f8b5d488f01ab6c5a8cfb3761f622038a6c'):'سوبر ماركت',
+        ('3كيلو بي 10','ca174aca84391b722577ab71c2d57c9149d5d4b7ca1b35e29675975b26ca14fb'):'مخبوزات وعيش',
+    }
+    saved=banner_settings(db);changed=False
+    for offer in saved['offers']:
+        if offer.get('merchant_id'):continue
+        digest=str(offer.get('image','')).removeprefix('/banner-image/').removesuffix('.jpg')
+        category=approved.get((offer['title'],digest))
+        if not category:continue
+        merchant=db.execute("SELECT id FROM merchants WHERE name='مخزن ولعه' AND category=? AND active=1 AND deleted=0 ORDER BY id LIMIT 1",(category,)).fetchone()
+        if merchant:
+            offer['merchant_id']=merchant['id'];changed=True
+    if changed:
+        db.execute('UPDATE banner_settings SET revision=revision+1,offers=? WHERE id=1',(json.dumps(saved['offers'],ensure_ascii=False),))
+    db.execute('INSERT INTO catalog_imports VALUES (?,?)',(key,now()))
 
 
 def published_banner_offers(db):
