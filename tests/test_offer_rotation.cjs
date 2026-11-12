@@ -40,6 +40,11 @@ assert.match(ctx.customerOffersMarkup(),/<img class="offer-backdrop"[^>]*aria-hi
 ctx.state={banner_offers:[{title:'عرض نصي',detail:'اليوم'}]};
 assert.ok(!ctx.customerOffersMarkup().includes('offer-backdrop'));
 console.log('Passed empty, single, four-offer rotation, wrap and refresh without reset.');
+ctx.state={banner_offers:[{title:'عرض المتجر',detail:'تفاصيل',purchase:{merchant_id:4,merchant_name:'مخزن ولعه',merchant_category:'سوبر ماركت',store_available:true,available:false}}]};
+const linked=ctx.customerOffersMarkup();
+assert.match(linked,/من مخزن ولعه/);
+assert.match(linked,/openOfferMerchant\(0\)/);
+assert.ok(!linked.includes('disabled'),'A store-only offer has one working store action, not a dead purchase button');
 const features=fs.readFileSync('features.js','utf8');
 const savedState={banner_editor:{revision:0,offers:[]},user:{role:'admin'}};
 let sent;

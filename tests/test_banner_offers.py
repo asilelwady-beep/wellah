@@ -100,3 +100,28 @@ class BannerOfferTests(unittest.TestCase):
         self.assertEqual(self.publish(self.app.owner,1,[{**offer,'product_id':999999999}])[0],400)
         self.assertEqual(self.publish(self.app.owner,1,[{**offer,'merchant_id':0}])[0],400)
         self.assertEqual(self.publish(self.app.owner,1,[{**offer,'product_id':True}])[0],400)
+
+    def test_approved_existing_offers_get_real_stores_once(self):
+        import server,json
+        with server.connect() as db:
+            db.execute("DELETE FROM catalog_imports WHERE key='owner-banner-stores-20261112-v1'")
+            mids={}
+            for category in ('سوبر ماركت','مستحضرات تجميل','مخبوزات وعيش'):
+                mids[category]=db.execute("INSERT INTO merchants(name,category,area,address,lat,lon) VALUES('مخزن ولعه',?,'A','Street',30,31)",(category,)).lastrowid
+            offers=[{'title':title,'image':image,'detail':'عرض تجريبي','visible':True} for title,image in [
+                ('٢ كيلو سكر وباكو شاي بـ٩٩ جنيه','/banner-image/dac9f8a04af9fdd2bd30649c593ef219a92b2fdc43674ec4a166ce459b765cc5.jpg'),
+                ('عرض الصيدلية بـ٥٩ جنيه','/banner-image/6211df7315673e2c58f527dee73f6862f4505a61cec73ba6aee9cfce74bb9502.jpg')]]
+            offers.append({'title':'عرض آخر','detail':'','visible':True})
+            db.execute('UPDATE banner_settings SET offers=? WHERE id=1',(json.dumps(offers),))
+            server.link_approved_banner_stores(db)
+            saved=server.banner_settings(db)
+            self.assertEqual(saved['offers'][0]['merchant_id'],mids['سوبر ماركت'])
+            self.assertEqual(saved['offers'][1]['merchant_id'],mids['مستحضرات تجميل'])
+            self.assertNotIn('merchant_id',saved['offers'][2])
+            self.assertNotIn('product_id',saved['offers'][0])
+            shown=server.published_banner_offers(db)[0]['purchase']
+            self.assertEqual(shown['merchant_name'],'مخزن ولعه');self.assertTrue(shown['store_available']);self.assertFalse(shown['available'])
+            # A later dashboard edit must never be overwritten on restart.
+            db.execute('UPDATE banner_settings SET offers=? WHERE id=1',(json.dumps(offers),))
+            server.link_approved_banner_stores(db)
+            self.assertEqual(server.banner_settings(db)['offers'],offers)
