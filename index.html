@@ -1187,8 +1187,8 @@ body.driver-screen main{max-width:960px;padding-bottom:40px}.driver-ui-icon{widt
 .offer-slide{grid-area:1 / 1;overflow-wrap:anywhere;min-width:0;pointer-events:none}
 .offer-slide[hidden]{display:block;visibility:visible}
 .offer-card{position:relative;width:84%;max-width:420px;margin:0 auto;transform-origin:50% 50%;transform:translateX(calc(var(--offer-offset,0) * 112%)) scale(1.06);transition:transform .55s ease,filter .55s ease;filter:brightness(1);pointer-events:auto}
-.offer-card::before{content:"";position:absolute;left:20%;bottom:-6px;width:60%;height:13px;border-radius:50%;background:radial-gradient(ellipse,#120b085c 0%,#120b0800 72%);pointer-events:none;animation:offerFloatShadow 3.6s ease-in-out infinite;animation-delay:var(--offer-float-delay,0s)}
-.offer-float{position:relative;animation:offerFloat 3.6s ease-in-out infinite;animation-delay:var(--offer-float-delay,0s);transform-origin:50% 50%;will-change:transform}
+.offer-card::before{content:"";position:absolute;left:20%;bottom:-6px;width:60%;height:16px;border-radius:50%;background:radial-gradient(ellipse,#120b08b3 0%,#120b0800 72%);pointer-events:none;animation:offerFloatShadow 2.8s ease-in-out infinite;animation-delay:var(--offer-float-delay,0s)}
+.offer-float{position:relative;animation:offerFloat 2.8s ease-in-out infinite;animation-delay:var(--offer-float-delay,0s);transform-origin:50% 50%;will-change:transform}
 .offer-slide[hidden] .offer-card{filter:brightness(.42);transform:translateX(calc(var(--offer-offset,0) * 112%)) scale(.86);pointer-events:none}
 .offer-slide:nth-child(2n){--offer-float-delay:-1.2s}
 .offer-slide:nth-child(3n){--offer-float-delay:-2.4s}
@@ -1207,10 +1207,11 @@ body.driver-screen main{max-width:960px;padding-bottom:40px}.driver-ui-icon{widt
 .customer-app .offer-purchase-actions .offer-store-button{background:transparent;color:white;border-color:#ffffff70}
 .customer-app .offer-purchase-actions button:disabled{opacity:.65}
 .offer-caption-art{min-height:70px;display:grid;place-content:center;text-align:center;color:#fff;background:#ffffff12;border-radius:16px;padding:12px}
-@keyframes offerFloat{0%,100%{transform:translate3d(-3px,4px,0) rotate(-2deg) scale(1)}50%{transform:translate3d(3px,-10px,0) rotate(2deg) scale(1.02)}}
-@keyframes offerFloatShadow{0%,100%{transform:scaleX(1);opacity:.65}50%{transform:scaleX(.72);opacity:.28}}
+@keyframes offerFloat{0%,100%{transform:translate3d(-4px,6px,0) rotate(-3deg)}50%{transform:translate3d(4px,-18px,0) rotate(3deg)}}
+@keyframes offerFloatShadow{0%,100%{transform:scaleX(1);opacity:.85}50%{transform:scaleX(.55);opacity:.25}}
 @media(min-width:700px){.offer-card{width:76%}}
-@media(prefers-reduced-motion:reduce){.offer-card{transition:none}.offer-float,.offer-card::before{animation:none}}
+@media(prefers-reduced-motion:reduce){.offer-card{transition:none}walla-offers:not([data-offer-motion="on"]) .offer-float,walla-offers:not([data-offer-motion="on"]) .offer-card::before{animation:none}}
+walla-offers[data-offer-motion="off"] .offer-float,walla-offers[data-offer-motion="off"] .offer-card::before{animation:none}
 .banner-image-preview img{display:block;width:min(100%,520px);height:auto;border-radius:10px;margin:0 0 8px}
 .offer-slide strong{display:block;font-size:clamp(19px,4vw,26px);line-height:1.4}
 .offer-slide p{margin:5px 0 0;color:#fff4e8;font-size:14px;line-height:1.6}
@@ -1240,9 +1241,10 @@ body.driver-screen main{max-width:960px;padding-bottom:40px}.driver-ui-icon{widt
 .customer-app .home-offer-hero .home-search-actions{padding:3px 12px 5px}
 .home-offer-hero .offer-controls{position:absolute;inset-inline:0;top:38px;height:136px;margin:0;padding:0;pointer-events:none}
 .home-offer-hero .offer-controls button{pointer-events:auto;position:absolute}
-.home-offer-hero .offer-controls button:first-child{inset-inline-start:5px;top:40%;}
+.home-offer-hero .offer-controls [data-offer-prev]{inset-inline-start:5px;top:40%;}
 .home-offer-hero .offer-controls [data-offer-next]{inset-inline-end:5px;top:40%}
 .home-offer-hero .offer-controls [data-offer-pause]{inset-inline-end:6px;bottom:0;font-size:10px;min-width:32px}
+.home-offer-hero .offer-controls [data-offer-motion-toggle]{left:50%;bottom:-1px;transform:translateX(-50%);font-size:10px;min-height:22px;padding:0 8px}
 .home-offer-hero .offer-controls [data-offer-count]{position:absolute;inset-inline-start:8px;bottom:4px;font-size:10px}
 .customer-app .home-offer-hero .offer-controls button{background:rgba(20,16,15,.65);border-color:rgba(255,255,255,.48)}
 .home-offer-hero .offer-slide strong,.home-offer-hero .offer-slide p{padding-inline:14px}
@@ -1754,13 +1756,19 @@ function customerOffersMarkup(){
     const store=purchase?.store_available?`<button type="button" class="offer-store-button" onclick="openOfferMerchant(${index})" aria-label="تصفح ${esc(purchase.merchant_name)}">${p?'المتجر':'تصفح المتجر'}</button>`:'';
     return `<section class="offer-info" data-offer-info ${index?'hidden':''}>${merchant}<h2>${esc(item.title)}</h2>${item.detail?`<p>${esc(item.detail)}</p>`:''}<div class="offer-order-row">${price}<div class="offer-purchase-actions">${buy}${store}</div></div></section>`;
   }).join('');
-  const controls=offers.length>1?`<div class="offer-controls"><button type="button" aria-label="العرض السابق" onclick="this.closest('walla-offers').nextSlide(-1)">›</button><span data-offer-count></span><button type="button" data-offer-next aria-label="العرض التالي" onclick="this.closest('walla-offers').nextSlide()">‹</button><button type="button" data-offer-pause onclick="this.closest('walla-offers').togglePause()">إيقاف</button></div>`:'';
+  const controls=`<div class="offer-controls">${offers.length>1?`<button type="button" data-offer-prev aria-label="العرض السابق" onclick="this.closest('walla-offers').nextSlide(-1)">›</button><span data-offer-count></span><button type="button" data-offer-next aria-label="العرض التالي" onclick="this.closest('walla-offers').nextSlide()">‹</button><button type="button" data-offer-pause onclick="this.closest('walla-offers').togglePause()">إيقاف</button>`:''}<button type="button" data-offer-motion-toggle aria-pressed="false" onclick="this.closest('walla-offers').toggleMotion()">تحريك الصورة</button></div>`;
   return `<walla-offers role="region" aria-label="العروض"><div class="offer-slides" tabindex="0" aria-label="اسحب يمين أو شمال لتغيير البانر">${slides}</div><div class="offer-details">${details}</div>${controls}</walla-offers>`;
+}
+function offerMotionEnabled(){
+  try{const saved=localStorage.getItem('wallaha_offer_motion');if(saved==='on'||saved==='off')return saved==='on'}catch{}
+  return typeof matchMedia!=='function'||!matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 class CustomerOfferBanner extends HTMLElement{
   connectedCallback(){
     this.slides=this.querySelectorAll('.offer-slide');
     this.track=this.querySelector('.offer-slides');
+    this.motionEnabled=offerMotionEnabled();
+    this.paintMotion();
     this.onPointerDown=e=>{
       if(e.isPrimary===false||e.button!==0)return;
       this.drag={id:e.pointerId,x:e.clientX,y:e.clientY};
@@ -1832,6 +1840,16 @@ class CustomerOfferBanner extends HTMLElement{
     offerPlayback.index=(offerPlayback.index+step+this.slides.length)%this.slides.length;
     offerPlayback.nextAt=Date.now()+OFFER_SLIDE_MS;
     this.paintSlide();
+  }
+  paintMotion(){
+    this.setAttribute('data-offer-motion',this.motionEnabled?'on':'off');
+    const button=this.querySelector('[data-offer-motion-toggle]');
+    if(button){button.textContent=this.motionEnabled?'تثبيت الصورة':'تحريك الصورة';button.setAttribute('aria-pressed',String(this.motionEnabled))}
+  }
+  toggleMotion(){
+    this.motionEnabled=!this.motionEnabled;
+    try{localStorage.setItem('wallaha_offer_motion',this.motionEnabled?'on':'off')}catch{}
+    this.paintMotion();
   }
   togglePause(){
     offerPlayback.paused=!offerPlayback.paused;
