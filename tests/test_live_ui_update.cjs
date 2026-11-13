@@ -11,7 +11,7 @@ function setup(){
   merchantId:4,shopAnywhere:false,catalogOrder:false,kind:'products',serviceKey:'products',productSearch:'',selectedCatalogProductId:1,cartBudgets:{},tab:'customer',token:'',cachedReadOnly:false,expectedAppRole:'customer',customerView:'home',categoryFilter:'الكل',homeQuery:'',cart:{},checkoutFiles:{},submitting:false,trackingOrderId:null,state:{orders:[]},
   fetchJsonWithTimeout:async()=>{requests++;if(reject)throw Error('offline');return {response:{ok:true},data:{revision:remote}}},
   fetchCustomerSnapshot:async()=>new Promise(r=>{resolvePage=()=>r({response:{ok:true},data:'<meta name="wallaha-ui-revision" content="'+remote+'">'})}),
-  setTimeout(fn,ms){timer={fn,ms};return 1},clearTimeout(){},showStartupLoading(){},
+  setTimeout(fn,ms){timer={fn,ms};return 1},clearTimeout(){},showStartupLoading(){throw Error('UI updates must preserve the current screen until navigation')},
  });
  vm.runInContext(code,ctx);
  return {ctx,navigations,get timer(){return timer},get requests(){return requests},set reject(v){reject=v},set remote(v){remote=v},finish:()=>resolvePage(),ready:()=>!!resolvePage};
