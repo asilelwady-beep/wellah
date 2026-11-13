@@ -11,7 +11,7 @@ function scenario(cache, authenticated=false){
   const views = [];
   const spinner = {}, button = {}, label = {};
   const app = {replaceChildren(node){node.parentNode=this;}};
-  const panel = {parentNode:app,querySelector(s){return {'.app-action-spinner':spinner,button,'[data-startup-message]':label}[s];}};
+  const panel = {parentNode:app,setAttribute(k,v){this[k]=v},querySelector(s){return {'.app-action-spinner':spinner,button,'[data-startup-message]':label}[s];}};
   let complete,fail;
   const response = new Promise((resolve,reject)=>{complete=resolve;fail=reject;});
   const ctx = vm.createContext({
@@ -35,11 +35,15 @@ function scenario(cache, authenticated=false){
     const pending=s.ctx.performRefresh();
     if(cache){
       assert.equal(s.panel.parentNode,null);
-      assert.match(s.views[0],/app-action-spinner/);
+      assert.equal(s.views[0],'','Cached content must refresh silently without a second loading screen');
     }else{
       assert.ok(s.panel.parentNode);
       assert.match(s.label.textContent,/المنتجات/);
       assert.equal(s.spinner.hidden,false);
+      const initial=s.panel;
+      s.ctx.showStartupLoading('جارٍ الاتصال…');
+      assert.equal(s.panel,initial,'Slow startup uses the same loading panel');
+      assert.equal(s.panel.parentNode,s.ctx.$());
     }
     s.complete({response:{ok:true},data:{products:[{id:2}]}});
     await pending;
@@ -78,5 +82,5 @@ function scenario(cache, authenticated=false){
   const update=failedCached.ctx.performRefresh();failedCached.fail(new Error('offline'));await update;
   assert.doesNotMatch(failedCached.views.at(-1),/catalog-updating|app-action-spinner/);
   assert.match(failedCached.views.at(-1),/إعادة المحاولة/);
-  console.log('Passed initial loading markup, slow catalog, cached browsing, error recovery, and account loading.');
+  console.log('Passed single startup panel, silent cached browsing, error recovery, and account loading.');
 })().catch(e=>{console.error(e);process.exitCode=1;});

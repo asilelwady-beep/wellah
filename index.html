@@ -1164,12 +1164,11 @@ body.driver-screen main{max-width:960px;padding-bottom:40px}.driver-ui-icon{widt
 #trip-conversation::backdrop{background:#21191180}
 #trip-conversation .order-chat{margin:12px 0 0}
 #trip-conversation .chat-messages{max-height:36dvh}
-.startup-loading{position:fixed;inset:0;z-index:9000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px;background:#fff8f1;text-align:center}
+.startup-loading{visibility:hidden;animation:startup-loading-reveal 0s .65s forwards!important;position:fixed;inset:0;z-index:9000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:24px;background:#fff8f1;text-align:center}
 .startup-loading [hidden]{display:none}
-.connection-status.catalog-updating{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:9000;width:min(86vw,380px);display:flex;flex-direction:column;align-items:center;gap:16px;padding:24px;background:#fffaf4;border:1px solid #edccb0;border-radius:20px;box-shadow:0 10px 40px #42201033;text-align:center;pointer-events:none}
-.catalog-updating .app-action-spinner{width:44px;height:44px;flex:none;border-width:3px;box-shadow:none}
-.catalog-updating .app-action-spinner:after{inset:3px;border-width:1px}
-@media(prefers-reduced-motion:reduce){.startup-loading .app-action-spinner,.catalog-updating .app-action-spinner,.startup-loading .app-action-spinner:after,.catalog-updating .app-action-spinner:after{animation:none}}
+.startup-loading[data-startup-failed="true"]{visibility:visible!important}
+@keyframes startup-loading-reveal{to{visibility:visible}}
+@media(prefers-reduced-motion:reduce){.startup-loading .app-action-spinner,.startup-loading .app-action-spinner:after{animation:none}}
 
 .driver-guidance{box-sizing:border-box;width:100%;max-width:none;height:100%;height:100dvh;max-height:none;padding:0;border:0;margin:0;background:#151e23;color:white}
 .driver-guidance[open]{display:flex;flex-direction:column}
@@ -1308,13 +1307,15 @@ function showStartupLoading(message='جارٍ تحميل المنتجات…', f
   startupLoadingPanel.querySelector('[data-startup-message]').textContent=message;
   startupLoadingPanel.querySelector('.app-action-spinner').hidden=false;
   startupLoadingPanel.querySelector('button').hidden=!failed;
+  startupLoadingPanel.setAttribute('data-startup-failed',String(failed));
   const app=$('app');
   if(startupLoadingPanel.parentNode!==app)app.replaceChildren(startupLoadingPanel);
 }
 function connectionStatusHTML(message){
   if(!message)return '';
   if(cachedCatalogActive&&message===cachedCatalogMessage){
-    return '<div class="connection-status catalog-updating" role="status"><span class="app-action-spinner" aria-hidden="true"></span>'+esc(message)+'</div>';
+    // The cached screen is already usable; refresh it without a second loader.
+    return '';
   }
   return '<div class="connection-status" role="status">'+esc(message)+' <button type="button" onclick="refresh(true)">إعادة المحاولة</button></div>';
 }
@@ -2382,7 +2383,6 @@ function checkAppUpdate(knownRevision){
       if(!page.ok||!markup.includes('name="wallaha-ui-revision" content="'+data.revision+'"'))throw Error('old page');
       if(!safeToApplyAppUpdate()||!saveCustomerUiResume())return;
       try{sessionStorage.setItem('wallaha_ui_attempt',JSON.stringify({revision:data.revision,at:Date.now()}))}catch{}
-      showStartupLoading('جارٍ فتح أحدث نسخة من التطبيق…');
       location.replace(target.href);
     }catch{appUpdateFailures=Math.min(appUpdateFailures+1,4)}
   })().finally(()=>{
