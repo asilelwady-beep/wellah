@@ -4,11 +4,12 @@ const start=html.indexOf('// Live customer data');
 assert.ok(start>=0,'Customer changes need an independent live refresh loop');
 const code=html.slice(start,html.indexOf('// End live customer data',start));
 function setup(){
+ const events={};
  let timer,release,failed=false,refreshes=0,renders=0,calls=0;
  const ctx=vm.createContext({Number,Map,Set,Array,Promise,Date,
    state:{user:{id:7,role:'customer'},customer_live_revision:10,products:[{id:1,price:20}],draft_catalog:[{id:1,price:20}],banner_offers:[]},
    tab:'customer',expectedAppRole:'customer',cachedReadOnly:false,cachedCatalogActive:false,previewMode:false,submitting:false,refreshInFlight:null,cart:{1:2},cartBudgets:{},customerView:'home',kind:'products',
-   document:{visibilityState:'visible',activeElement:{id:'search',value:'سكر'},querySelector:()=>null,addEventListener(){}},window:{addEventListener(){}},
+   document:{visibilityState:'visible',activeElement:{id:'search',value:'سكر'},querySelector:()=>null,addEventListener(key,fn){events[key]=fn}},window:{addEventListener(key,fn){events[key]=fn}},
    setTimeout(fn,ms){timer={fn,ms};return 1},clearTimeout(){},
    fetchJsonWithTimeout:async()=>{calls++;if(failed)throw Error('offline');return new Promise(resolve=>{release=data=>resolve({response:{ok:true},data})})},
    refresh:async()=>{refreshes++},checkAppUpdate:async()=>{},saveCustomerCatalogCache(){},renderLiveCustomer(){renders++},
@@ -16,11 +17,14 @@ function setup(){
  vm.runInContext(code,ctx);
  const renderLiveCustomer=ctx.renderLiveCustomer;
  ctx.renderLiveCustomer=()=>{renders++};
- return {ctx,renderLiveCustomer,send:data=>release(data),get timer(){return timer},get calls(){return calls},get refreshes(){return refreshes},get renders(){return renders},set failed(v){failed=v}};
+ return {ctx,events,renderLiveCustomer,send:data=>release(data),get timer(){return timer},get calls(){return calls},get refreshes(){return refreshes},get renders(){return renders},set failed(v){failed=v}};
 }
 const delta={ui_revision:'new123',changed:true,reload_state:false,customer_live_revision:11,customer_catalog_revision:'catalog-new',changed_product_ids:[1],products:[{id:1,price:23}],draft_catalog:[{id:1,price:23}],banner_offers:[{title:'Live offer'}]};
 (async()=>{
- let s=setup(),p=s.ctx.pollCustomerLive();s.send(delta);await p;
+ let s=setup(),p=s.events.focus();
+ assert.equal(s.calls,1,'Regaining focus starts the delta request immediately');
+ const showing=s.events.visibilitychange();
+ assert.equal(s.calls,1);s.send(delta);await Promise.all([p,showing]);
  assert.equal(s.ctx.state.products[0].price,23);assert.equal(s.ctx.state.banner_offers[0].title,'Live offer');assert.equal(s.ctx.cart[1],2);assert.equal(s.renders,1,'Focused search does not block new data');assert.ok(s.timer.ms<=2000);
  p=s.ctx.pollCustomerLive();s.send({...delta,customer_live_revision:12,products:[],draft_catalog:[]});await p;assert.equal(s.ctx.state.products.length,0,'Removed products leave the catalog');
  s=setup();p=s.ctx.pollCustomerLive();const other=s.ctx.pollCustomerLive();assert.equal(s.calls,1);s.send({...delta,reload_state:true});await Promise.all([p,other]);assert.equal(s.refreshes,1);
