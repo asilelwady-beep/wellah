@@ -12,21 +12,21 @@ function scenario(cache, authenticated=false){
   const spinner = {}, button = {}, label = {};
   const app = {replaceChildren(node){node.parentNode=this;}};
   const panel = {parentNode:app,setAttribute(k,v){this[k]=v},querySelector(s){return {'.app-action-spinner':spinner,button,'[data-startup-message]':label}[s];}};
-  let complete,fail;
+  let complete,fail,fallback;
   const response = new Promise((resolve,reject)=>{complete=resolve;fail=reject;});
   const ctx = vm.createContext({
-    window:{},URLSearchParams,document:{getElementById:()=>panel,visibilityState:'visible'},navigator:{onLine:true},expectedAppRole:'customer',token:authenticated?'test':'',
+    setTimeout(fn){fallback=fn;return 1},clearTimeout(){fallback=null},window:{},URLSearchParams,document:{getElementById:()=>panel,visibilityState:'visible'},navigator:{onLine:true},expectedAppRole:'customer',token:authenticated?'test':'',
     location:{pathname:'/customer'},tab:'customer',previewMode:false,state:null,cachedCatalogActive:false,cachedReadOnly:false,offline:false,connectionMessage:'',
     $:()=>app,esc:String,readCustomerCatalogCache:()=>cache,saveCustomerCatalogCache(){},customerPreviewState:c=>c,
     fetchJsonWithTimeout:()=>response,fetchCustomerSnapshot:()=>response,clearStartupRetry(){},scheduleStartupRetry(){},acceptSharedRideDestination(){},
     restoreCustomerUiResume(){},renderLiveCustomer(){ctx.render()},render(){panel.parentNode=null;views.push(ctx.connectionStatusHTML(ctx.connectionMessage));}
   });
   function run(start,end){vm.runInContext(html.slice(html.indexOf(start),html.indexOf(end,html.indexOf(start))),ctx);}
-  run('function mergeCustomerCatalog(', 'async function fetchCustomerSnapshot');
+  run('function mergeCustomerCatalog(', 'window.appFetchWithTimeout');
   run('const startupLoadingPanel=', 'let startupRetryTimer');
-  run('async function browsePreview(', 'function leavePreview');
+  run('function customerStartupFallback(', 'function leavePreview');
   run('async function performRefresh(', 'let driverAudio=');
-  return {ctx,panel,views,spinner,button,label,complete,fail};
+  return {showFallback:()=>fallback?.(),ctx,panel,views,spinner,button,label,complete,fail};
 }
 
 (async()=>{
@@ -34,6 +34,8 @@ function scenario(cache, authenticated=false){
     const s=scenario(cache);
     const pending=s.ctx.performRefresh();
     if(cache){
+      assert.equal(s.views.length,0);
+      s.showFallback();
       assert.equal(s.panel.parentNode,null);
       assert.equal(s.views[0],'','Cached content must refresh silently without a second loading screen');
     }else{
@@ -51,6 +53,14 @@ function scenario(cache, authenticated=false){
     assert.equal(s.views.at(-1),'');
     assert.equal(s.ctx.state.products[0].id,2);
   }
+  const fast=scenario({products:[{id:1}]});
+  const opening=fast.ctx.performRefresh();
+  fast.complete({response:{ok:true},data:{products:[{id:9}],banner_offers:[{title:'New'}]}});
+  await opening;
+  fast.showFallback();
+  assert.equal(fast.views.length,1,'A quick connection shows the fresh catalog on the first render');
+  assert.equal(fast.ctx.state.products[0].id,9);
+  assert.equal(fast.ctx.state.banner_offers[0].title,'New');
   const ready=scenario({products:[{id:1}]},true);
   Object.assign(ready.ctx,{appTokenKey:'test',localStorage:{setItem(){throw new Error('QuotaExceededError')},removeItem(){}},
     loadCustomerAddress(){},checkShiftSecondReminder(){},cleanupCustomerArchive(){},syncDriverAutomation(){},
